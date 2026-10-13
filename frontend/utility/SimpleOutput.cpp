@@ -344,6 +344,7 @@ void SimpleOutput::Update()
 	obs_data_set_int(audioSettings, "bitrate", audioBitrate);
 
 	obs_service_apply_encoder_settings(main->GetService(), videoSettings, audioSettings);
+	ApplyMultistreamEncoderSettings(videoSettings);
 
 	if (!enforceBitrate) {
 		int maxVideoBitrate;

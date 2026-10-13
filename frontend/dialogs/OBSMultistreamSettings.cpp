@@ -130,7 +130,6 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	qualityForm->addRow(QTStr("Basic.Settings.Output.AudioBitrate"), audioBitrate);
 	qualityForm->addRow(QTStr("Basic.Settings.Output.Encoder.Video"), encoder);
 	qualityForm->addRow(QTStr("Basic.Settings.Video.ScaledResolution"), resolution);
-	qualityGroup = quality;
 
 	QLabel *sharedNote = new QLabel(QTStr("Multistream.Quality.SharedNote"), this);
 	sharedNote->setWordWrap(true);
@@ -298,7 +297,8 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	  destinations(multistream_->Destinations())
 {
 	setWindowTitle(QTStr("Multistream.Title"));
-	setMinimumSize(760, 460);
+	setMinimumWidth(760);
+	resize(860, 620);
 
 	QLabel *intro = new QLabel(QTStr("Multistream.Intro"), this);
 	intro->setWordWrap(true);
@@ -316,6 +316,11 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	sharedDesc->setIndent(24);
 	separateDesc->setIndent(24);
 
+	/* Wrapped labels must keep their full height when the table shrinks */
+	for (QLabel *label : {intro, sharedDesc, separateDesc}) {
+		label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+	}
+
 	QButtonGroup *modeButtons = new QButtonGroup(this);
 	modeButtons->addButton(sharedMode);
 	modeButtons->addButton(separateMode);
@@ -328,6 +333,7 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	modeLayout->addWidget(separateDesc);
 
 	table = new QTableWidget(0, ColumnCount, this);
+	table->setMinimumHeight(150);
 	table->setHorizontalHeaderLabels({QTStr("Enable"), QTStr("Name"), QTStr("Multistream.Platform"),
 					  QTStr("Basic.AutoConfig.StreamPage.Server"), QTStr("Multistream.Quality")});
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);

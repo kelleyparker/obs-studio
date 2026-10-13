@@ -108,6 +108,8 @@ protected:
 						      size_t main_audio_mixer, std::optional<size_t> vod_track_mixer,
 						      std::function<void(std::optional<bool>)> continuation);
 	OBSDataAutoRelease GenerateMultitrackVideoStreamDumpConfig();
+
+	void ApplyMultistreamEncoderSettings(obs_data_t *videoSettings);
 };
 
 BasicOutputHandler *CreateSimpleOutputHandler(OBSBasic *main);

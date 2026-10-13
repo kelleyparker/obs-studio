@@ -612,3 +612,10 @@ BasicOutputHandler *CreateAdvancedOutputHandler(OBSBasic *main)
 {
 	return new AdvancedOutput(main);
 }
+
+void BasicOutputHandler::ApplyMultistreamEncoderSettings(obs_data_t *videoSettings)
+{
+	if (main->multistream) {
+		main->multistream->ApplyPrimaryEncoderSettings(videoSettings);
+	}
+}

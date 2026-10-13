@@ -265,7 +265,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	addDockWidget(Qt::BottomDockWidgetArea, multistreamDock);
 	multistreamDock->setVisible(false);
 	multistreamDock->setFloating(true);
-	multistreamDock->resize(480, 220);
+	multistreamDock->resize(560, 320);
 
 	copyActionsDynamicProperties();
 

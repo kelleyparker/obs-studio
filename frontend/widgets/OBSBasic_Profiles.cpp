@@ -755,7 +755,7 @@ void OBSBasic::ResetProfileData()
 	service = nullptr;
 	InitService();
 	ResetOutputs();
-	if (multistream && !multistream->Active()) {
+	if (multistream) {
 		multistream->Load(GetCurrentProfile().path);
 	}
 	ClearHotkeys();
