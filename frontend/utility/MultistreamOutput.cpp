@@ -9,6 +9,8 @@
 
 #include <util/config-file.h>
 
+#include <cstring>
+
 using namespace std;
 
 constexpr string_view MultistreamFileName = "multistream.json";
