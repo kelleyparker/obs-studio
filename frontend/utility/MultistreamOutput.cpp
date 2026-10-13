@@ -42,17 +42,59 @@ static const MultistreamPlatformLimits KickLimits = {
 	1080,
 	0,
 	0,
+	0,
 	{"h264"},
 	{{1080, 0, true, 8000}},
 	{{"obs_nvenc", R"({"preset": "p6", "tune": "ull", "multipass": "disabled", "profile": "main", "bf": 0,)"
 		       R"( "lookahead": false, "adaptive_quantization": true})"}},
 };
 
+/* YouTube: H.264, H.265 (HEVC) or AV1, CBR, up to 60 fps, 2 s keyframe
+ * interval. The recommended bitrate for each resolution and frame rate is
+ * used as the maximum. 128 kbps AAC for stereo, 384 kbps for 5.1 surround.
+ * 2 B-frames and 1 reference frame. */
+static const MultistreamPlatformLimits YouTubeLimits = {
+	3840,
+	2160,
+	60,
+	128,
+	384,
+	{"h264", "hevc", "av1"},
+	{
+		/* H.264 */
+		{2160, 60, true, 50000},
+		{2160, 30, true, 42000},
+		{1440, 60, true, 34000},
+		{1440, 30, true, 21000},
+		{1080, 60, true, 17000},
+		{1080, 30, true, 14000},
+		{720, 60, true, 8000},
+		{720, 30, true, 8000},
+		{480, 30, true, 4000},
+		{360, 30, true, 4000},
+		/* AV1 and H.265 */
+		{2160, 60, false, 35000},
+		{2160, 30, false, 30000},
+		{1440, 60, false, 24000},
+		{1440, 30, false, 15000},
+		{1080, 60, false, 12000},
+		{1080, 30, false, 10000},
+		{720, 60, false, 6000},
+		{720, 30, false, 6000},
+		{480, 30, false, 3000},
+		{360, 30, false, 3000},
+	},
+	{
+		{"obs_nvenc", R"({"bf": 2})"},
+		{"obs_x264", R"({"x264opts": "bframes=2 ref=1"})"},
+	},
+};
+
 const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 {
 	static const vector<MultistreamPlatformPreset> presets = {
 		{"youtube", "YouTube", "rtmps://a.rtmps.youtube.com:443/live2", "https://studio.youtube.com/",
-		 "YouTube - RTMPS", nullptr},
+		 "YouTube - RTMPS", &YouTubeLimits},
 		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream",
 		 "Twitch", nullptr},
 		{"kick", "Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
@@ -210,21 +252,21 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 		}
 
 		videoBitrate = LookupMaxVideoBitrate(*limits, height, fps, codec == "h264");
-		audioBitrate = limits->maxAudioBitrate;
+
+		obs_audio_info oai = {};
+		bool surround = obs_get_audio_info(&oai) && get_audio_channels(oai.speakers) > 2;
+		audioBitrate = surround && limits->maxSurroundAudioBitrate ? limits->maxSurroundAudioBitrate
+									   : limits->maxAudioBitrate;
 	}
 
-	/* OBS's service list is the upper bound */
+	/* OBS's service list fills in what the platform's guide doesn't say */
 	OBSServiceAutoRelease service = CreatePlatformService(preset);
-	if (service) {
+	if (service && (!videoBitrate || !audioBitrate)) {
 		int maxVideoBitrate = 0;
 		int maxAudioBitrate = 0;
 		obs_service_get_max_bitrate(service, &maxVideoBitrate, &maxAudioBitrate);
-		if (maxVideoBitrate > 0 && (!videoBitrate || videoBitrate > maxVideoBitrate)) {
-			videoBitrate = maxVideoBitrate;
-		}
-		if (maxAudioBitrate > 0 && (!audioBitrate || audioBitrate > maxAudioBitrate)) {
-			audioBitrate = maxAudioBitrate;
-		}
+		videoBitrate = videoBitrate ? videoBitrate : maxVideoBitrate;
+		audioBitrate = audioBitrate ? audioBitrate : maxAudioBitrate;
 	}
 
 	quality.videoBitrate = videoBitrate > 0 ? videoBitrate : dest.videoBitrate;
@@ -527,10 +569,9 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 	if (platformService) {
 		obs_service_apply_encoder_settings(platformService, settings, nullptr);
 
-		/* A custom bitrate is the user's explicit choice */
-		if (!dest.maxQuality) {
-			obs_data_set_int(settings, "bitrate", quality.videoBitrate);
-		}
+		/* The resolved bitrate already follows the platform's guide, or is
+		 * the user's explicit choice */
+		obs_data_set_int(settings, "bitrate", quality.videoBitrate);
 	}
 
 	/* Encoder settings from the platform's streaming guide */
@@ -542,6 +583,12 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 			}
 			OBSDataAutoRelease data = obs_data_create_from_json(guideSettings.json);
 			if (data) {
+				/* Keep the x264 options from the main stream and the service */
+				string x264opts = obs_data_get_string(settings, "x264opts");
+				if (obs_data_has_user_value(data, "x264opts") && !x264opts.empty()) {
+					x264opts += string(" ") + obs_data_get_string(data, "x264opts");
+					obs_data_set_string(data, "x264opts", x264opts.c_str());
+				}
 				obs_data_apply(settings, data);
 				blog(LOG_INFO, "[Multistream] '%s': %s settings from the %s streaming guide: %s",
 				     dest.name.c_str(), encoderId.c_str(), preset->displayName, guideSettings.json);
