@@ -157,6 +157,17 @@ jobs:
           codesignUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
           codesignPass: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
+      - name: Check OBS Studio Starts 🚦
+        if: matrix.target == 'arm64'
+        timeout-minutes: 5
+        run: |
+          : Check OBS Studio Starts 🚦
+          if (( ${+RUNNER_DEBUG} )) setopt XTRACE
+
+          output=$(build_macos/OBS.app/Contents/MacOS/OBS --version)
+          print -- ${output}
+          [[ ${output} == *'OBS Studio'* ]]
+
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ fromJSON(needs.check-event.outputs.package) }}
@@ -224,6 +235,28 @@ jobs:
           target: x86_64
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
+
+      - name: Check OBS Studio Starts 🚦
+        timeout-minutes: 10
+        run: |
+          : Check OBS Studio Starts 🚦
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          set -eo pipefail
+          shopt -s nullglob
+
+          packages=(build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu.deb)
+          if (( ${#packages[@]} )); then
+            # Install the package the way users do, which also checks its dependencies
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "./${packages[0]}"
+            obs_bin=obs
+          else
+            obs_bin=$(find build_ubuntu/install -type f -path '*/bin/obs' | head -1)
+          fi
+
+          output=$("${obs_bin}" --version)
+          echo "${output}"
+          [[ "${output}" == *'OBS Studio'* ]]
 
       - name: Upload Source Tarball 🗜️
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -420,6 +453,22 @@ jobs:
           target: ${{ matrix.architecture }}
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
+
+      - name: Check OBS Studio Starts 🚦
+        if: matrix.architecture == 'x64'
+        timeout-minutes: 5
+        run: |
+          # Check OBS Studio Starts 🚦
+          $Obs = "${{ github.workspace }}/build_${{ matrix.architecture }}/install/bin/64bit/obs64.exe"
+
+          # Piping the output makes PowerShell wait for the GUI application to exit
+          $Output = & $Obs --version | Out-String
+          $ExitCode = $LASTEXITCODE
+          Write-Output $Output
+
+          if ( $ExitCode -ne 0 ) {
+              throw "obs64.exe --version failed with exit code ${ExitCode}"
+          }
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
