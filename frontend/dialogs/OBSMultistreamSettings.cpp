@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -47,8 +48,16 @@ static QString QualitySummary(const MultistreamDestination &dest, MultistreamMod
 						      : QTStr("Multistream.Resolution.Output");
 	QString summary = QString("%1 kbps / %2 kbps, %3").arg(quality.videoBitrate).arg(quality.audioBitrate).arg(res);
 
-	if (dest.maxQuality && MultistreamPlatformSupportsMaxQuality(dest.platform)) {
+	switch (GetMultistreamQualityMode(dest)) {
+	case MultistreamQualityMode::Max:
 		return QTStr("Multistream.Quality.MaxShort").arg(summary);
+	case MultistreamQualityMode::Preset: {
+		const MultistreamQualityPreset *preset =
+			FindMultistreamQualityPreset(dest.platform, dest.qualityPreset);
+		return QTStr("Multistream.Quality.PresetShort").arg(QString::fromUtf8(preset->encoderName), summary);
+	}
+	case MultistreamQualityMode::Custom:
+		break;
 	}
 	return summary;
 }
@@ -103,10 +112,13 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 
 	/* Per-destination quality (separate encoder mode only) */
 	qualityMode = new QComboBox(this);
-	qualityMode->addItem(QTStr("Multistream.Quality.Max"));
-	qualityMode->addItem(QTStr("Multistream.Quality.Custom"));
 
+	encoderLabel = new QLabel(QTStr("Basic.Settings.Output.Encoder.Video"), this);
 	encoder = new QComboBox(this);
+
+	/* Presets from the platform's guide, one column per encoder */
+	presetBox = new QWidget(this);
+	presetGroup = new QButtonGroup(this);
 
 	maxSummary = new QLabel(this);
 	maxSummary->setWordWrap(true);
@@ -141,7 +153,8 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	QGroupBox *quality = new QGroupBox(QTStr("Multistream.Quality"), this);
 	QFormLayout *qualityForm = new QFormLayout(quality);
 	qualityForm->addRow(QTStr("Multistream.Quality"), qualityMode);
-	qualityForm->addRow(QTStr("Basic.Settings.Output.Encoder.Video"), encoder);
+	qualityForm->addRow(encoderLabel, encoder);
+	qualityForm->addRow(presetBox);
 	qualityForm->addRow(maxSummary);
 	qualityForm->addRow(customQuality);
 
@@ -170,7 +183,6 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	server->setText(QString::fromStdString(dest.server));
 	key->setText(QString::fromStdString(dest.key));
 	videoBitrate->setValue(dest.videoBitrate);
-	qualityMode->setCurrentIndex(dest.maxQuality ? 0 : 1);
 
 	int audioIdx = audioBitrate->findData(FindClosestAvailableSimpleAACBitrate(dest.audioBitrate));
 	audioBitrate->setCurrentIndex(audioIdx >= 0 ? audioIdx : 0);
@@ -184,10 +196,29 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	connect(platform, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::PlatformChanged);
 	connect(qualityMode, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::UpdateQuality);
 	connect(encoder, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::UpdateQuality);
+	connect(presetGroup, &QButtonGroup::idClicked, this, &MultistreamDestinationDialog::UpdateQuality);
 	PlatformChanged();
 
-	int encoderIdx = encoder->findData(QString::fromStdString(dest.encoder));
-	encoder->setCurrentIndex(encoderIdx >= 0 ? encoderIdx : 0);
+	{
+		QSignalBlocker encoderBlocker(encoder);
+		QSignalBlocker modeBlocker(qualityMode);
+
+		int encoderIdx = encoder->findData(QString::fromStdString(dest.encoder));
+		encoder->setCurrentIndex(encoderIdx >= 0 ? encoderIdx : 0);
+
+		int modeIdx = qualityMode->findData((int)dest.quality);
+		if (modeIdx >= 0) {
+			qualityMode->setCurrentIndex(modeIdx);
+		}
+
+		for (size_t i = 0; i < presetIds.size(); i++) {
+			QAbstractButton *button = presetGroup->button((int)i);
+			if (presetIds[i] == dest.qualityPreset && button->isEnabled()) {
+				button->setChecked(true);
+			}
+		}
+	}
+	UpdateQuality();
 
 	/* PlatformChanged() fills in defaults; keep saved values when editing */
 	if (!dest.server.empty()) {
@@ -237,6 +268,8 @@ void MultistreamDestinationDialog::PlatformChanged()
 	}
 
 	UpdateEncoders();
+	UpdateModes();
+	UpdatePresets();
 	UpdateQuality();
 }
 
@@ -245,9 +278,107 @@ string MultistreamDestinationDialog::CurrentPlatform() const
 	return platform->currentData().toString().toStdString();
 }
 
-bool MultistreamDestinationDialog::MaxQualitySelected() const
+MultistreamQualityMode MultistreamDestinationDialog::SelectedMode() const
 {
-	return qualityMode->currentIndex() == 0 && MultistreamPlatformSupportsMaxQuality(CurrentPlatform());
+	if (qualityMode->currentIndex() < 0) {
+		return MultistreamQualityMode::Custom;
+	}
+	return (MultistreamQualityMode)qualityMode->currentData().toInt();
+}
+
+string MultistreamDestinationDialog::SelectedPreset() const
+{
+	int id = presetGroup->checkedId();
+	return id >= 0 && id < (int)presetIds.size() ? presetIds[id] : string();
+}
+
+void MultistreamDestinationDialog::UpdateModes()
+{
+	QSignalBlocker blocker(qualityMode);
+	int current = qualityMode->currentIndex() >= 0 ? qualityMode->currentData().toInt() : -1;
+
+	string id = CurrentPlatform();
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(id);
+
+	qualityMode->clear();
+	if (MultistreamPlatformSupportsMaxQuality(id)) {
+		qualityMode->addItem(QTStr("Multistream.Quality.Max"), (int)MultistreamQualityMode::Max);
+	}
+	if (preset && preset->limits && !preset->limits->qualityPresets.empty()) {
+		qualityMode->addItem(QTStr("Multistream.Quality.Preset").arg(QString::fromUtf8(preset->displayName)),
+				     (int)MultistreamQualityMode::Preset);
+	}
+	qualityMode->addItem(QTStr("Multistream.Quality.Custom"), (int)MultistreamQualityMode::Custom);
+
+	int idx = qualityMode->findData(current);
+	qualityMode->setCurrentIndex(idx >= 0 ? idx : 0);
+	qualityMode->setEnabled(qualityMode->count() > 1);
+}
+
+void MultistreamDestinationDialog::UpdatePresets()
+{
+	string selected = SelectedPreset();
+
+	for (QAbstractButton *button : presetGroup->buttons()) {
+		presetGroup->removeButton(button);
+	}
+	qDeleteAll(presetBox->findChildren<QWidget *>(Qt::FindDirectChildrenOnly));
+	delete presetBox->layout();
+	presetIds.clear();
+
+	QGridLayout *grid = new QGridLayout(presetBox);
+	grid->setContentsMargins(0, 0, 0, 0);
+
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(CurrentPlatform());
+	if (!preset || !preset->limits) {
+		return;
+	}
+
+	/* Same layout as the guide: one column of presets per encoder */
+	vector<string> columns;
+	vector<int> rows;
+	QAbstractButton *firstEnabled = nullptr;
+	for (const auto &qualityPreset : preset->limits->qualityPresets) {
+		auto it = std::find(columns.begin(), columns.end(), string(qualityPreset.encoderName));
+		int column = (int)(it - columns.begin());
+		if (it == columns.end()) {
+			columns.emplace_back(qualityPreset.encoderName);
+			rows.push_back(1);
+
+			QLabel *header = new QLabel(
+				QString("<b>%1</b>").arg(QString::fromUtf8(qualityPreset.encoderName)), presetBox);
+			grid->addWidget(header, 0, column);
+		}
+
+		QRadioButton *radio = new QRadioButton(QTStr("Multistream.Quality.PresetItem")
+							       .arg(qualityPreset.height)
+							       .arg(qualityPreset.fps)
+							       .arg(qualityPreset.videoBitrate),
+						       presetBox);
+
+		bool available = FindMultistreamEncoder(qualityPreset.preferredEncoder, "h264") ==
+				 qualityPreset.preferredEncoder;
+		if (!available) {
+			radio->setEnabled(false);
+			radio->setToolTip(QTStr("Multistream.Quality.EncoderUnavailable")
+						  .arg(QString::fromUtf8(qualityPreset.encoderName)));
+		}
+
+		presetGroup->addButton(radio, (int)presetIds.size());
+		presetIds.emplace_back(qualityPreset.id);
+		grid->addWidget(radio, rows[column]++, column);
+
+		if (available && !firstEnabled) {
+			firstEnabled = radio;
+		}
+		if (available && selected == qualityPreset.id) {
+			radio->setChecked(true);
+		}
+	}
+
+	if (!presetGroup->checkedButton() && firstEnabled) {
+		firstEnabled->setChecked(true);
+	}
 }
 
 void MultistreamDestinationDialog::UpdateEncoders()
@@ -281,27 +412,24 @@ void MultistreamDestinationDialog::UpdateEncoders()
 
 void MultistreamDestinationDialog::UpdateQuality()
 {
-	bool supportsMax = MultistreamPlatformSupportsMaxQuality(CurrentPlatform());
-	{
-		QSignalBlocker blocker(qualityMode);
-		if (!supportsMax) {
-			qualityMode->setCurrentIndex(1);
-		}
-		qualityMode->setEnabled(supportsMax);
-	}
+	MultistreamQualityMode mode = SelectedMode();
+	bool usePreset = mode == MultistreamQualityMode::Preset;
 
-	bool max = MaxQualitySelected();
-	customQuality->setVisible(!max);
-	maxSummary->setVisible(max);
-	if (!max) {
+	customQuality->setVisible(mode == MultistreamQualityMode::Custom);
+	presetBox->setVisible(usePreset);
+	encoderLabel->setVisible(!usePreset);
+	encoder->setVisible(!usePreset);
+	maxSummary->setVisible(mode != MultistreamQualityMode::Custom);
+	if (mode == MultistreamQualityMode::Custom) {
 		return;
 	}
 
 	MultistreamDestination preview;
 	preview.platform = CurrentPlatform();
-	preview.maxQuality = true;
+	preview.quality = mode;
+	preview.qualityPreset = SelectedPreset();
 
-	string encoderId = encoder->currentData().toString().toStdString();
+	string encoderId = usePreset ? string() : encoder->currentData().toString().toStdString();
 	const char *codec = encoderId.empty() ? "h264" : obs_get_encoder_codec(encoderId.c_str());
 	MultistreamQuality quality = ResolveMultistreamQuality(preview, codec ? codec : "h264");
 
@@ -311,14 +439,18 @@ void MultistreamDestinationDialog::UpdateQuality()
 	uint32_t height = quality.height ? quality.height : ovi.output_height;
 	double fps = ovi.fps_den ? (double)ovi.fps_num / (double)ovi.fps_den / (double)quality.fpsDivisor : 0.0;
 
-	QString text = QTStr("Multistream.Quality.MaxSummary")
+	QString text = QTStr(usePreset ? "Multistream.Quality.PresetSummary" : "Multistream.Quality.MaxSummary")
 			       .arg(QString("%1x%2").arg(width).arg(height))
 			       .arg(QString::number(fps, 'g', 4))
 			       .arg(quality.videoBitrate)
 			       .arg(quality.audioBitrate);
 
 	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(CurrentPlatform());
-	if (preset && preset->limits && preset->limits->maxHeight > ovi.output_height) {
+	const MultistreamQualityPreset *qualityPreset =
+		usePreset ? FindMultistreamQualityPreset(CurrentPlatform(), preview.qualityPreset) : nullptr;
+	if (qualityPreset && qualityPreset->height > ovi.output_height) {
+		text += "\n" + QTStr("Multistream.Quality.PresetRaiseOutput").arg(qualityPreset->height);
+	} else if (!usePreset && preset && preset->limits && preset->limits->maxHeight > ovi.output_height) {
 		text += "\n" + QTStr("Multistream.Quality.RaiseOutput")
 				       .arg(QString::fromUtf8(preset->displayName))
 				       .arg(preset->limits->maxHeight);
@@ -348,12 +480,12 @@ void MultistreamDestinationDialog::accept()
 		return;
 	}
 
-	bool maxQuality = MaxQualitySelected();
+	MultistreamQualityMode mode = SelectedMode();
 	uint32_t width = 0;
 	uint32_t height = 0;
 	QString res = resolution->currentText().trimmed();
 	QRegularExpressionMatch match = QRegularExpression("^\\s*(\\d+)\\s*[xX]\\s*(\\d+)\\s*$").match(res);
-	if (maxQuality) {
+	if (mode != MultistreamQualityMode::Custom) {
 		/* Keep the stored custom resolution; it isn't used */
 		width = destination.width;
 		height = destination.height;
@@ -375,7 +507,10 @@ void MultistreamDestinationDialog::accept()
 	destination.platform = platform->currentData().toString().toStdString();
 	destination.server = serverUrl.toStdString();
 	destination.key = streamKey.toStdString();
-	destination.maxQuality = maxQuality;
+	destination.quality = mode;
+	if (mode == MultistreamQualityMode::Preset) {
+		destination.qualityPreset = SelectedPreset();
+	}
 	destination.videoBitrate = videoBitrate->value();
 	destination.audioBitrate = audioBitrate->currentData().toInt();
 	destination.encoder = encoder->currentData().toString().toStdString();
@@ -576,7 +711,7 @@ void OBSMultistreamSettings::UpdateButtons()
 void OBSMultistreamSettings::AddDestination()
 {
 	MultistreamDestination dest;
-	dest.maxQuality = true;
+	dest.quality = MultistreamQualityMode::Max;
 
 	/* Suggest the first platform that isn't configured yet */
 	for (const auto &preset : GetMultistreamPlatformPresets()) {

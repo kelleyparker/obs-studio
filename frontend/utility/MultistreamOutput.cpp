@@ -90,13 +90,47 @@ static const MultistreamPlatformLimits YouTubeLimits = {
 	},
 };
 
+/* Twitch: H.264, CBR, up to 1920x1080 and 60 fps, 2 s keyframe interval.
+ * 1080p60: 6000 kbps, 1080p30: 4500 kbps, 720p60: 4500 kbps, 720p30: 3000
+ * kbps, for NVIDIA NVENC and x264 alike. NVENC: "Quality" preset (P5 with
+ * high quality tuning in current OBS) and 2 B-frames. x264: veryfast to
+ * medium preset and Main/High profile, of which medium and High are used. */
+static const MultistreamPlatformLimits TwitchLimits = {
+	1920,
+	1080,
+	60,
+	0,
+	0,
+	{"h264"},
+	{
+		{1080, 60, true, 6000},
+		{1080, 30, true, 4500},
+		{720, 60, true, 4500},
+		{720, 30, true, 3000},
+	},
+	{
+		{"obs_nvenc", R"({"preset": "p5", "tune": "hq", "bf": 2})"},
+		{"obs_x264", R"({"preset": "medium", "profile": "high"})"},
+	},
+	{
+		{"nvenc_1080p60", "NVIDIA NVENC", "obs_nvenc_h264_tex", 1920, 1080, 60, 6000},
+		{"nvenc_1080p30", "NVIDIA NVENC", "obs_nvenc_h264_tex", 1920, 1080, 30, 4500},
+		{"nvenc_720p60", "NVIDIA NVENC", "obs_nvenc_h264_tex", 1280, 720, 60, 4500},
+		{"nvenc_720p30", "NVIDIA NVENC", "obs_nvenc_h264_tex", 1280, 720, 30, 3000},
+		{"x264_1080p60", "x264", "obs_x264", 1920, 1080, 60, 6000},
+		{"x264_1080p30", "x264", "obs_x264", 1920, 1080, 30, 4500},
+		{"x264_720p60", "x264", "obs_x264", 1280, 720, 60, 4500},
+		{"x264_720p30", "x264", "obs_x264", 1280, 720, 30, 3000},
+	},
+};
+
 const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 {
 	static const vector<MultistreamPlatformPreset> presets = {
 		{"youtube", "YouTube", "rtmps://a.rtmps.youtube.com:443/live2", "https://studio.youtube.com/",
 		 "YouTube - RTMPS", &YouTubeLimits},
 		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream",
-		 "Twitch", nullptr},
+		 "Twitch", &TwitchLimits},
 		{"kick", "Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
 		 "https://kick.com/dashboard/settings/stream", nullptr, &KickLimits},
 		{"custom", "Custom RTMP", "", "", nullptr, nullptr},
@@ -130,6 +164,32 @@ bool MultistreamPlatformSupportsMaxQuality(const string &platform)
 {
 	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(platform);
 	return preset && (preset->obsServiceName || preset->limits);
+}
+
+const MultistreamQualityPreset *FindMultistreamQualityPreset(const string &platform, const string &id)
+{
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(platform);
+	if (!preset || !preset->limits) {
+		return nullptr;
+	}
+	for (const auto &qualityPreset : preset->limits->qualityPresets) {
+		if (id == qualityPreset.id) {
+			return &qualityPreset;
+		}
+	}
+	return nullptr;
+}
+
+MultistreamQualityMode GetMultistreamQualityMode(const MultistreamDestination &dest)
+{
+	if (dest.quality == MultistreamQualityMode::Preset &&
+	    FindMultistreamQualityPreset(dest.platform, dest.qualityPreset)) {
+		return MultistreamQualityMode::Preset;
+	}
+	if (dest.quality != MultistreamQualityMode::Custom && MultistreamPlatformSupportsMaxQuality(dest.platform)) {
+		return MultistreamQualityMode::Max;
+	}
+	return MultistreamQualityMode::Custom;
 }
 
 vector<string> GetMultistreamPlatformCodecs(const string &platform)
@@ -207,8 +267,9 @@ static int LargestAacBitrateUpTo(int bitrate)
 MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const string &codec)
 {
 	MultistreamQuality quality;
+	MultistreamQualityMode mode = GetMultistreamQualityMode(dest);
 
-	if (!dest.maxQuality || !MultistreamPlatformSupportsMaxQuality(dest.platform)) {
+	if (mode == MultistreamQualityMode::Custom) {
 		quality.width = dest.width;
 		quality.height = dest.height;
 		quality.videoBitrate = dest.videoBitrate;
@@ -218,6 +279,9 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 
 	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(dest.platform);
 	const MultistreamPlatformLimits *limits = preset->limits;
+	const MultistreamQualityPreset *qualityPreset =
+		mode == MultistreamQualityMode::Preset ? FindMultistreamQualityPreset(dest.platform, dest.qualityPreset)
+						       : nullptr;
 
 	obs_video_info ovi = {};
 	bool hasVideo = obs_get_video_info(&ovi);
@@ -225,34 +289,42 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 	uint32_t height = hasVideo ? ovi.output_height : 1080;
 	double fps = hasVideo ? (double)ovi.fps_num / (double)ovi.fps_den : 60.0;
 
+	uint32_t maxWidth = qualityPreset ? qualityPreset->width : (limits ? limits->maxWidth : 0);
+	uint32_t maxHeight = qualityPreset ? qualityPreset->height : (limits ? limits->maxHeight : 0);
+	uint32_t maxFps = qualityPreset ? qualityPreset->fps : (limits ? limits->maxFps : 0);
+
+	/* Scale down to the maximum resolution, keeping the aspect ratio. Never
+	 * scale up: that only costs bandwidth. */
+	double scale = 1.0;
+	if (maxWidth && width > maxWidth) {
+		scale = min(scale, (double)maxWidth / (double)width);
+	}
+	if (maxHeight && height > maxHeight) {
+		scale = min(scale, (double)maxHeight / (double)height);
+	}
+	if (scale < 1.0) {
+		width = RoundToEven((double)width * scale);
+		height = RoundToEven((double)height * scale);
+		quality.width = width;
+		quality.height = height;
+	}
+
+	/* Skip frames to stay within the maximum frame rate */
+	if (maxFps && fps > (double)maxFps + 0.01) {
+		quality.fpsDivisor = (uint32_t)ceil(fps / (double)maxFps - 0.001);
+		fps /= (double)quality.fpsDivisor;
+	}
+
 	int videoBitrate = 0;
 	int audioBitrate = 0;
 
-	if (limits) {
-		/* Scale down to the platform's maximum resolution, keeping the
-		 * aspect ratio. Never scale up: that only costs bandwidth. */
-		double scale = 1.0;
-		if (limits->maxWidth && width > limits->maxWidth) {
-			scale = min(scale, (double)limits->maxWidth / (double)width);
-		}
-		if (limits->maxHeight && height > limits->maxHeight) {
-			scale = min(scale, (double)limits->maxHeight / (double)height);
-		}
-		if (scale < 1.0) {
-			width = RoundToEven((double)width * scale);
-			height = RoundToEven((double)height * scale);
-			quality.width = width;
-			quality.height = height;
-		}
-
-		/* Skip frames to stay within the platform's maximum frame rate */
-		if (limits->maxFps && fps > (double)limits->maxFps + 0.01) {
-			quality.fpsDivisor = (uint32_t)ceil(fps / (double)limits->maxFps - 0.001);
-			fps /= (double)quality.fpsDivisor;
-		}
-
+	if (qualityPreset) {
+		videoBitrate = qualityPreset->videoBitrate;
+	} else if (limits) {
 		videoBitrate = LookupMaxVideoBitrate(*limits, height, fps, codec == "h264");
+	}
 
+	if (limits) {
 		obs_audio_info oai = {};
 		bool surround = obs_get_audio_info(&oai) && get_audio_channels(oai.speakers) > 2;
 		audioBitrate = surround && limits->maxSurroundAudioBitrate ? limits->maxSurroundAudioBitrate
@@ -398,7 +470,11 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			dest.server = obs_data_get_string(item, "server");
 			dest.key = obs_data_get_string(item, "key");
 			dest.enabled = obs_data_get_bool(item, "enabled");
-			dest.maxQuality = strcmp(obs_data_get_string(item, "quality"), "max") == 0;
+			const char *quality = obs_data_get_string(item, "quality");
+			dest.quality = strcmp(quality, "max") == 0      ? MultistreamQualityMode::Max
+				       : strcmp(quality, "preset") == 0 ? MultistreamQualityMode::Preset
+									: MultistreamQualityMode::Custom;
+			dest.qualityPreset = obs_data_get_string(item, "quality_preset");
 			dest.videoBitrate = (int)obs_data_get_int(item, "video_bitrate");
 			dest.audioBitrate = (int)obs_data_get_int(item, "audio_bitrate");
 			dest.encoder = obs_data_get_string(item, "encoder");
@@ -435,7 +511,11 @@ bool MultistreamOutput::Save() const
 		obs_data_set_string(item, "server", dest.server.c_str());
 		obs_data_set_string(item, "key", dest.key.c_str());
 		obs_data_set_bool(item, "enabled", dest.enabled);
-		obs_data_set_string(item, "quality", dest.maxQuality ? "max" : "custom");
+		obs_data_set_string(item, "quality",
+				    dest.quality == MultistreamQualityMode::Max      ? "max"
+				    : dest.quality == MultistreamQualityMode::Preset ? "preset"
+										     : "custom");
+		obs_data_set_string(item, "quality_preset", dest.qualityPreset.c_str());
 		obs_data_set_int(item, "video_bitrate", dest.videoBitrate);
 		obs_data_set_int(item, "audio_bitrate", dest.audioBitrate);
 		obs_data_set_string(item, "encoder", dest.encoder.c_str());
@@ -665,7 +745,20 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
 	const char *primaryVideoId = primaryVideo ? obs_encoder_get_id(primaryVideo) : "obs_x264";
 
+	MultistreamQualityMode qualityMode = GetMultistreamQualityMode(dest);
 	string encoderId = dest.encoder;
+
+	/* A guide preset is for a specific encoder */
+	if (qualityMode == MultistreamQualityMode::Preset) {
+		const MultistreamQualityPreset *qualityPreset =
+			FindMultistreamQualityPreset(dest.platform, dest.qualityPreset);
+		encoderId = FindMultistreamEncoder(qualityPreset->preferredEncoder, "h264");
+		if (encoderId != qualityPreset->preferredEncoder) {
+			blog(LOG_WARNING, "[Multistream] '%s': %s isn't available, using %s instead", dest.name.c_str(),
+			     qualityPreset->encoderName, encoderId.c_str());
+		}
+	}
+
 	if (!encoderId.empty() && !obs_get_encoder_codec(encoderId.c_str())) {
 		/* e.g. a profile from a machine with a different GPU */
 		blog(LOG_WARNING, "[Multistream] Encoder '%s' for '%s' is not available, using the default encoder",
@@ -693,8 +786,10 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 					  : string("output resolution");
 	string frameRate = quality.fpsDivisor > 1 ? ", output frame rate / " + to_string(quality.fpsDivisor) : "";
 	blog(LOG_INFO, "[Multistream] '%s' (%s quality): %s, %s%s, %d kbps video, %d kbps audio", dest.name.c_str(),
-	     dest.maxQuality ? "platform maximum" : "custom", encoderId.c_str(), resolution.c_str(), frameRate.c_str(),
-	     quality.videoBitrate, quality.audioBitrate);
+	     qualityMode == MultistreamQualityMode::Max      ? "platform maximum"
+	     : qualityMode == MultistreamQualityMode::Preset ? dest.qualityPreset.c_str()
+							     : "custom",
+	     encoderId.c_str(), resolution.c_str(), frameRate.c_str(), quality.videoBitrate, quality.audioBitrate);
 
 	/* Destinations with identical settings share their encoders instead of
 	 * encoding the same thing twice. With dynamic bitrate every destination
