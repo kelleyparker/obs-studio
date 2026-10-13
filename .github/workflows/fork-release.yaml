@@ -1,0 +1,93 @@
+name: Fork Release
+run-name: Publish ${{ github.ref_name }} 🛫
+on:
+  push:
+    branches:
+      - 'publish/**'
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    name: Publish Release 🛫
+    runs-on: ubuntu-26.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # Push run on master whose builds are published
+      BUILD_RUN_ID: '38481024051'
+      TARGET_SHA: 3663093e82d4c602cdf1f6a5e61ebf55f53b2c9c
+      RELEASE_TAG: 33.0.0-rc1-multistream1
+      RELEASE_TITLE: OBS Studio 33.0.0-rc1 with Multistreaming
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Wait for Builds ⏳
+        run: |
+          : Wait for Builds ⏳
+          set -euo pipefail
+          until [[ "$(gh run view "${BUILD_RUN_ID}" --json status --jq .status)" == completed ]]; do
+            sleep 30
+          done
+
+      - name: Download Build Artifacts 📥
+        run: |
+          : Download Build Artifacts 📥
+          set -euo pipefail
+          hash="${TARGET_SHA:0:9}"
+          gh run download "${BUILD_RUN_ID}" --dir artifacts \
+            --name "obs-studio-windows-x64-${hash}" \
+            --name "obs-studio-macos-arm64-${hash}" \
+            --name "obs-studio-ubuntu-26.04-x86_64-${hash}" \
+            --name "obs-studio-ubuntu-26.04-sources-${hash}"
+          find artifacts -type f
+
+      - name: Collect Release Files 🏷️
+        run: |
+          : Collect Release Files 🏷️
+          set -euo pipefail
+          mkdir release
+
+          collect() {
+            local pattern="${1}"
+            local name="${2}"
+            local files
+            mapfile -t files < <(find artifacts -type f -name "${pattern}")
+            if (( ${#files[@]} != 1 )); then
+              echo "::error::Expected one file matching ${pattern}, found ${#files[@]}"
+              exit 1
+            fi
+            # Keep the compression extension of tarballs
+            if [[ "${name}" == *.tar ]]; then
+              name="${name}.${files[0]##*.}"
+            fi
+            cp -v "${files[0]}" "release/OBS-Studio-${RELEASE_TAG}-${name}"
+          }
+
+          collect 'obs-studio-*-windows-x64.zip' 'Windows-x64.zip'
+          collect 'obs-studio-*-macos-apple.dmg' 'macOS-Apple.dmg'
+          collect 'obs-studio-*-x86_64-ubuntu-gnu.deb' 'Ubuntu-26.04-x86_64.deb'
+          collect 'obs-studio-*-sources.tar.*' 'Sources.tar'
+
+          cp .github/fork-release/notes.md notes.md
+          {
+            echo
+            echo '### Checksums (SHA-256)'
+            echo
+            for file in release/*; do
+              echo "    ${file##*/}: $(sha256sum "${file}" | cut -d ' ' -f 1)"
+            done
+          } >> notes.md
+
+      - name: Create Release 🛫
+        run: |
+          : Create Release 🛫
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" release/* \
+            --target "${TARGET_SHA}" \
+            --title "${RELEASE_TITLE}" \
+            --notes-file notes.md \
+            --prerelease
