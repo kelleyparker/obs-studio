@@ -30,6 +30,7 @@
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#include <docks/MultistreamDock.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -258,6 +259,14 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	statsDock->setFloating(true);
 	statsDock->resize(700, 200);
 
+	multistreamDock = new OBSDock();
+	multistreamDock->setObjectName(QStringLiteral("multistreamDock"));
+	multistreamDock->setWindowTitle(QTStr("Multistream.Dock.Title"));
+	addDockWidget(Qt::BottomDockWidgetArea, multistreamDock);
+	multistreamDock->setVisible(false);
+	multistreamDock->setFloating(true);
+	multistreamDock->resize(480, 220);
+
 	copyActionsDynamicProperties();
 
 	qRegisterMetaType<int64_t>("int64_t");
@@ -418,6 +427,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(ui->transitionsDock);
 	SETUP_DOCK(controlsDock);
 	SETUP_DOCK(statsDock);
+	SETUP_DOCK(multistreamDock);
 #undef SETUP_DOCK
 
 	// Register shortcuts for Undo/Redo
@@ -1089,6 +1099,18 @@ void OBSBasic::OBSInit()
 	OBSBasicStats *statsDlg = new OBSBasicStats(statsDock, false);
 	statsDock->setWidget(statsDlg);
 
+	/* setup multistreaming */
+	multistream = std::make_unique<MultistreamOutput>();
+	multistream->Load(GetCurrentProfile().path);
+
+	MultistreamDock *multistreamWidget = new MultistreamDock(multistream.get(), multistreamDock);
+	multistreamDock->setWidget(multistreamWidget);
+	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
+
+	QAction *multistreamAction = new QAction(QTStr("Multistream.MenuAction"), this);
+	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
+	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
+
 	/* ----------------------------- */
 	/* add custom browser docks      */
 #if defined(BROWSER_AVAILABLE) && defined(YOUTUBE_ENABLED)
@@ -1318,6 +1340,7 @@ void OBSBasic::applicationShutdown() noexcept
 	ClearHotkeys();
 
 	service = nullptr;
+	multistream.reset();
 	outputHandler.reset();
 
 	delete interaction;

@@ -585,11 +585,12 @@ void OBSBasic::on_actionImportProfile_triggered()
 			return;
 		}
 
-		const std::array<std::pair<std::string, bool>, 4> profileFiles{{
+		const std::array<std::pair<std::string, bool>, 5> profileFiles{{
 			{"basic.ini", true},
 			{"service.json", false},
 			{"streamEncoder.json", false},
 			{"recordEncoder.json", false},
+			{"multistream.json", false},
 		}};
 
 		for (auto &[file, isMandatory] : profileFiles) {
@@ -628,8 +629,8 @@ void OBSBasic::on_actionExportProfile_triggered()
 
 	const QString destinationDirectory = SelectDirectory(this, QTStr("Basic.MainMenu.Profile.Export"), home);
 
-	const std::array<std::string, 4> profileFiles{"basic.ini", "service.json", "streamEncoder.json",
-						      "recordEncoder.json"};
+	const std::array<std::string, 5> profileFiles{"basic.ini", "service.json", "streamEncoder.json",
+						      "recordEncoder.json", "multistream.json"};
 
 	if (!destinationDirectory.isEmpty() && !destinationDirectory.isNull()) {
 		const std::filesystem::path sourcePath = currentProfile.path;
@@ -754,6 +755,9 @@ void OBSBasic::ResetProfileData()
 	service = nullptr;
 	InitService();
 	ResetOutputs();
+	if (multistream && !multistream->Active()) {
+		multistream->Load(GetCurrentProfile().path);
+	}
 	ClearHotkeys();
 	CreateHotkeys();
 

@@ -20,6 +20,7 @@
 #include "OBSBasic.hpp"
 
 #include <components/UIValidation.hpp>
+#include <dialogs/OBSMultistreamSettings.hpp>
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #include <utility/YoutubeApiWrappers.hpp>
@@ -135,6 +136,10 @@ void OBSBasic::StopStreaming()
 		outputHandler->StopStreaming(streamingStopping);
 	}
 
+	if (multistream) {
+		multistream->StopAll(streamingStopping);
+	}
+
 	// special case: force reset broadcast state if
 	// no autostart and no autostop selected
 	if (!autoStartBroadcast && !broadcastActive) {
@@ -175,6 +180,10 @@ void OBSBasic::ForceStopStreaming()
 
 	if (outputHandler->StreamingActive()) {
 		outputHandler->StopStreaming(true);
+	}
+
+	if (multistream) {
+		multistream->StopAll(true);
 	}
 
 	// special case: force reset broadcast state if
@@ -268,6 +277,12 @@ void OBSBasic::StreamingStart()
 
 	OnActivate();
 
+	/* Start the additional multistream destinations once the main stream
+	 * is live, so its encoders are already running and can be shared. */
+	if (multistream) {
+		multistream->PrimaryStarted(output, !outputHandler->multitrackVideoActive);
+	}
+
 #ifdef YOUTUBE_ENABLED
 	if (YouTubeAppDock::IsYTServiceSelected()) {
 		youtubeAppDock->IngestionStarted();
@@ -346,6 +361,12 @@ void OBSBasic::StreamingStop(int code, QString last_error)
 	}
 
 	ui->statusbar->StreamStopped();
+
+	/* Keep the other destinations live while Enhanced Broadcasting restarts
+	 * the main stream; otherwise stop them along with it. */
+	if (multistream && !should_reconnect) {
+		multistream->PrimaryStopped(code != OBS_OUTPUT_SUCCESS);
+	}
 
 	emit StreamingStopped();
 
@@ -476,4 +497,14 @@ bool OBSBasic::StreamingActive()
 		return false;
 	}
 	return outputHandler->StreamingActive();
+}
+
+void OBSBasic::OpenMultistreamSettings()
+{
+	if (!multistream) {
+		return;
+	}
+
+	OBSMultistreamSettings dialog(multistream.get(), this);
+	dialog.exec();
 }

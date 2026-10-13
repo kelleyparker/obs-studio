@@ -3,6 +3,7 @@
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#include <dialogs/OBSMultistreamSettings.hpp>
 #include <oauth/OAuth.hpp>
 #ifdef YOUTUBE_ENABLED
 #include <utility/YoutubeApiWrappers.hpp>
@@ -90,6 +91,38 @@ void OBSBasicSettings::InitStreamPage()
 		&OBSBasicSettings::UpdateMultitrackVideo);
 	connect(ui->multitrackVideoConfigOverrideEnable, &QCheckBox::toggled, this,
 		&OBSBasicSettings::UpdateMultitrackVideo);
+
+	/* Multistreaming shortcut: the primary destination is configured
+	 * above, extra destinations in the multistream dialog */
+	if (main->multistream) {
+		QGroupBox *multistreamBox = new QGroupBox(QTStr("Multistream.Title"), ui->streamPage);
+		QLabel *multistreamLabel = new QLabel(multistreamBox);
+		multistreamLabel->setWordWrap(true);
+		QPushButton *multistreamButton = new QPushButton(QTStr("Multistream.Configure"), multistreamBox);
+
+		auto updateLabel = [this, multistreamLabel]() {
+			int count = 0;
+			for (const auto &dest : main->multistream->Destinations()) {
+				count += dest.enabled ? 1 : 0;
+			}
+			multistreamLabel->setText(main->multistream->Enabled()
+							  ? QTStr("Multistream.Settings.Summary").arg(count)
+							  : QTStr("Multistream.Settings.Disabled"));
+		};
+		updateLabel();
+
+		connect(multistreamButton, &QPushButton::clicked, this, [this, updateLabel]() {
+			OBSMultistreamSettings dialog(main->multistream.get(), this);
+			dialog.exec();
+			updateLabel();
+		});
+
+		QHBoxLayout *multistreamLayout = new QHBoxLayout(multistreamBox);
+		multistreamLayout->addWidget(multistreamLabel, 1);
+		multistreamLayout->addWidget(multistreamButton);
+
+		ui->streamPage->layout()->addWidget(multistreamBox);
+	}
 }
 
 void OBSBasicSettings::LoadStream1Settings()

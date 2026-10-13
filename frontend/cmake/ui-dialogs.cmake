@@ -39,6 +39,8 @@ target_sources(
     dialogs/OBSLogViewer.hpp
     dialogs/OBSMissingFiles.cpp
     dialogs/OBSMissingFiles.hpp
+    dialogs/OBSMultistreamSettings.cpp
+    dialogs/OBSMultistreamSettings.hpp
     dialogs/OBSRemux.cpp
     dialogs/OBSRemux.hpp
     dialogs/OBSWhatsNew.cpp
