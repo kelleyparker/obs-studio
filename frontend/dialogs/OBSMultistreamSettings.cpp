@@ -23,6 +23,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <cstring>
+
 using namespace std;
 
 static QString PlatformDisplayName(const string &platform)

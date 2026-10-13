@@ -1108,6 +1108,8 @@ void OBSBasic::OBSInit()
 	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
 
 	QAction *multistreamAction = new QAction(QTStr("Multistream.MenuAction"), this);
+	/* Keep macOS from moving the entry into the application menu */
+	multistreamAction->setMenuRole(QAction::NoRole);
 	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
 
