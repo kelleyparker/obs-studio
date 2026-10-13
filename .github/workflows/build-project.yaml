@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [arm64, x86_64]
+        target: [arm64]
     defaults:
       run:
         shell: zsh --no-rcs --errexit --pipefail {0}
@@ -254,6 +254,7 @@ jobs:
 
   flatpak-build:
     name: Flatpak 📦
+    if: github.repository_owner == 'obsproject'
     runs-on: ubuntu-26.04
     needs: check-event
     defaults:
@@ -384,7 +385,7 @@ jobs:
     name: Windows 🪟
     strategy:
       matrix:
-        architecture: [x64, arm64]
+        architecture: [x64]
     runs-on: windows-2025-vs2026
     needs: check-event
     defaults:
