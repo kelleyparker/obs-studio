@@ -24,6 +24,7 @@
 #include <components/AccessibleAlignmentSelector.hpp>
 #include <oauth/Auth.hpp>
 #include <utility/BasicOutputHandler.hpp>
+#include <utility/MultistreamOutput.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
 #include <utility/VCamConfig.hpp>
@@ -444,6 +445,7 @@ public slots:
 	 */
 private:
 	QPointer<QDockWidget> statsDock;
+	QPointer<QDockWidget> multistreamDock;
 	QByteArray startingDockLayout;
 	QStringList extraDockNames;
 	QList<std::shared_ptr<QDockWidget>> extraDocks;
@@ -687,6 +689,7 @@ private:
 	 */
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
+	std::unique_ptr<MultistreamOutput> multistream;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;
@@ -1651,6 +1654,7 @@ private slots:
 	void VirtualCamActionTriggered();
 
 	void OpenVirtualCamConfig();
+	void OpenMultistreamSettings();
 
 public:
 	inline bool VCamEnabled() const { return vcamEnabled; }
