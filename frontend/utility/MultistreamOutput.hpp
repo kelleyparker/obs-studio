@@ -27,12 +27,34 @@ enum class MultistreamState {
 	Error,
 };
 
+/* Maximum video bitrate for streams up to a resolution and frame rate */
+struct MultistreamBitrateLimit {
+	uint32_t height;
+	uint32_t fps;
+	bool h264; /* true: H.264 limit, false: HEVC/AV1 limit */
+	int maxVideoBitrate;
+};
+
+/* Ingest limits from a platform's own streaming guide, for what OBS's
+ * service list (rtmp-services) doesn't provide. 0 means no limit. */
+struct MultistreamPlatformLimits {
+	uint32_t maxWidth;
+	uint32_t maxHeight;
+	uint32_t maxFps;
+	int maxAudioBitrate;
+	std::vector<std::string> codecs; /* empty: use OBS's service list */
+	std::vector<MultistreamBitrateLimit> bitrates;
+};
+
 struct MultistreamPlatformPreset {
 	const char *id;
 	const char *displayName;
 	const char *server;
 	const char *streamKeyUrl;
-	int defaultVideoBitrate;
+	/* Name in OBS's service list, which provides the maximum bitrates,
+	 * supported codecs and keyframe interval of the platform */
+	const char *obsServiceName;
+	const MultistreamPlatformLimits *limits;
 };
 
 const std::vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets();
@@ -47,12 +69,31 @@ struct MultistreamDestination {
 	bool enabled = true;
 
 	/* Only used in separate encoder mode */
+	bool maxQuality = false; /* stream at the platform's maximum quality */
+	std::string encoder;     /* empty = H.264 encoder of the main stream's type */
+
+	/* Custom quality */
 	int videoBitrate = 6000;
 	int audioBitrate = 160;
-	std::string encoder; /* empty = same encoder type as the main stream */
-	uint32_t width = 0;  /* 0 = use the output resolution */
+	uint32_t width = 0; /* 0 = use the output resolution */
 	uint32_t height = 0;
 };
+
+/* The quality a destination is streamed at */
+struct MultistreamQuality {
+	uint32_t width = 0; /* 0 = output resolution */
+	uint32_t height = 0;
+	uint32_t fpsDivisor = 1;
+	int videoBitrate = 0;
+	int audioBitrate = 0;
+};
+
+bool MultistreamPlatformSupportsMaxQuality(const std::string &platform);
+std::vector<std::string> GetMultistreamPlatformCodecs(const std::string &platform);
+MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const std::string &codec);
+/* Finds an encoder for a codec, preferring the same type (NVENC, QSV, AMF,
+ * VideoToolbox, ...) as the preferred encoder */
+std::string FindMultistreamEncoder(const char *preferredId, const std::string &codec);
 
 class MultistreamOutput : public QObject {
 	Q_OBJECT
@@ -172,7 +213,7 @@ private:
 	bool AcquireSeparateEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary,
 				     bool dynamicBitrate);
 	obs_encoder_t *CreateVideoEncoder(const MultistreamDestination &dest, const std::string &encoderId,
-					  obs_output_t *primary);
+					  const MultistreamQuality &quality, obs_output_t *primary);
 	obs_encoder_t *CreateAudioEncoder(const std::string &name, int bitrate, size_t mixer);
 	void SetState(const std::string &id, MultistreamState state, const QString &lastError = QString());
 	bool IsCurrentRun(const std::string &id, uint64_t serial) const;
