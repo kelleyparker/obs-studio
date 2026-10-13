@@ -38,16 +38,18 @@ struct MultistreamBitrateLimit {
 /* Encoder settings a platform's guide recommends for an encoder type */
 struct MultistreamEncoderSettings {
 	const char *encoderIdPart; /* applies to encoders whose id contains this */
-	const char *json;
+	const char *json;          /* "x264opts" is appended to, not replaced */
 };
 
-/* Ingest limits from a platform's own streaming guide, for what OBS's
- * service list (rtmp-services) doesn't provide. 0 means no limit. */
+/* Ingest limits from a platform's own streaming guide. They take precedence
+ * over OBS's service list (rtmp-services), which only fills in what a guide
+ * doesn't specify. 0 means not specified. */
 struct MultistreamPlatformLimits {
 	uint32_t maxWidth;
 	uint32_t maxHeight;
 	uint32_t maxFps;
 	int maxAudioBitrate;
+	int maxSurroundAudioBitrate;     /* for more than two channels */
 	std::vector<std::string> codecs; /* empty: use OBS's service list */
 	std::vector<MultistreamBitrateLimit> bitrates;
 	std::vector<MultistreamEncoderSettings> encoderSettings;
