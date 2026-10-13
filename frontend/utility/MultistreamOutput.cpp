@@ -34,6 +34,20 @@ static MultistreamMode ModeFromString(const char *mode)
  * - YouTube: https://support.google.com/youtube/answer/2853702
  * - Kick:    https://help.kick.com/en/articles/7066931-how-to-stream-on-kick-com */
 
+/* Kick: H.264, CBR, 1920x1080, 1,000-8,000 kbps (the maximum is used), 2 s
+ * keyframe interval. For NVENC: P6 preset, ultra low latency tuning, single
+ * pass, main profile, no B-frames, no look-ahead, psycho visual tuning. */
+static const MultistreamPlatformLimits KickLimits = {
+	1920,
+	1080,
+	0,
+	0,
+	{"h264"},
+	{{1080, 0, true, 8000}},
+	{{"obs_nvenc", R"({"preset": "p6", "tune": "ull", "multipass": "disabled", "profile": "main", "bf": 0,)"
+		       R"( "lookahead": false, "adaptive_quantization": true})"}},
+};
+
 const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 {
 	static const vector<MultistreamPlatformPreset> presets = {
@@ -42,7 +56,7 @@ const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream",
 		 "Twitch", nullptr},
 		{"kick", "Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
-		 "https://kick.com/dashboard/settings/stream", nullptr, nullptr},
+		 "https://kick.com/dashboard/settings/stream", nullptr, &KickLimits},
 		{"custom", "Custom RTMP", "", "", nullptr, nullptr},
 	};
 	return presets;
@@ -125,7 +139,7 @@ static int LookupMaxVideoBitrate(const MultistreamPlatformLimits &limits, uint32
 		    (limit.height == largest->height && limit.fps > largest->fps)) {
 			largest = &limit;
 		}
-		if (limit.height < height || (double)limit.fps + 0.5 < fps) {
+		if (limit.height < height || (limit.fps && (double)limit.fps + 0.5 < fps)) {
 			continue;
 		}
 		if (!best || limit.height < best->height || (limit.height == best->height && limit.fps < best->fps)) {
@@ -516,6 +530,22 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 		/* A custom bitrate is the user's explicit choice */
 		if (!dest.maxQuality) {
 			obs_data_set_int(settings, "bitrate", quality.videoBitrate);
+		}
+	}
+
+	/* Encoder settings from the platform's streaming guide */
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(dest.platform);
+	if (preset && preset->limits) {
+		for (const auto &guideSettings : preset->limits->encoderSettings) {
+			if (!strstr(encoderId.c_str(), guideSettings.encoderIdPart)) {
+				continue;
+			}
+			OBSDataAutoRelease data = obs_data_create_from_json(guideSettings.json);
+			if (data) {
+				obs_data_apply(settings, data);
+				blog(LOG_INFO, "[Multistream] '%s': %s settings from the %s streaming guide: %s",
+				     dest.name.c_str(), encoderId.c_str(), preset->displayName, guideSettings.json);
+			}
 		}
 	}
 

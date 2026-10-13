@@ -30,9 +30,15 @@ enum class MultistreamState {
 /* Maximum video bitrate for streams up to a resolution and frame rate */
 struct MultistreamBitrateLimit {
 	uint32_t height;
-	uint32_t fps;
-	bool h264; /* true: H.264 limit, false: HEVC/AV1 limit */
+	uint32_t fps; /* 0 = any frame rate */
+	bool h264;    /* true: H.264 limit, false: HEVC/AV1 limit */
 	int maxVideoBitrate;
+};
+
+/* Encoder settings a platform's guide recommends for an encoder type */
+struct MultistreamEncoderSettings {
+	const char *encoderIdPart; /* applies to encoders whose id contains this */
+	const char *json;
 };
 
 /* Ingest limits from a platform's own streaming guide, for what OBS's
@@ -44,6 +50,7 @@ struct MultistreamPlatformLimits {
 	int maxAudioBitrate;
 	std::vector<std::string> codecs; /* empty: use OBS's service list */
 	std::vector<MultistreamBitrateLimit> bitrates;
+	std::vector<MultistreamEncoderSettings> encoderSettings;
 };
 
 struct MultistreamPlatformPreset {
