@@ -23,6 +23,7 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cstring>
 
 using namespace std;
@@ -39,9 +40,17 @@ static QString QualitySummary(const MultistreamDestination &dest, MultistreamMod
 		return QTStr("Multistream.Quality.SameAsMain");
 	}
 
-	QString res = dest.width && dest.height ? QString("%1x%2").arg(dest.width).arg(dest.height)
-						: QTStr("Multistream.Resolution.Output");
-	return QString("%1 kbps / %2 kbps, %3").arg(dest.videoBitrate).arg(dest.audioBitrate).arg(res);
+	const char *codec = dest.encoder.empty() ? nullptr : obs_get_encoder_codec(dest.encoder.c_str());
+	MultistreamQuality quality = ResolveMultistreamQuality(dest, codec ? codec : "h264");
+
+	QString res = quality.width && quality.height ? QString("%1x%2").arg(quality.width).arg(quality.height)
+						      : QTStr("Multistream.Resolution.Output");
+	QString summary = QString("%1 kbps / %2 kbps, %3").arg(quality.videoBitrate).arg(quality.audioBitrate).arg(res);
+
+	if (dest.maxQuality && MultistreamPlatformSupportsMaxQuality(dest.platform)) {
+		return QTStr("Multistream.Quality.MaxShort").arg(summary);
+	}
+	return summary;
 }
 
 static bool IsValidStreamUrl(const QString &url)
@@ -93,6 +102,16 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	form->addRow(QString(), keyLink);
 
 	/* Per-destination quality (separate encoder mode only) */
+	qualityMode = new QComboBox(this);
+	qualityMode->addItem(QTStr("Multistream.Quality.Max"));
+	qualityMode->addItem(QTStr("Multistream.Quality.Custom"));
+
+	encoder = new QComboBox(this);
+
+	maxSummary = new QLabel(this);
+	maxSummary->setWordWrap(true);
+	maxSummary->setTextFormat(Qt::PlainText);
+
 	videoBitrate = new QSpinBox(this);
 	videoBitrate->setRange(200, 100000);
 	videoBitrate->setSingleStep(250);
@@ -100,38 +119,31 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 
 	audioBitrate = new QComboBox(this);
 	for (const auto &[bitrate, encoderId] : GetSimpleAACEncoderBitrateMap()) {
-		audioBitrate->addItem(QString::number(bitrate), bitrate);
-	}
-
-	encoder = new QComboBox(this);
-	encoder->addItem(QTStr("Multistream.Encoder.SameAsMain"), QString());
-	const char *id;
-	for (size_t idx = 0; obs_enum_encoder_types(idx, &id); idx++) {
-		if (obs_get_encoder_type(id) != OBS_ENCODER_VIDEO) {
-			continue;
-		}
-		if (strcmp(obs_get_encoder_codec(id), "h264") != 0) {
-			continue;
-		}
-		if (obs_get_encoder_caps(id) & (OBS_ENCODER_CAP_DEPRECATED | OBS_ENCODER_CAP_INTERNAL)) {
-			continue;
-		}
-		encoder->addItem(QString::fromUtf8(obs_encoder_get_display_name(id)), QString::fromUtf8(id));
+		audioBitrate->addItem(QString("%1 kbps").arg(bitrate), bitrate);
 	}
 
 	resolution = new QComboBox(this);
 	resolution->setEditable(true);
 	resolution->addItem(QTStr("Multistream.Resolution.Output"), QString());
+	resolution->addItem("3840x2160", "3840x2160");
+	resolution->addItem("2560x1440", "2560x1440");
 	resolution->addItem("1920x1080", "1920x1080");
 	resolution->addItem("1280x720", "1280x720");
 	resolution->addItem("852x480", "852x480");
 
+	customQuality = new QWidget(this);
+	QFormLayout *customForm = new QFormLayout(customQuality);
+	customForm->setContentsMargins(0, 0, 0, 0);
+	customForm->addRow(QTStr("Basic.Settings.Output.VideoBitrate"), videoBitrate);
+	customForm->addRow(QTStr("Basic.Settings.Output.AudioBitrate"), audioBitrate);
+	customForm->addRow(QTStr("Basic.Settings.Video.ScaledResolution"), resolution);
+
 	QGroupBox *quality = new QGroupBox(QTStr("Multistream.Quality"), this);
 	QFormLayout *qualityForm = new QFormLayout(quality);
-	qualityForm->addRow(QTStr("Basic.Settings.Output.VideoBitrate"), videoBitrate);
-	qualityForm->addRow(QTStr("Basic.Settings.Output.AudioBitrate"), audioBitrate);
+	qualityForm->addRow(QTStr("Multistream.Quality"), qualityMode);
 	qualityForm->addRow(QTStr("Basic.Settings.Output.Encoder.Video"), encoder);
-	qualityForm->addRow(QTStr("Basic.Settings.Video.ScaledResolution"), resolution);
+	qualityForm->addRow(maxSummary);
+	qualityForm->addRow(customQuality);
 
 	QLabel *sharedNote = new QLabel(QTStr("Multistream.Quality.SharedNote"), this);
 	sharedNote->setWordWrap(true);
@@ -158,12 +170,10 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	server->setText(QString::fromStdString(dest.server));
 	key->setText(QString::fromStdString(dest.key));
 	videoBitrate->setValue(dest.videoBitrate);
+	qualityMode->setCurrentIndex(dest.maxQuality ? 0 : 1);
 
 	int audioIdx = audioBitrate->findData(FindClosestAvailableSimpleAACBitrate(dest.audioBitrate));
 	audioBitrate->setCurrentIndex(audioIdx >= 0 ? audioIdx : 0);
-
-	int encoderIdx = encoder->findData(QString::fromStdString(dest.encoder));
-	encoder->setCurrentIndex(encoderIdx >= 0 ? encoderIdx : 0);
 
 	if (dest.width && dest.height) {
 		resolution->setCurrentText(QString("%1x%2").arg(dest.width).arg(dest.height));
@@ -172,7 +182,12 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	}
 
 	connect(platform, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::PlatformChanged);
+	connect(qualityMode, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::UpdateQuality);
+	connect(encoder, &QComboBox::currentIndexChanged, this, &MultistreamDestinationDialog::UpdateQuality);
 	PlatformChanged();
+
+	int encoderIdx = encoder->findData(QString::fromStdString(dest.encoder));
+	encoder->setCurrentIndex(encoderIdx >= 0 ? encoderIdx : 0);
 
 	/* PlatformChanged() fills in defaults; keep saved values when editing */
 	if (!dest.server.empty()) {
@@ -211,10 +226,6 @@ void MultistreamDestinationDialog::PlatformChanged()
 	if (serverIsPreset) {
 		server->setText(QString::fromUtf8(preset->server));
 	}
-	if (destination.server.empty()) {
-		videoBitrate->setValue(preset->defaultVideoBitrate);
-	}
-
 	if (*preset->streamKeyUrl) {
 		keyLink->setText(
 			QString("<a href=\"%1\">%2</a>")
@@ -224,6 +235,96 @@ void MultistreamDestinationDialog::PlatformChanged()
 	} else {
 		keyLink->setVisible(false);
 	}
+
+	UpdateEncoders();
+	UpdateQuality();
+}
+
+string MultistreamDestinationDialog::CurrentPlatform() const
+{
+	return platform->currentData().toString().toStdString();
+}
+
+bool MultistreamDestinationDialog::MaxQualitySelected() const
+{
+	return qualityMode->currentIndex() == 0 && MultistreamPlatformSupportsMaxQuality(CurrentPlatform());
+}
+
+void MultistreamDestinationDialog::UpdateEncoders()
+{
+	QSignalBlocker blocker(encoder);
+	QString selected = encoder->currentData().toString();
+
+	encoder->clear();
+	encoder->addItem(QTStr("Multistream.Encoder.SameAsMain"), QString());
+
+	/* Only encoders for codecs the platform accepts */
+	vector<string> codecs = GetMultistreamPlatformCodecs(CurrentPlatform());
+	const char *id;
+	for (size_t idx = 0; obs_enum_encoder_types(idx, &id); idx++) {
+		if (obs_get_encoder_type(id) != OBS_ENCODER_VIDEO) {
+			continue;
+		}
+		if (obs_get_encoder_caps(id) & (OBS_ENCODER_CAP_DEPRECATED | OBS_ENCODER_CAP_INTERNAL)) {
+			continue;
+		}
+		const char *codec = obs_get_encoder_codec(id);
+		if (!codec || std::find(codecs.begin(), codecs.end(), codec) == codecs.end()) {
+			continue;
+		}
+		encoder->addItem(QString::fromUtf8(obs_encoder_get_display_name(id)), QString::fromUtf8(id));
+	}
+
+	int idx = encoder->findData(selected);
+	encoder->setCurrentIndex(idx >= 0 ? idx : 0);
+}
+
+void MultistreamDestinationDialog::UpdateQuality()
+{
+	bool supportsMax = MultistreamPlatformSupportsMaxQuality(CurrentPlatform());
+	{
+		QSignalBlocker blocker(qualityMode);
+		if (!supportsMax) {
+			qualityMode->setCurrentIndex(1);
+		}
+		qualityMode->setEnabled(supportsMax);
+	}
+
+	bool max = MaxQualitySelected();
+	customQuality->setVisible(!max);
+	maxSummary->setVisible(max);
+	if (!max) {
+		return;
+	}
+
+	MultistreamDestination preview;
+	preview.platform = CurrentPlatform();
+	preview.maxQuality = true;
+
+	string encoderId = encoder->currentData().toString().toStdString();
+	const char *codec = encoderId.empty() ? "h264" : obs_get_encoder_codec(encoderId.c_str());
+	MultistreamQuality quality = ResolveMultistreamQuality(preview, codec ? codec : "h264");
+
+	obs_video_info ovi = {};
+	obs_get_video_info(&ovi);
+	uint32_t width = quality.width ? quality.width : ovi.output_width;
+	uint32_t height = quality.height ? quality.height : ovi.output_height;
+	double fps = ovi.fps_den ? (double)ovi.fps_num / (double)ovi.fps_den / (double)quality.fpsDivisor : 0.0;
+
+	QString text = QTStr("Multistream.Quality.MaxSummary")
+			       .arg(QString("%1x%2").arg(width).arg(height))
+			       .arg(QString::number(fps, 'g', 4))
+			       .arg(quality.videoBitrate)
+			       .arg(quality.audioBitrate);
+
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(CurrentPlatform());
+	if (preset && preset->limits && preset->limits->maxHeight > ovi.output_height) {
+		text += "\n" + QTStr("Multistream.Quality.RaiseOutput")
+				       .arg(QString::fromUtf8(preset->displayName))
+				       .arg(preset->limits->maxHeight);
+	}
+
+	maxSummary->setText(text);
 }
 
 void MultistreamDestinationDialog::accept()
@@ -247,11 +348,16 @@ void MultistreamDestinationDialog::accept()
 		return;
 	}
 
+	bool maxQuality = MaxQualitySelected();
 	uint32_t width = 0;
 	uint32_t height = 0;
 	QString res = resolution->currentText().trimmed();
 	QRegularExpressionMatch match = QRegularExpression("^\\s*(\\d+)\\s*[xX]\\s*(\\d+)\\s*$").match(res);
-	if (match.hasMatch()) {
+	if (maxQuality) {
+		/* Keep the stored custom resolution; it isn't used */
+		width = destination.width;
+		height = destination.height;
+	} else if (match.hasMatch()) {
 		width = match.captured(1).toUInt();
 		height = match.captured(2).toUInt();
 		if (width < 16 || height < 16 || width > 16384 || height > 16384 || (width % 2) || (height % 2)) {
@@ -269,6 +375,7 @@ void MultistreamDestinationDialog::accept()
 	destination.platform = platform->currentData().toString().toStdString();
 	destination.server = serverUrl.toStdString();
 	destination.key = streamKey.toStdString();
+	destination.maxQuality = maxQuality;
 	destination.videoBitrate = videoBitrate->value();
 	destination.audioBitrate = audioBitrate->currentData().toInt();
 	destination.encoder = encoder->currentData().toString().toStdString();
@@ -444,8 +551,11 @@ void OBSMultistreamSettings::UpdateBandwidth()
 	int extraKbps = 0;
 	for (const auto &dest : destinations) {
 		if (dest.enabled) {
+			const char *codec = dest.encoder.empty() ? nullptr
+								 : obs_get_encoder_codec(dest.encoder.c_str());
+			MultistreamQuality quality = ResolveMultistreamQuality(dest, codec ? codec : "h264");
 			count++;
-			extraKbps += dest.videoBitrate + dest.audioBitrate;
+			extraKbps += quality.videoBitrate + quality.audioBitrate;
 		}
 	}
 
@@ -466,6 +576,7 @@ void OBSMultistreamSettings::UpdateButtons()
 void OBSMultistreamSettings::AddDestination()
 {
 	MultistreamDestination dest;
+	dest.maxQuality = true;
 
 	/* Suggest the first platform that isn't configured yet */
 	for (const auto &preset : GetMultistreamPlatformPresets()) {

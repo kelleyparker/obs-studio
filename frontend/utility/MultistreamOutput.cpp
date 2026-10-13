@@ -9,6 +9,8 @@
 
 #include <util/config-file.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 using namespace std;
@@ -26,14 +28,22 @@ static MultistreamMode ModeFromString(const char *mode)
 	return strcmp(mode, "separate") == 0 ? MultistreamMode::Separate : MultistreamMode::Shared;
 }
 
+/* Limits from the platforms' own streaming guides, for what OBS's service
+ * list doesn't provide (resolution, frame rate and per-resolution bitrates):
+ * - Twitch:  https://help.twitch.tv/s/article/broadcasting-guidelines
+ * - YouTube: https://support.google.com/youtube/answer/2853702
+ * - Kick:    https://help.kick.com/en/articles/7066931-how-to-stream-on-kick-com */
+
 const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 {
 	static const vector<MultistreamPlatformPreset> presets = {
-		{"youtube", "YouTube", "rtmps://a.rtmps.youtube.com:443/live2", "https://studio.youtube.com/", 6000},
-		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream", 6000},
+		{"youtube", "YouTube", "rtmps://a.rtmps.youtube.com:443/live2", "https://studio.youtube.com/",
+		 "YouTube - RTMPS", nullptr},
+		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream",
+		 "Twitch", nullptr},
 		{"kick", "Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
-		 "https://kick.com/dashboard/settings/stream", 8000},
-		{"custom", "Custom RTMP", "", "", 6000},
+		 "https://kick.com/dashboard/settings/stream", nullptr, nullptr},
+		{"custom", "Custom RTMP", "", "", nullptr, nullptr},
 	};
 	return presets;
 }
@@ -46,6 +56,217 @@ const MultistreamPlatformPreset *FindMultistreamPlatformPreset(const string &id)
 		}
 	}
 	return nullptr;
+}
+
+/* An rtmp-services entry to query a platform's recommendations from */
+static obs_service_t *CreatePlatformService(const MultistreamPlatformPreset *preset)
+{
+	if (!preset || !preset->obsServiceName) {
+		return nullptr;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "service", preset->obsServiceName);
+	return obs_service_create_private("rtmp_common", "multistream_platform_info", settings);
+}
+
+bool MultistreamPlatformSupportsMaxQuality(const string &platform)
+{
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(platform);
+	return preset && (preset->obsServiceName || preset->limits);
+}
+
+vector<string> GetMultistreamPlatformCodecs(const string &platform)
+{
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(platform);
+	if (preset && preset->limits && !preset->limits->codecs.empty()) {
+		return preset->limits->codecs;
+	}
+
+	OBSServiceAutoRelease service = CreatePlatformService(preset);
+	if (service) {
+		vector<string> codecs;
+		for (const char **codec = obs_service_get_supported_video_codecs(service); codec && *codec; codec++) {
+			codecs.emplace_back(*codec);
+		}
+		if (!codecs.empty()) {
+			return codecs;
+		}
+	}
+
+	/* Custom servers may support Enhanced RTMP, it's up to the user */
+	if (platform == "custom") {
+		return {"h264", "hevc", "av1"};
+	}
+	return {"h264"};
+}
+
+static uint32_t RoundToEven(double value)
+{
+	return (uint32_t)(lround(value / 2.0) * 2);
+}
+
+static int LookupMaxVideoBitrate(const MultistreamPlatformLimits &limits, uint32_t height, double fps, bool h264)
+{
+	bool hasCodecLimits = false;
+	for (const auto &limit : limits.bitrates) {
+		hasCodecLimits = hasCodecLimits || limit.h264 == h264;
+	}
+
+	/* The limit of the smallest resolution/frame rate that covers the
+	 * stream, or the largest one if the stream exceeds all of them */
+	const MultistreamBitrateLimit *best = nullptr;
+	const MultistreamBitrateLimit *largest = nullptr;
+	for (const auto &limit : limits.bitrates) {
+		if (hasCodecLimits && limit.h264 != h264) {
+			continue;
+		}
+		if (!largest || limit.height > largest->height ||
+		    (limit.height == largest->height && limit.fps > largest->fps)) {
+			largest = &limit;
+		}
+		if (limit.height < height || (double)limit.fps + 0.5 < fps) {
+			continue;
+		}
+		if (!best || limit.height < best->height || (limit.height == best->height && limit.fps < best->fps)) {
+			best = &limit;
+		}
+	}
+
+	best = best ? best : largest;
+	return best ? best->maxVideoBitrate : 0;
+}
+
+static int LargestAacBitrateUpTo(int bitrate)
+{
+	int result = 0;
+	for (const auto &[available, encoderId] : GetSimpleAACEncoderBitrateMap()) {
+		if (available <= bitrate || !result) {
+			result = available;
+		}
+	}
+	return result ? result : bitrate;
+}
+
+MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const string &codec)
+{
+	MultistreamQuality quality;
+
+	if (!dest.maxQuality || !MultistreamPlatformSupportsMaxQuality(dest.platform)) {
+		quality.width = dest.width;
+		quality.height = dest.height;
+		quality.videoBitrate = dest.videoBitrate;
+		quality.audioBitrate = FindClosestAvailableSimpleAACBitrate(dest.audioBitrate);
+		return quality;
+	}
+
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(dest.platform);
+	const MultistreamPlatformLimits *limits = preset->limits;
+
+	obs_video_info ovi = {};
+	bool hasVideo = obs_get_video_info(&ovi);
+	uint32_t width = hasVideo ? ovi.output_width : 1920;
+	uint32_t height = hasVideo ? ovi.output_height : 1080;
+	double fps = hasVideo ? (double)ovi.fps_num / (double)ovi.fps_den : 60.0;
+
+	int videoBitrate = 0;
+	int audioBitrate = 0;
+
+	if (limits) {
+		/* Scale down to the platform's maximum resolution, keeping the
+		 * aspect ratio. Never scale up: that only costs bandwidth. */
+		double scale = 1.0;
+		if (limits->maxWidth && width > limits->maxWidth) {
+			scale = min(scale, (double)limits->maxWidth / (double)width);
+		}
+		if (limits->maxHeight && height > limits->maxHeight) {
+			scale = min(scale, (double)limits->maxHeight / (double)height);
+		}
+		if (scale < 1.0) {
+			width = RoundToEven((double)width * scale);
+			height = RoundToEven((double)height * scale);
+			quality.width = width;
+			quality.height = height;
+		}
+
+		/* Skip frames to stay within the platform's maximum frame rate */
+		if (limits->maxFps && fps > (double)limits->maxFps + 0.01) {
+			quality.fpsDivisor = (uint32_t)ceil(fps / (double)limits->maxFps - 0.001);
+			fps /= (double)quality.fpsDivisor;
+		}
+
+		videoBitrate = LookupMaxVideoBitrate(*limits, height, fps, codec == "h264");
+		audioBitrate = limits->maxAudioBitrate;
+	}
+
+	/* OBS's service list is the upper bound */
+	OBSServiceAutoRelease service = CreatePlatformService(preset);
+	if (service) {
+		int maxVideoBitrate = 0;
+		int maxAudioBitrate = 0;
+		obs_service_get_max_bitrate(service, &maxVideoBitrate, &maxAudioBitrate);
+		if (maxVideoBitrate > 0 && (!videoBitrate || videoBitrate > maxVideoBitrate)) {
+			videoBitrate = maxVideoBitrate;
+		}
+		if (maxAudioBitrate > 0 && (!audioBitrate || audioBitrate > maxAudioBitrate)) {
+			audioBitrate = maxAudioBitrate;
+		}
+	}
+
+	quality.videoBitrate = videoBitrate > 0 ? videoBitrate : dest.videoBitrate;
+	quality.audioBitrate = LargestAacBitrateUpTo(audioBitrate > 0 ? audioBitrate : dest.audioBitrate);
+	return quality;
+}
+
+string FindMultistreamEncoder(const char *preferredId, const string &codec)
+{
+	auto codecOf = [](const char *id) -> string {
+		const char *encoderCodec = id ? obs_get_encoder_codec(id) : nullptr;
+		return encoderCodec ? encoderCodec : "";
+	};
+
+	if (preferredId && *preferredId && codecOf(preferredId) == codec) {
+		return preferredId;
+	}
+
+	static const char *families[] = {"nvenc", "qsv", "amf", "videotoolbox", "vaapi", "x264", "x265", "aom", "svt"};
+	string family;
+	for (const char *candidate : families) {
+		if (preferredId && strstr(preferredId, candidate)) {
+			family = candidate;
+			break;
+		}
+	}
+	bool preferTexture = preferredId && strstr(preferredId, "tex");
+
+	string best;
+	int bestScore = -1;
+	const char *id;
+	for (size_t idx = 0; obs_enum_encoder_types(idx, &id); idx++) {
+		if (obs_get_encoder_type(id) != OBS_ENCODER_VIDEO || codecOf(id) != codec) {
+			continue;
+		}
+		if (obs_get_encoder_caps(id) & (OBS_ENCODER_CAP_DEPRECATED | OBS_ENCODER_CAP_INTERNAL)) {
+			continue;
+		}
+
+		int score = 0;
+		if (!family.empty() && strstr(id, family.c_str())) {
+			score += 2;
+		}
+		if (preferTexture == !!strstr(id, "tex")) {
+			score += 1;
+		}
+		if (codec == "h264" && strcmp(id, "obs_x264") == 0) {
+			score += 1; /* the usual software fallback */
+		}
+		if (score > bestScore) {
+			best = id;
+			bestScore = score;
+		}
+	}
+
+	return best;
 }
 
 static string HostFromUrl(const string &url)
@@ -67,10 +288,14 @@ static int GetEncoderBitrate(obs_encoder_t *encoder)
 	return (int)obs_data_get_int(settings, "bitrate");
 }
 
-/* Platforms that only reliably accept H.264 video over RTMP */
-static bool PlatformRequiresH264(const string &platform)
+static bool PlatformSupportsCodec(const string &platform, const char *codec)
 {
-	return platform == "kick" || platform == "twitch";
+	for (const auto &supported : GetMultistreamPlatformCodecs(platform)) {
+		if (supported == codec) {
+			return true;
+		}
+	}
+	return false;
 }
 
 MultistreamOutput::MultistreamOutput(QObject *parent) : QObject(parent) {}
@@ -108,6 +333,7 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			obs_data_set_default_int(item, "video_bitrate", 6000);
 			obs_data_set_default_int(item, "audio_bitrate", 160);
 			obs_data_set_default_string(item, "platform", "custom");
+			obs_data_set_default_string(item, "quality", "custom");
 
 			MultistreamDestination dest;
 			dest.id = obs_data_get_string(item, "id");
@@ -116,6 +342,7 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			dest.server = obs_data_get_string(item, "server");
 			dest.key = obs_data_get_string(item, "key");
 			dest.enabled = obs_data_get_bool(item, "enabled");
+			dest.maxQuality = strcmp(obs_data_get_string(item, "quality"), "max") == 0;
 			dest.videoBitrate = (int)obs_data_get_int(item, "video_bitrate");
 			dest.audioBitrate = (int)obs_data_get_int(item, "audio_bitrate");
 			dest.encoder = obs_data_get_string(item, "encoder");
@@ -152,6 +379,7 @@ bool MultistreamOutput::Save() const
 		obs_data_set_string(item, "server", dest.server.c_str());
 		obs_data_set_string(item, "key", dest.key.c_str());
 		obs_data_set_bool(item, "enabled", dest.enabled);
+		obs_data_set_string(item, "quality", dest.maxQuality ? "max" : "custom");
 		obs_data_set_int(item, "video_bitrate", dest.videoBitrate);
 		obs_data_set_int(item, "audio_bitrate", dest.audioBitrate);
 		obs_data_set_string(item, "encoder", dest.encoder.c_str());
@@ -262,7 +490,7 @@ obs_encoder_t *MultistreamOutput::CreateAudioEncoder(const string &name, int bit
 }
 
 obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestination &dest, const string &encoderId,
-						     obs_output_t *primary)
+						     const MultistreamQuality &quality, obs_output_t *primary)
 {
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
 
@@ -275,9 +503,26 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 		obs_data_apply(settings, primarySettings);
 	}
 
-	obs_data_set_int(settings, "bitrate", dest.videoBitrate);
+	obs_data_set_int(settings, "bitrate", quality.videoBitrate);
 	obs_data_set_string(settings, "rate_control", "CBR");
 	obs_data_set_int(settings, "keyint_sec", MultistreamKeyframeIntervalSec);
+
+	/* The platform's recommendations from OBS's service list (keyframe
+	 * interval, maximum bitrate, x264 options, ...) */
+	OBSServiceAutoRelease platformService = CreatePlatformService(FindMultistreamPlatformPreset(dest.platform));
+	if (platformService) {
+		obs_service_apply_encoder_settings(platformService, settings, nullptr);
+
+		/* A custom bitrate is the user's explicit choice */
+		if (!dest.maxQuality) {
+			obs_data_set_int(settings, "bitrate", quality.videoBitrate);
+		}
+	}
+
+	int keyint = (int)obs_data_get_int(settings, "keyint_sec");
+	if (keyint <= 0 || keyint > MultistreamKeyframeIntervalSec) {
+		obs_data_set_int(settings, "keyint_sec", MultistreamKeyframeIntervalSec);
+	}
 
 	string name = "multistream_video_" + dest.name;
 	obs_encoder_t *encoder = obs_video_encoder_create(encoderId.c_str(), name.c_str(), settings, nullptr);
@@ -287,13 +532,18 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 		return nullptr;
 	}
 
-	if (dest.width && dest.height) {
+	if (quality.width && quality.height) {
 		obs_video_info ovi;
-		if (!obs_get_video_info(&ovi) || ovi.output_width != dest.width || ovi.output_height != dest.height) {
+		if (!obs_get_video_info(&ovi) || ovi.output_width != quality.width ||
+		    ovi.output_height != quality.height) {
 			/* Rescale on the GPU instead of on the CPU */
-			obs_encoder_set_scaled_size(encoder, dest.width, dest.height);
+			obs_encoder_set_scaled_size(encoder, quality.width, quality.height);
 			obs_encoder_set_gpu_scale_type(encoder, OBS_SCALE_BICUBIC);
 		}
+	}
+
+	if (quality.fpsDivisor > 1) {
+		obs_encoder_set_frame_rate_divisor(encoder, quality.fpsDivisor);
 	}
 
 	obs_encoder_set_video(encoder, obs_get_video());
@@ -336,6 +586,7 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 {
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
 	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
+	const char *primaryVideoId = primaryVideo ? obs_encoder_get_id(primaryVideo) : "obs_x264";
 
 	string encoderId = dest.encoder;
 	if (!encoderId.empty() && !obs_get_encoder_codec(encoderId.c_str())) {
@@ -344,18 +595,36 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 		     encoderId.c_str(), dest.name.c_str());
 		encoderId.clear();
 	}
+	if (!encoderId.empty() && !PlatformSupportsCodec(dest.platform, obs_get_encoder_codec(encoderId.c_str()))) {
+		blog(LOG_WARNING, "[Multistream] %s doesn't support %s video, using H.264 for '%s'",
+		     dest.platform.c_str(), obs_get_encoder_codec(encoderId.c_str()), dest.name.c_str());
+		encoderId = FindMultistreamEncoder(encoderId.c_str(), "h264");
+	}
 	if (encoderId.empty()) {
-		encoderId = IsCodec(primaryVideo, "h264") ? obs_encoder_get_id(primaryVideo) : "obs_x264";
+		/* An H.264 encoder of the same type as the main stream's, so a
+		 * hardware encoder stays on the hardware encoder */
+		encoderId = FindMultistreamEncoder(primaryVideoId, "h264");
+	}
+	if (encoderId.empty()) {
+		return false;
 	}
 
-	int audioBitrate = FindClosestAvailableSimpleAACBitrate(dest.audioBitrate);
+	MultistreamQuality quality = ResolveMultistreamQuality(dest, obs_get_encoder_codec(encoderId.c_str()));
 	size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
+
+	string resolution = quality.width ? to_string(quality.width) + "x" + to_string(quality.height)
+					  : string("output resolution");
+	string frameRate = quality.fpsDivisor > 1 ? ", output frame rate / " + to_string(quality.fpsDivisor) : "";
+	blog(LOG_INFO, "[Multistream] '%s' (%s quality): %s, %s%s, %d kbps video, %d kbps audio", dest.name.c_str(),
+	     dest.maxQuality ? "platform maximum" : "custom", encoderId.c_str(), resolution.c_str(), frameRate.c_str(),
+	     quality.videoBitrate, quality.audioBitrate);
 
 	/* Destinations with identical settings share their encoders instead of
 	 * encoding the same thing twice. With dynamic bitrate every destination
 	 * needs its own encoders, as the bitrate is adjusted per connection. */
-	string key = encoderId + "|" + to_string(dest.videoBitrate) + "|" + to_string(dest.width) + "x" +
-		     to_string(dest.height) + "|" + to_string(audioBitrate) + "|" + to_string(mixer);
+	string key = encoderId + "|" + to_string(quality.videoBitrate) + "|" + to_string(quality.width) + "x" +
+		     to_string(quality.height) + "/" + to_string(quality.fpsDivisor) + "|" +
+		     to_string(quality.audioBitrate) + "|" + to_string(mixer) + "|" + dest.platform;
 	if (dynamicBitrate) {
 		key += "|" + dest.id;
 	}
@@ -367,15 +636,15 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 		return true;
 	}
 
-	run.videoEncoder = CreateVideoEncoder(dest, encoderId, primary);
+	run.videoEncoder = CreateVideoEncoder(dest, encoderId, quality, primary);
 
 	/* The main stream's audio encoder is already running, so reusing it
 	 * doesn't pair it with the new video encoder. */
 	if (IsCodec(primaryAudio, "aac") && obs_encoder_active(primaryAudio) &&
-	    GetEncoderBitrate(primaryAudio) == audioBitrate) {
+	    GetEncoderBitrate(primaryAudio) == quality.audioBitrate) {
 		run.audioEncoder = obs_encoder_get_ref(primaryAudio);
 	} else {
-		run.audioEncoder = CreateAudioEncoder("multistream_audio_" + dest.name, audioBitrate, mixer);
+		run.audioEncoder = CreateAudioEncoder("multistream_audio_" + dest.name, quality.audioBitrate, mixer);
 	}
 
 	if (!run.videoEncoder || !run.audioEncoder) {
@@ -410,16 +679,10 @@ bool MultistreamOutput::Start(const string &id)
 
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
 	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo;
-	if (useShared && !IsCodec(primaryVideo, "h264")) {
-		if (PlatformRequiresH264(dest->platform)) {
-			blog(LOG_INFO,
-			     "[Multistream] '%s' needs H.264 but the main stream uses %s; using a separate encoder",
-			     dest->name.c_str(), obs_encoder_get_codec(primaryVideo));
-			useShared = false;
-		} else {
-			blog(LOG_WARNING, "[Multistream] '%s' receives %s video; make sure the platform supports it",
-			     dest->name.c_str(), obs_encoder_get_codec(primaryVideo));
-		}
+	if (useShared && !PlatformSupportsCodec(dest->platform, obs_encoder_get_codec(primaryVideo))) {
+		blog(LOG_INFO, "[Multistream] %s doesn't support the main stream's %s video; using a separate encoder",
+		     dest->platform.c_str(), obs_encoder_get_codec(primaryVideo));
+		useShared = false;
 	}
 
 	auto run = make_unique<Running>();

@@ -12,6 +12,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTableWidget;
+class QWidget;
 
 class MultistreamDestinationDialog : public QDialog {
 	Q_OBJECT
@@ -30,12 +31,19 @@ private:
 	QLineEdit *key;
 	QPushButton *showKey;
 	QLabel *keyLink;
+	QComboBox *qualityMode;
+	QComboBox *encoder;
+	QLabel *maxSummary;
+	QWidget *customQuality;
 	QSpinBox *videoBitrate;
 	QComboBox *audioBitrate;
-	QComboBox *encoder;
 	QComboBox *resolution;
 
+	std::string CurrentPlatform() const;
+	bool MaxQualitySelected() const;
 	void PlatformChanged();
+	void UpdateEncoders();
+	void UpdateQuality();
 	void accept() override;
 };
 
