@@ -35,6 +35,17 @@ struct MultistreamBitrateLimit {
 	int maxVideoBitrate;
 };
 
+/* A quality preset from a platform's streaming guide */
+struct MultistreamQualityPreset {
+	const char *id;
+	const char *encoderName;      /* group in the UI, e.g. "NVIDIA NVENC" */
+	const char *preferredEncoder; /* encoder id to use when available */
+	uint32_t width;
+	uint32_t height;
+	uint32_t fps;
+	int videoBitrate;
+};
+
 /* Encoder settings a platform's guide recommends for an encoder type */
 struct MultistreamEncoderSettings {
 	const char *encoderIdPart; /* applies to encoders whose id contains this */
@@ -53,6 +64,7 @@ struct MultistreamPlatformLimits {
 	std::vector<std::string> codecs; /* empty: use OBS's service list */
 	std::vector<MultistreamBitrateLimit> bitrates;
 	std::vector<MultistreamEncoderSettings> encoderSettings;
+	std::vector<MultistreamQualityPreset> qualityPresets;
 };
 
 struct MultistreamPlatformPreset {
@@ -69,6 +81,12 @@ struct MultistreamPlatformPreset {
 const std::vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets();
 const MultistreamPlatformPreset *FindMultistreamPlatformPreset(const std::string &id);
 
+enum class MultistreamQualityMode {
+	Custom,
+	Max,    /* the platform's maximum quality */
+	Preset, /* a preset from the platform's streaming guide */
+};
+
 struct MultistreamDestination {
 	std::string id;
 	std::string name;
@@ -78,8 +96,9 @@ struct MultistreamDestination {
 	bool enabled = true;
 
 	/* Only used in separate encoder mode */
-	bool maxQuality = false; /* stream at the platform's maximum quality */
-	std::string encoder;     /* empty = H.264 encoder of the main stream's type */
+	MultistreamQualityMode quality = MultistreamQualityMode::Custom;
+	std::string qualityPreset; /* id of the preset in Preset mode */
+	std::string encoder;       /* empty = H.264 encoder of the main stream's type */
 
 	/* Custom quality */
 	int videoBitrate = 6000;
@@ -98,6 +117,9 @@ struct MultistreamQuality {
 };
 
 bool MultistreamPlatformSupportsMaxQuality(const std::string &platform);
+const MultistreamQualityPreset *FindMultistreamQualityPreset(const std::string &platform, const std::string &id);
+/* The quality mode a destination effectively uses on its platform */
+MultistreamQualityMode GetMultistreamQualityMode(const MultistreamDestination &dest);
 std::vector<std::string> GetMultistreamPlatformCodecs(const std::string &platform);
 MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const std::string &codec);
 /* Finds an encoder for a codec, preferring the same type (NVENC, QSV, AMF,

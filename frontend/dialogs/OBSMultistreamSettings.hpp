@@ -4,6 +4,7 @@
 
 #include <QDialog>
 
+class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -32,7 +33,11 @@ private:
 	QPushButton *showKey;
 	QLabel *keyLink;
 	QComboBox *qualityMode;
+	QLabel *encoderLabel;
 	QComboBox *encoder;
+	QWidget *presetBox;
+	QButtonGroup *presetGroup;
+	std::vector<std::string> presetIds;
 	QLabel *maxSummary;
 	QWidget *customQuality;
 	QSpinBox *videoBitrate;
@@ -40,9 +45,12 @@ private:
 	QComboBox *resolution;
 
 	std::string CurrentPlatform() const;
-	bool MaxQualitySelected() const;
+	MultistreamQualityMode SelectedMode() const;
+	std::string SelectedPreset() const;
 	void PlatformChanged();
 	void UpdateEncoders();
+	void UpdateModes();
+	void UpdatePresets();
 	void UpdateQuality();
 	void accept() override;
 };
