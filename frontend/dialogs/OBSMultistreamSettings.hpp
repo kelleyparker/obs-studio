@@ -12,7 +12,6 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTableWidget;
-class QWidget;
 
 class MultistreamDestinationDialog : public QDialog {
 	Q_OBJECT
@@ -31,7 +30,6 @@ private:
 	QLineEdit *key;
 	QPushButton *showKey;
 	QLabel *keyLink;
-	QWidget *qualityGroup;
 	QSpinBox *videoBitrate;
 	QComboBox *audioBitrate;
 	QComboBox *encoder;

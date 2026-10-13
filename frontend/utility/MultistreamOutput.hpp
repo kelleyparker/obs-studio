@@ -23,6 +23,7 @@ enum class MultistreamState {
 	Connecting,
 	Live,
 	Reconnecting,
+	Stopping,
 	Error,
 };
 
@@ -91,12 +92,17 @@ public:
 
 	bool PrimaryLive() const { return !!primaryOutput; }
 
+	/* Adjusts the main stream's video encoder settings for the platforms
+	 * that receive the same encoded stream in shared mode. */
+	void ApplyPrimaryEncoderSettings(obs_data_t *videoSettings) const;
+
 	bool Start(const std::string &id);
 	void Stop(const std::string &id, bool force = false);
 	void StopAll(bool force = false);
 
 	bool Active() const;
 	bool IsActive(const std::string &id) const;
+	bool IsStopping(const std::string &id) const;
 	Status GetStatus(const std::string &id) const;
 
 	static std::string GenerateId();
@@ -110,10 +116,15 @@ private:
 	struct SignalContext {
 		MultistreamOutput *self;
 		std::string id;
+		/* Distinguishes runs of the same destination so that a late
+		 * queued callback from a previous run can't affect a new one */
+		uint64_t serial;
 	};
 
 	/* Member order matters: signals are disconnected before the output is
-	 * released, and the output is released before its encoders/service. */
+	 * released, and the output is released before its encoders/service.
+	 * The encoder references are always strong references, whether the
+	 * encoders are owned by this destination or shared. */
 	struct Running {
 		std::unique_ptr<SignalContext> context;
 		OBSServiceAutoRelease service;
@@ -132,6 +143,16 @@ private:
 		QString lastError;
 	};
 
+	/* Encoders shared between destinations. Weak references, so encoders
+	 * are freed as soon as no destination uses them anymore. Video and
+	 * audio encoders are only ever shared together: libobs pairs a new
+	 * audio encoder with the new video encoder it is started with, so an
+	 * audio encoder must never be shared with a different video encoder. */
+	struct EncoderPair {
+		OBSWeakEncoderAutoRelease video;
+		OBSWeakEncoderAutoRelease audio;
+	};
+
 	bool enabled = false;
 	MultistreamMode mode = MultistreamMode::Shared;
 	std::vector<MultistreamDestination> destinations;
@@ -139,20 +160,27 @@ private:
 
 	OBSWeakOutputAutoRelease primaryOutput;
 	bool primarySharedEncoders = true;
-	OBSEncoderAutoRelease sharedAudioEncoder;
 
+	OBSWeakEncoderAutoRelease sharedModeAudioEncoder;
+	std::map<std::string, EncoderPair> separateModeEncoders;
+
+	uint64_t nextSerial = 0;
 	std::map<std::string, std::unique_ptr<Running>> running;
 	std::map<std::string, StateInfo> states;
 
-	obs_encoder_t *CreateVideoEncoder(const MultistreamDestination &dest, obs_output_t *primary);
+	bool AcquireSharedEncoders(Running &run, obs_output_t *primary);
+	bool AcquireSeparateEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary,
+				     bool dynamicBitrate);
+	obs_encoder_t *CreateVideoEncoder(const MultistreamDestination &dest, const std::string &encoderId,
+					  obs_output_t *primary);
 	obs_encoder_t *CreateAudioEncoder(const std::string &name, int bitrate, size_t mixer);
-	obs_encoder_t *GetSharedAudioEncoder(obs_output_t *primary);
 	void SetState(const std::string &id, MultistreamState state, const QString &lastError = QString());
+	bool IsCurrentRun(const std::string &id, uint64_t serial) const;
 
-	void OnStarted(const std::string &id);
-	void OnStopped(const std::string &id, int code, const QString &lastError);
-	void OnReconnect(const std::string &id);
-	void OnReconnectSuccess(const std::string &id);
+	void OnStarted(const std::string &id, uint64_t serial);
+	void OnStopped(const std::string &id, uint64_t serial, int code, const QString &lastError);
+	void OnReconnect(const std::string &id, uint64_t serial);
+	void OnReconnectSuccess(const std::string &id, uint64_t serial);
 
 	static void OBSOutputStart(void *data, calldata_t *params);
 	static void OBSOutputStop(void *data, calldata_t *params);

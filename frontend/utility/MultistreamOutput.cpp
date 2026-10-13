@@ -30,7 +30,7 @@ const vector<MultistreamPlatformPreset> &GetMultistreamPlatformPresets()
 		{"youtube", "YouTube", "rtmps://a.rtmps.youtube.com:443/live2", "https://studio.youtube.com/", 6000},
 		{"twitch", "Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream", 6000},
 		{"kick", "Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
-		 "https://dashboard.kick.com/channel/stream", 8000},
+		 "https://kick.com/dashboard/settings/stream", 8000},
 		{"custom", "Custom RTMP", "", "", 6000},
 	};
 	return presets;
@@ -52,6 +52,23 @@ static string HostFromUrl(const string &url)
 	start = start == string::npos ? 0 : start + 3;
 	size_t end = url.find_first_of(":/", start);
 	return url.substr(start, end == string::npos ? string::npos : end - start);
+}
+
+static bool IsCodec(obs_encoder_t *encoder, const char *codec)
+{
+	return encoder && strcmp(obs_encoder_get_codec(encoder), codec) == 0;
+}
+
+static int GetEncoderBitrate(obs_encoder_t *encoder)
+{
+	OBSDataAutoRelease settings = obs_encoder_get_settings(encoder);
+	return (int)obs_data_get_int(settings, "bitrate");
+}
+
+/* Platforms that only reliably accept H.264 video over RTMP */
+static bool PlatformRequiresH264(const string &platform)
+{
+	return platform == "kick" || platform == "twitch";
 }
 
 MultistreamOutput::MultistreamOutput(QObject *parent) : QObject(parent) {}
@@ -198,6 +215,31 @@ void MultistreamOutput::PrimaryStopped(bool force)
 	emit PrimaryStateChanged(false);
 }
 
+void MultistreamOutput::ApplyPrimaryEncoderSettings(obs_data_t *videoSettings) const
+{
+	if (!enabled || mode != MultistreamMode::Shared) {
+		return;
+	}
+
+	bool hasDestinations = false;
+	for (const auto &dest : destinations) {
+		hasDestinations = hasDestinations || dest.enabled;
+	}
+	if (!hasDestinations) {
+		return;
+	}
+
+	/* Twitch, YouTube and Kick all require a keyframe at least every two
+	 * seconds. It also lets destinations that join the already running
+	 * encoder start right away, as they have to wait for a keyframe. */
+	int keyint = (int)obs_data_get_int(videoSettings, "keyint_sec");
+	if (keyint <= 0 || keyint > MultistreamKeyframeIntervalSec) {
+		obs_data_set_int(videoSettings, "keyint_sec", MultistreamKeyframeIntervalSec);
+		blog(LOG_INFO, "[Multistream] Using a %d s keyframe interval for the shared stream",
+		     MultistreamKeyframeIntervalSec);
+	}
+}
+
 obs_encoder_t *MultistreamOutput::CreateAudioEncoder(const string &name, int bitrate, size_t mixer)
 {
 	bitrate = FindClosestAvailableSimpleAACBitrate(bitrate);
@@ -217,42 +259,10 @@ obs_encoder_t *MultistreamOutput::CreateAudioEncoder(const string &name, int bit
 	return encoder;
 }
 
-obs_encoder_t *MultistreamOutput::GetSharedAudioEncoder(obs_output_t *primary)
-{
-	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
-
-	/* RTMP destinations need AAC; reuse the main stream's encoder if it
-	 * already is AAC, otherwise (e.g. Opus for WHIP) encode AAC once and
-	 * share it between all destinations. */
-	if (primaryAudio && strcmp(obs_encoder_get_codec(primaryAudio), "aac") == 0) {
-		return primaryAudio;
-	}
-
-	if (!sharedAudioEncoder) {
-		size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
-		int bitrate = 160;
-		if (primaryAudio) {
-			OBSDataAutoRelease settings = obs_encoder_get_settings(primaryAudio);
-			int primaryBitrate = (int)obs_data_get_int(settings, "bitrate");
-			if (primaryBitrate > 0) {
-				bitrate = primaryBitrate;
-			}
-		}
-		sharedAudioEncoder = CreateAudioEncoder("multistream_shared_aac", bitrate, mixer);
-	}
-
-	return sharedAudioEncoder;
-}
-
-obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestination &dest, obs_output_t *primary)
+obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestination &dest, const string &encoderId,
+						     obs_output_t *primary)
 {
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
-	bool primaryIsH264 = primaryVideo && strcmp(obs_encoder_get_codec(primaryVideo), "h264") == 0;
-
-	string encoderId = dest.encoder;
-	if (encoderId.empty()) {
-		encoderId = primaryIsH264 ? obs_encoder_get_id(primaryVideo) : "obs_x264";
-	}
 
 	OBSDataAutoRelease settings = obs_data_create();
 
@@ -278,12 +288,101 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 	if (dest.width && dest.height) {
 		obs_video_info ovi;
 		if (!obs_get_video_info(&ovi) || ovi.output_width != dest.width || ovi.output_height != dest.height) {
+			/* Rescale on the GPU instead of on the CPU */
 			obs_encoder_set_scaled_size(encoder, dest.width, dest.height);
+			obs_encoder_set_gpu_scale_type(encoder, OBS_SCALE_BICUBIC);
 		}
 	}
 
 	obs_encoder_set_video(encoder, obs_get_video());
 	return encoder;
+}
+
+bool MultistreamOutput::AcquireSharedEncoders(Running &run, obs_output_t *primary)
+{
+	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
+	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
+	if (!primaryVideo) {
+		return false;
+	}
+
+	run.videoEncoder = obs_encoder_get_ref(primaryVideo);
+
+	/* RTMP needs AAC: reuse the main stream's audio encoder if it is AAC,
+	 * otherwise (e.g. Opus for WHIP) encode AAC once for every destination.
+	 * The video encoder is already running, so libobs won't pair them. */
+	if (IsCodec(primaryAudio, "aac")) {
+		run.audioEncoder = obs_encoder_get_ref(primaryAudio);
+		return true;
+	}
+
+	run.audioEncoder = obs_weak_encoder_get_encoder(sharedModeAudioEncoder);
+	if (!run.audioEncoder) {
+		size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
+		int bitrate = primaryAudio ? GetEncoderBitrate(primaryAudio) : 0;
+		run.audioEncoder = CreateAudioEncoder("multistream_shared_aac", bitrate > 0 ? bitrate : 160, mixer);
+		if (run.audioEncoder) {
+			sharedModeAudioEncoder = obs_encoder_get_weak_encoder(run.audioEncoder);
+		}
+	}
+
+	return !!run.audioEncoder;
+}
+
+bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary,
+						bool dynamicBitrate)
+{
+	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
+	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
+
+	string encoderId = dest.encoder;
+	if (!encoderId.empty() && !obs_get_encoder_codec(encoderId.c_str())) {
+		/* e.g. a profile from a machine with a different GPU */
+		blog(LOG_WARNING, "[Multistream] Encoder '%s' for '%s' is not available, using the default encoder",
+		     encoderId.c_str(), dest.name.c_str());
+		encoderId.clear();
+	}
+	if (encoderId.empty()) {
+		encoderId = IsCodec(primaryVideo, "h264") ? obs_encoder_get_id(primaryVideo) : "obs_x264";
+	}
+
+	int audioBitrate = FindClosestAvailableSimpleAACBitrate(dest.audioBitrate);
+	size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
+
+	/* Destinations with identical settings share their encoders instead of
+	 * encoding the same thing twice. With dynamic bitrate every destination
+	 * needs its own encoders, as the bitrate is adjusted per connection. */
+	string key = encoderId + "|" + to_string(dest.videoBitrate) + "|" + to_string(dest.width) + "x" +
+		     to_string(dest.height) + "|" + to_string(audioBitrate) + "|" + to_string(mixer);
+	if (dynamicBitrate) {
+		key += "|" + dest.id;
+	}
+
+	EncoderPair &cached = separateModeEncoders[key];
+	run.videoEncoder = obs_weak_encoder_get_encoder(cached.video);
+	run.audioEncoder = obs_weak_encoder_get_encoder(cached.audio);
+	if (run.videoEncoder && run.audioEncoder) {
+		return true;
+	}
+
+	run.videoEncoder = CreateVideoEncoder(dest, encoderId, primary);
+
+	/* The main stream's audio encoder is already running, so reusing it
+	 * doesn't pair it with the new video encoder. */
+	if (IsCodec(primaryAudio, "aac") && obs_encoder_active(primaryAudio) &&
+	    GetEncoderBitrate(primaryAudio) == audioBitrate) {
+		run.audioEncoder = obs_encoder_get_ref(primaryAudio);
+	} else {
+		run.audioEncoder = CreateAudioEncoder("multistream_audio_" + dest.name, audioBitrate, mixer);
+	}
+
+	if (!run.videoEncoder || !run.audioEncoder) {
+		return false;
+	}
+
+	cached.video = obs_encoder_get_weak_encoder(run.videoEncoder);
+	cached.audio = obs_encoder_get_weak_encoder(run.audioEncoder);
+	return true;
 }
 
 bool MultistreamOutput::Start(const string &id)
@@ -304,8 +403,25 @@ bool MultistreamOutput::Start(const string &id)
 		return false;
 	}
 
+	config_t *config = OBSBasic::Get()->Config();
+	bool dynamicBitrate = config_get_bool(config, "Output", "DynamicBitrate");
+
+	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
+	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo;
+	if (useShared && !IsCodec(primaryVideo, "h264")) {
+		if (PlatformRequiresH264(dest->platform)) {
+			blog(LOG_INFO,
+			     "[Multistream] '%s' needs H.264 but the main stream uses %s; using a separate encoder",
+			     dest->name.c_str(), obs_encoder_get_codec(primaryVideo));
+			useShared = false;
+		} else {
+			blog(LOG_WARNING, "[Multistream] '%s' receives %s video; make sure the platform supports it",
+			     dest->name.c_str(), obs_encoder_get_codec(primaryVideo));
+		}
+	}
+
 	auto run = make_unique<Running>();
-	run->context = make_unique<SignalContext>(SignalContext{this, id});
+	run->context = make_unique<SignalContext>(SignalContext{this, id, ++nextSerial});
 
 	OBSDataAutoRelease serviceSettings = obs_data_create();
 	obs_data_set_string(serviceSettings, "server", dest->server.c_str());
@@ -316,49 +432,20 @@ bool MultistreamOutput::Start(const string &id)
 
 	string outputName = "multistream_" + dest->name;
 	run->output = obs_output_create("rtmp_output", outputName.c_str(), nullptr, nullptr);
-	if (!run->service || !run->output) {
+
+	bool encodersAcquired = useShared ? AcquireSharedEncoders(*run, primary)
+					  : AcquireSeparateEncoders(*run, *dest, primary, dynamicBitrate);
+
+	if (!run->service || !run->output || !encodersAcquired) {
 		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.CreateFailed"));
 		return false;
 	}
 
-	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders &&
-			 obs_output_get_video_encoder(primary) != nullptr;
-
-	obs_encoder_t *videoEncoder = nullptr;
-	obs_encoder_t *audioEncoder = nullptr;
-
-	if (useShared) {
-		videoEncoder = obs_output_get_video_encoder(primary);
-		audioEncoder = GetSharedAudioEncoder(primary);
-
-		if (strcmp(obs_encoder_get_codec(videoEncoder), "h264") != 0) {
-			blog(LOG_WARNING,
-			     "[Multistream] '%s' is using the shared %s encoder; some platforms only accept H.264",
-			     dest->name.c_str(), obs_encoder_get_codec(videoEncoder));
-		}
-	} else {
-		run->videoEncoder = CreateVideoEncoder(*dest, primary);
-
-		obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
-		size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
-		string audioName = "multistream_audio_" + dest->name;
-		run->audioEncoder = CreateAudioEncoder(audioName, dest->audioBitrate, mixer);
-
-		videoEncoder = run->videoEncoder;
-		audioEncoder = run->audioEncoder;
-	}
-
-	if (!videoEncoder || !audioEncoder) {
-		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.CreateFailed"));
-		return false;
-	}
-
-	obs_output_set_video_encoder(run->output, videoEncoder);
-	obs_output_set_audio_encoder(run->output, audioEncoder, 0);
+	obs_output_set_video_encoder(run->output, run->videoEncoder);
+	obs_output_set_audio_encoder(run->output, run->audioEncoder, 0);
 	obs_output_set_service(run->output, run->service);
 
 	/* Use the same network settings as the main stream */
-	config_t *config = OBSBasic::Get()->Config();
 	bool reconnect = config_get_bool(config, "Output", "Reconnect");
 	int retryDelay = (int)config_get_uint(config, "Output", "RetryDelay");
 	int maxRetries = (int)config_get_uint(config, "Output", "MaxRetries");
@@ -375,7 +462,9 @@ bool MultistreamOutput::Start(const string &id)
 	obs_data_set_bool(outputSettings, "low_latency_mode_enabled",
 			  config_get_bool(config, "Output", "LowLatencyEnable"));
 #endif
-	obs_data_set_bool(outputSettings, "dyn_bitrate", config_get_bool(config, "Output", "DynamicBitrate"));
+	/* A congested destination must not lower the bitrate of an encoder
+	 * that the main stream and the other platforms use as well. */
+	obs_data_set_bool(outputSettings, "dyn_bitrate", dynamicBitrate && !useShared);
 	obs_output_update(run->output, outputSettings);
 
 	obs_output_set_delay(run->output, useDelay ? delaySec : 0, preserveDelay ? OBS_OUTPUT_DELAY_PRESERVE : 0);
@@ -425,6 +514,7 @@ void MultistreamOutput::Stop(const string &id, bool force)
 	if (force) {
 		obs_output_force_stop(output);
 	} else {
+		SetState(id, MultistreamState::Stopping);
 		obs_output_stop(output);
 	}
 }
@@ -448,6 +538,12 @@ bool MultistreamOutput::Active() const
 bool MultistreamOutput::IsActive(const string &id) const
 {
 	return running.find(id) != running.end();
+}
+
+bool MultistreamOutput::IsStopping(const string &id) const
+{
+	auto it = running.find(id);
+	return it != running.end() && it->second->stopRequested;
 }
 
 MultistreamOutput::Status MultistreamOutput::GetStatus(const string &id) const
@@ -479,24 +575,31 @@ void MultistreamOutput::SetState(const string &id, MultistreamState state, const
 	emit StatusChanged(QString::fromStdString(id));
 }
 
-void MultistreamOutput::OnStarted(const string &id)
+bool MultistreamOutput::IsCurrentRun(const string &id, uint64_t serial) const
 {
-	if (IsActive(id)) {
+	auto it = running.find(id);
+	return it != running.end() && it->second->context->serial == serial;
+}
+
+void MultistreamOutput::OnStarted(const string &id, uint64_t serial)
+{
+	if (IsCurrentRun(id, serial) && !IsStopping(id)) {
 		SetState(id, MultistreamState::Live);
 	}
 }
 
-void MultistreamOutput::OnStopped(const string &id, int code, const QString &lastError)
+void MultistreamOutput::OnStopped(const string &id, uint64_t serial, int code, const QString &lastError)
 {
-	auto it = running.find(id);
-	if (it == running.end()) {
+	if (!IsCurrentRun(id, serial)) {
 		return;
 	}
 
-	running.erase(it);
+	running.erase(id);
 
+	/* Nothing uses the cached encoders anymore */
 	if (running.empty()) {
-		sharedAudioEncoder = nullptr;
+		separateModeEncoders.clear();
+		sharedModeAudioEncoder = nullptr;
 	}
 
 	const MultistreamDestination *dest = FindDestination(id);
@@ -533,16 +636,16 @@ void MultistreamOutput::OnStopped(const string &id, int code, const QString &las
 	SetState(id, MultistreamState::Error, message);
 }
 
-void MultistreamOutput::OnReconnect(const string &id)
+void MultistreamOutput::OnReconnect(const string &id, uint64_t serial)
 {
-	if (IsActive(id)) {
+	if (IsCurrentRun(id, serial) && !IsStopping(id)) {
 		SetState(id, MultistreamState::Reconnecting);
 	}
 }
 
-void MultistreamOutput::OnReconnectSuccess(const string &id)
+void MultistreamOutput::OnReconnectSuccess(const string &id, uint64_t serial)
 {
-	if (IsActive(id)) {
+	if (IsCurrentRun(id, serial) && !IsStopping(id)) {
 		SetState(id, MultistreamState::Live);
 	}
 }
@@ -555,7 +658,8 @@ void MultistreamOutput::OBSOutputStart(void *data, calldata_t *)
 {
 	auto ctx = static_cast<SignalContext *>(data);
 	QMetaObject::invokeMethod(
-		ctx->self, [self = ctx->self, id = ctx->id]() { self->OnStarted(id); }, Qt::QueuedConnection);
+		ctx->self, [self = ctx->self, id = ctx->id, serial = ctx->serial]() { self->OnStarted(id, serial); },
+		Qt::QueuedConnection);
 }
 
 void MultistreamOutput::OBSOutputStop(void *data, calldata_t *params)
@@ -565,7 +669,9 @@ void MultistreamOutput::OBSOutputStop(void *data, calldata_t *params)
 	QString lastError = QString::fromUtf8(calldata_string(params, "last_error"));
 	QMetaObject::invokeMethod(
 		ctx->self,
-		[self = ctx->self, id = ctx->id, code, lastError]() { self->OnStopped(id, code, lastError); },
+		[self = ctx->self, id = ctx->id, serial = ctx->serial, code, lastError]() {
+			self->OnStopped(id, serial, code, lastError);
+		},
 		Qt::QueuedConnection);
 }
 
@@ -573,12 +679,15 @@ void MultistreamOutput::OBSOutputReconnect(void *data, calldata_t *)
 {
 	auto ctx = static_cast<SignalContext *>(data);
 	QMetaObject::invokeMethod(
-		ctx->self, [self = ctx->self, id = ctx->id]() { self->OnReconnect(id); }, Qt::QueuedConnection);
+		ctx->self, [self = ctx->self, id = ctx->id, serial = ctx->serial]() { self->OnReconnect(id, serial); },
+		Qt::QueuedConnection);
 }
 
 void MultistreamOutput::OBSOutputReconnectSuccess(void *data, calldata_t *)
 {
 	auto ctx = static_cast<SignalContext *>(data);
 	QMetaObject::invokeMethod(
-		ctx->self, [self = ctx->self, id = ctx->id]() { self->OnReconnectSuccess(id); }, Qt::QueuedConnection);
+		ctx->self,
+		[self = ctx->self, id = ctx->id, serial = ctx->serial]() { self->OnReconnectSuccess(id, serial); },
+		Qt::QueuedConnection);
 }

@@ -24,6 +24,8 @@ static QString StateText(MultistreamState state)
 		return QTStr("Multistream.Status.Live");
 	case MultistreamState::Reconnecting:
 		return QTStr("Multistream.Status.Reconnecting");
+	case MultistreamState::Stopping:
+		return QTStr("Multistream.Status.Stopping");
 	case MultistreamState::Error:
 		return QTStr("Multistream.Status.Error");
 	case MultistreamState::Offline:
@@ -39,6 +41,7 @@ static const char *StateClass(MultistreamState state)
 		return "text-success";
 	case MultistreamState::Connecting:
 	case MultistreamState::Reconnecting:
+	case MultistreamState::Stopping:
 		return "text-warning";
 	case MultistreamState::Error:
 		return "text-danger";
@@ -118,8 +121,8 @@ MultistreamDock::MultistreamDock(MultistreamOutput *multistream_, QWidget *paren
 		}
 	});
 
+	statsTimer.setInterval(1000);
 	connect(&statsTimer, &QTimer::timeout, this, &MultistreamDock::UpdateStats);
-	statsTimer.start(1000);
 
 	Rebuild();
 }
@@ -162,7 +165,9 @@ void MultistreamDock::Rebuild()
 				return;
 			}
 			if (multistream->IsActive(id)) {
-				multistream->Stop(id);
+				/* A second click while stopping (e.g. during a stream
+				 * delay) stops immediately, like the main stop button */
+				multistream->Stop(id, multistream->IsStopping(id));
 			} else {
 				multistream->Start(id);
 			}
@@ -192,6 +197,13 @@ void MultistreamDock::UpdatePrimary()
 	bool anyActive = multistream->Active();
 	startAll->setEnabled(live && !rows.empty());
 	stopAll->setEnabled(anyActive);
+
+	/* Only poll output statistics while something is streaming */
+	if (anyActive && !statsTimer.isActive()) {
+		statsTimer.start();
+	} else if (!anyActive && statsTimer.isActive()) {
+		statsTimer.stop();
+	}
 }
 
 void MultistreamDock::UpdateRow(const string &id)
@@ -209,7 +221,13 @@ void MultistreamDock::UpdateRow(const string &id)
 	row.status->setToolTip(status.lastError);
 	SetLabelClass(row.status, StateClass(status.state));
 
-	row.toggle->setText(active ? QTStr("Multistream.Dock.Stop") : QTStr("Multistream.Dock.Start"));
+	if (!active) {
+		row.toggle->setText(QTStr("Multistream.Dock.Start"));
+	} else if (multistream->IsStopping(id)) {
+		row.toggle->setText(QTStr("Multistream.Dock.ForceStop"));
+	} else {
+		row.toggle->setText(QTStr("Multistream.Dock.Stop"));
+	}
 	row.toggle->setEnabled(active || multistream->PrimaryLive());
 
 	if (!active) {

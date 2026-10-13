@@ -248,6 +248,8 @@ void AdvancedOutput::UpdateStreamSettings()
 		blog(LOG_WARNING, "User is ignoring service settings.");
 	}
 
+	ApplyMultistreamEncoderSettings(settings);
+
 	if (dynBitrate && strstr(streamEncoder, "nvenc") != nullptr) {
 		obs_data_set_bool(settings, "lookahead", false);
 	}
