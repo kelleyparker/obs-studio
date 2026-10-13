@@ -1,6 +1,11 @@
 name: Build Project
 on:
   workflow_call:
+    inputs:
+      platforms:
+        description: Platforms to build (any of windows, macos, ubuntu and flatpak)
+        type: string
+        default: windows macos ubuntu flatpak
 jobs:
   check-event:
     name: Event Data 🔎
@@ -59,6 +64,7 @@ jobs:
 
   macos-build:
     name: macOS 🍏
+    if: contains(inputs.platforms, 'macos')
     runs-on: macos-26
     needs: check-event
     strategy:
@@ -190,6 +196,7 @@ jobs:
 
   ubuntu-build:
     name: Ubuntu 🐧
+    if: contains(inputs.platforms, 'ubuntu')
     strategy:
       fail-fast: false
       matrix:
@@ -287,7 +294,7 @@ jobs:
 
   flatpak-build:
     name: Flatpak 📦
-    if: github.repository_owner == 'obsproject'
+    if: github.repository_owner == 'obsproject' && contains(inputs.platforms, 'flatpak')
     runs-on: ubuntu-26.04
     needs: check-event
     defaults:
@@ -416,6 +423,7 @@ jobs:
 
   windows-build:
     name: Windows 🪟
+    if: contains(inputs.platforms, 'windows')
     strategy:
       matrix:
         architecture: [x64]

@@ -92,12 +92,14 @@ jobs:
 
   build-project:
     name: Build 🧱
+    if: github.repository_owner == 'obsproject'
     uses: ./.github/workflows/build-project.yaml
     needs: cache-cleanup
     secrets: inherit
 
   analyze-project:
     name: Analyze 🔬
+    if: github.repository_owner == 'obsproject'
     uses: ./.github/workflows/analyze-project.yaml
     needs: cache-cleanup
     secrets: inherit
