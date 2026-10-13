@@ -9,7 +9,7 @@ Go live on YouTube, Twitch and Kick (or any RTMP/RTMPS server) at the same time 
 | `…-Windows-x64.zip` | Windows 10/11 and Windows Server (x64) |
 | `…-macOS-Apple.dmg` | Macs with Apple Silicon |
 | `…-Ubuntu-26.04-x86_64.deb` | Ubuntu 26.04 |
-| `…-Sources.tar.gz` | Source code |
+| `…-Sources.tar.*` | Source code |
 
 ### Setup
 

@@ -60,17 +60,22 @@ jobs:
               echo "::error::Expected one file matching ${pattern}, found ${#files[@]}"
               exit 1
             fi
-            # Keep the compression extension of tarballs
-            if [[ "${name}" == *.tar ]]; then
-              name="${name}.${files[0]##*.}"
-            fi
             cp -v "${files[0]}" "release/OBS-Studio-${RELEASE_TAG}-${name}"
           }
 
           collect 'obs-studio-*-windows-x64.zip' 'Windows-x64.zip'
           collect 'obs-studio-*-macos-apple.dmg' 'macOS-Apple.dmg'
           collect 'obs-studio-*-x86_64-ubuntu-gnu.deb' 'Ubuntu-26.04-x86_64.deb'
-          collect 'obs-studio-*-sources.tar.*' 'Sources.tar'
+
+          # The source tarball comes in more than one compression format
+          mapfile -t sources < <(find artifacts -type f -name 'obs-studio-*-sources.tar.*')
+          if (( ${#sources[@]} == 0 )); then
+            echo "::error::No source tarball found"
+            exit 1
+          fi
+          for file in "${sources[@]}"; do
+            cp -v "${file}" "release/OBS-Studio-${RELEASE_TAG}-Sources.tar.${file##*.}"
+          done
 
           cp .github/fork-release/notes.md notes.md
           {
