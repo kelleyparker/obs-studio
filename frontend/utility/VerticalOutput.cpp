@@ -90,8 +90,10 @@ vector<pair<string, string>> GetVerticalVideoEncoders()
 
 string GetDefaultVerticalVideoEncoder()
 {
-	/* Prefer hardware H.264 so the vertical encode doesn't add CPU load */
-	static const char *preferred[] = {"obs_nvenc_h264_tex", "obs_qsv11_v2", "h264_texture_amf", "obs_x264"};
+	/* Prefer hardware H.264 so the vertical encode doesn't add CPU load:
+	 * NVIDIA, Intel or AMD on Windows, Apple VideoToolbox on macOS */
+	static const char *preferred[] = {"obs_nvenc_h264_tex", "obs_qsv11_v2", "h264_texture_amf",
+					  "com.apple.videotoolbox.videoencoder.ave.avc", "obs_x264"};
 
 	vector<pair<string, string>> available = GetVerticalVideoEncoders();
 	for (const char *id : preferred) {

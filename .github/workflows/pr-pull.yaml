@@ -23,7 +23,7 @@ jobs:
     name: Build 🧱
     uses: ./.github/workflows/build-project.yaml
     with:
-      platforms: ${{ github.repository_owner == 'obsproject' && 'windows macos ubuntu flatpak' || 'windows' }}
+      platforms: ${{ github.repository_owner == 'obsproject' && 'windows macos ubuntu flatpak' || 'windows macos' }}
     secrets: inherit
     permissions:
       contents: read

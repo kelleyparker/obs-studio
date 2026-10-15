@@ -88,7 +88,8 @@ bool StartsWith(const string &str, const string &prefix)
 
 bool IsTemporaryFile(const string &name)
 {
-	return HasSuffix(name, ".bak") || HasSuffix(name, ".tmp") || HasSuffix(name, ".lock");
+	/* .DS_Store files are folder view settings that macOS's Finder creates */
+	return HasSuffix(name, ".bak") || HasSuffix(name, ".tmp") || HasSuffix(name, ".lock") || name == ".DS_Store";
 }
 
 bool ReadFile(const fs::path &path, string &data)
