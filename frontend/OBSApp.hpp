@@ -120,6 +120,7 @@ private:
 	std::unique_ptr<QStyle> invisibleCursorStyle;
 
 	void FindThemes();
+	void AddSharedStyles();
 
 	bool notify(QObject *receiver, QEvent *e) override;
 

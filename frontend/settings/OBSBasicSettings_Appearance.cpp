@@ -10,7 +10,18 @@ void OBSBasicSettings::InitAppearancePage()
 	savedTheme = App()->GetTheme();
 	const QString currentBaseTheme = savedTheme->isBaseTheme ? savedTheme->id : savedTheme->parent;
 
-	for (const OBSTheme &theme : App()->GetThemes()) {
+	/* Yami first, then the other themes by name */
+	auto baseThemes = App()->GetThemes();
+	std::sort(baseThemes.begin(), baseThemes.end(), [](const OBSTheme &a, const OBSTheme &b) -> bool {
+		bool aYami = a.id == "com.obsproject.Yami";
+		bool bYami = b.id == "com.obsproject.Yami";
+		if (aYami != bYami) {
+			return aYami;
+		}
+		return QString::compare(a.name, b.name, Qt::CaseInsensitive) < 0;
+	});
+
+	for (const OBSTheme &theme : baseThemes) {
 		if (theme.isBaseTheme && (HighContrastEnabled() || theme.isVisible || theme.id == currentBaseTheme)) {
 			ui->theme->addItem(theme.name, theme.id);
 		}
@@ -50,7 +61,13 @@ void OBSBasicSettings::LoadThemeList(bool reload)
 	ui->themeVariant->clear();
 
 	auto themes = App()->GetThemes();
+	/* "Default" first, then the other styles by name */
 	std::sort(themes.begin(), themes.end(), [](const OBSTheme &a, const OBSTheme &b) -> bool {
+		bool aDefault = a.name == "Default";
+		bool bDefault = b.name == "Default";
+		if (aDefault != bDefault) {
+			return aDefault;
+		}
 		return QString::compare(a.name, b.name, Qt::CaseInsensitive) < 0;
 	});
 

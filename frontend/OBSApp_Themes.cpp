@@ -547,6 +547,64 @@ void OBSApp::FindThemes()
 	for (const QString &name : invalid) {
 		themes.remove(name);
 	}
+
+	AddSharedStyles();
+}
+
+/* Styles in themes/Styles are accent colors that work with every theme, so
+ * each one is added as a variant (style) of every visible base theme. Light
+ * themes use the style's ".light.ovt" file when there is one. */
+void OBSApp::AddSharedStyles()
+{
+	string stylesDir;
+	if (!GetDataFilePath("themes/Styles/", stylesDir)) {
+		return;
+	}
+
+	QList<OBSTheme> styles;
+	QDirIterator it(QString::fromStdString(stylesDir), {"*.ovt"}, QDir::Files);
+	while (it.hasNext()) {
+		const QString path = it.next();
+		if (path.endsWith(".light.ovt")) {
+			continue;
+		}
+		auto style = ParseThemeMeta(path);
+		if (style) {
+			styles.push_back(std::move(*style));
+		}
+	}
+
+	QList<OBSTheme> bases;
+	for (const OBSTheme &theme : themes) {
+		if (theme.isBaseTheme && theme.isVisible) {
+			bases.push_back(theme);
+		}
+	}
+
+	for (const OBSTheme &base : bases) {
+		for (const OBSTheme &style : styles) {
+			OBSTheme variant = style;
+			variant.id = base.id + ".style." + style.filename.u8string().c_str();
+			variant.extends = base.id;
+			variant.parent = base.id;
+			variant.dependencies = base.dependencies;
+			variant.dependencies << base.id;
+			variant.isDark = base.isDark;
+			variant.isBaseTheme = false;
+			variant.isHighContrast = false;
+			variant.isVisible = true;
+
+			if (!base.isDark) {
+				filesystem::path light = style.location;
+				light.replace_extension(".light.ovt");
+				if (filesystem::exists(light)) {
+					variant.location = light;
+				}
+			}
+
+			themes[variant.id] = std::move(variant);
+		}
+	}
 }
 
 static bool ResolveVariable(const QHash<QString, OBSThemeVariable> &vars, OBSThemeVariable &var)
