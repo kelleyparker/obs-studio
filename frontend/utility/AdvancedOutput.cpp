@@ -719,12 +719,14 @@ bool AdvancedOutput::StartStreaming(obs_service_t *service)
 {
 	obs_output_set_service(streamOutput, service);
 
-	bool reconnect = config_get_bool(main->Config(), "Output", "Reconnect");
-	int retryDelay = config_get_int(main->Config(), "Output", "RetryDelay");
-	int maxRetries = config_get_int(main->Config(), "Output", "MaxRetries");
-	bool useDelay = config_get_bool(main->Config(), "Output", "DelayEnable");
-	int delaySec = config_get_int(main->Config(), "Output", "DelaySec");
-	bool preserveDelay = config_get_bool(main->Config(), "Output", "DelayPreserve");
+	/* Reconnecting and the stream delay are fixed at OBS's defaults;
+	 * Settings hides them */
+	bool reconnect = true;
+	int retryDelay = 2;
+	int maxRetries = 25;
+	bool useDelay = false;
+	int delaySec = 0;
+	bool preserveDelay = true;
 	/* The network settings are fixed at OBS's defaults; Settings hides
 	 * them */
 	const char *bindIP = "default";

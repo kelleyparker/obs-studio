@@ -361,6 +361,11 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	 * SimpleOutput::StartStreaming and AdvancedOutput::StartStreaming) */
 	ui->advNetworkGroupBox->setVisible(false);
 
+	/* Stream Delay (always off) and Automatically Reconnect (always on, 2 s,
+	 * 25 retries) are fixed as well */
+	ui->groupBox_5->setVisible(false);
+	ui->groupBox_7->setVisible(false);
+
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->updateChannelBox,     COMBO_CHANGED,  GENERAL_CHANGED);

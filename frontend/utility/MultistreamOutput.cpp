@@ -915,7 +915,6 @@ bool MultistreamOutput::Start(const string &id)
 		return false;
 	}
 
-	config_t *config = OBSBasic::Get()->Config();
 	bool dynamicBitrate = false; /* the network settings are fixed */
 
 	if (dest->vertical && !GetDestinationVideo(*dest)) {
@@ -957,13 +956,14 @@ bool MultistreamOutput::Start(const string &id)
 	obs_output_set_audio_encoder(run->output, run->audioEncoder, 0);
 	obs_output_set_service(run->output, run->service);
 
-	/* Use the same network settings as the main stream */
-	bool reconnect = config_get_bool(config, "Output", "Reconnect");
-	int retryDelay = (int)config_get_uint(config, "Output", "RetryDelay");
-	int maxRetries = (int)config_get_uint(config, "Output", "MaxRetries");
-	bool useDelay = config_get_bool(config, "Output", "DelayEnable");
-	int delaySec = (int)config_get_int(config, "Output", "DelaySec");
-	bool preserveDelay = config_get_bool(config, "Output", "DelayPreserve");
+	/* Reconnecting and the stream delay are fixed at OBS's defaults;
+	 * Settings hides them */
+	bool reconnect = true;
+	int retryDelay = 2;
+	int maxRetries = 25;
+	bool useDelay = false;
+	int delaySec = 0;
+	bool preserveDelay = true;
 
 	OBSDataAutoRelease outputSettings = obs_data_create();
 	/* The network settings are fixed at OBS's defaults */
