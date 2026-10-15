@@ -49,10 +49,11 @@ Windows x64 CI build that the owner has tested.
 
 ## Branches and workflow
 
-- **Development branch:** `claude/wonderful-hopper-3mrp6t`, which is several commits ahead of `master`.
-  Merge it to `master` only after the owner approves.
+- **Branches:** as of 2026-10-15 all work is on `master`, the only branch. The owner approved
+  merging `claude/wonderful-hopper-3mrp6t`, and it and the older branches were deleted. Do new
+  work on a `claude/**` branch and merge it to `master` only after the owner approves.
 - **CI:**
-  - Pushes to `claude/**` and pull requests build Windows x64 and macOS arm64
+  - Pushes to `master` and `claude/**`, and pull requests, build Windows x64 and macOS arm64
     (`.github/workflows/push.yaml`, `pr-pull.yaml`). The push workflow can also be started by hand
     with **Run workflow**.
   - A push that changes only `*.md` files does not start a build. For a new branch, GitHub only
@@ -64,9 +65,6 @@ Windows x64 CI build that the owner has tested.
 - **Releases:** pushing a `publish/**` branch runs `.github/workflows/fork-release.yaml`. It
   publishes the builds from a given `master` build run as a prerelease. The run id, SHA and tag are
   set in that file.
-- **Branches that can be deleted** (already merged or no longer needed): `ci/startup-check`,
-  `ci/limit-platforms`, `feature/multistream-max-quality` and `publish/multistream-1`. Claude could
-  not delete them (the push was refused), so the owner has to delete them on GitHub.
 
 ## Code conventions that CI checks
 
