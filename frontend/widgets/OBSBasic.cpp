@@ -1156,6 +1156,9 @@ void OBSBasic::OBSInit()
 	connect(verticalAction, &QAction::triggered, this, &OBSBasic::OpenVerticalSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, verticalAction);
 
+	connect(vertical.get(), &VerticalCanvas::CanvasClearing, multistream.get(),
+		[this]() { multistream->StopVertical(true); });
+
 	connect(verticalOutput.get(), &VerticalOutput::RecordingStarted, this, &OBSBasic::VerticalOutputStarted);
 	connect(verticalOutput.get(), &VerticalOutput::ReplayBufferStarted, this, &OBSBasic::VerticalOutputStarted);
 	connect(verticalOutput.get(), &VerticalOutput::RecordingStopped, this, &OBSBasic::VerticalOutputStopped);

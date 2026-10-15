@@ -264,6 +264,25 @@ static int LargestAacBitrateUpTo(int bitrate)
 	return result ? result : bitrate;
 }
 
+/* The video of the canvas a destination streams */
+static video_t *GetDestinationVideo(const MultistreamDestination &dest)
+{
+	if (!dest.vertical) {
+		return obs_get_video();
+	}
+	VerticalCanvas *vertical = OBSBasic::Get()->GetVerticalCanvas();
+	return vertical && vertical->Enabled() ? vertical->GetVideo() : nullptr;
+}
+
+static bool GetDestinationVideoInfo(const MultistreamDestination &dest, obs_video_info &ovi)
+{
+	if (!dest.vertical) {
+		return obs_get_video_info(&ovi);
+	}
+	VerticalCanvas *vertical = OBSBasic::Get()->GetVerticalCanvas();
+	return vertical && vertical->Enabled() && vertical->GetVideoInfo(ovi);
+}
+
 MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const string &codec)
 {
 	MultistreamQuality quality;
@@ -284,14 +303,20 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 						       : nullptr;
 
 	obs_video_info ovi = {};
-	bool hasVideo = obs_get_video_info(&ovi);
-	uint32_t width = hasVideo ? ovi.output_width : 1920;
-	uint32_t height = hasVideo ? ovi.output_height : 1080;
+	bool hasVideo = GetDestinationVideoInfo(dest, ovi);
+	uint32_t width = hasVideo ? ovi.output_width : (dest.vertical ? 1080 : 1920);
+	uint32_t height = hasVideo ? ovi.output_height : (dest.vertical ? 1920 : 1080);
 	double fps = hasVideo ? (double)ovi.fps_num / (double)ovi.fps_den : 60.0;
 
 	uint32_t maxWidth = qualityPreset ? qualityPreset->width : (limits ? limits->maxWidth : 0);
 	uint32_t maxHeight = qualityPreset ? qualityPreset->height : (limits ? limits->maxHeight : 0);
 	uint32_t maxFps = qualityPreset ? qualityPreset->fps : (limits ? limits->maxFps : 0);
+
+	/* The guides' limits are for landscape video; a portrait stream
+	 * (e.g. 1080x1920) has the same limits turned on their side. */
+	if (height > width) {
+		swap(maxWidth, maxHeight);
+	}
 
 	/* Scale down to the maximum resolution, keeping the aspect ratio. Never
 	 * scale up: that only costs bandwidth. */
@@ -321,7 +346,8 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 	if (qualityPreset) {
 		videoBitrate = qualityPreset->videoBitrate;
 	} else if (limits) {
-		videoBitrate = LookupMaxVideoBitrate(*limits, height, fps, codec == "h264");
+		/* The bitrate tables are by the short side ("1080p") */
+		videoBitrate = LookupMaxVideoBitrate(*limits, min(width, height), fps, codec == "h264");
 	}
 
 	if (limits) {
@@ -470,6 +496,7 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			dest.server = obs_data_get_string(item, "server");
 			dest.key = obs_data_get_string(item, "key");
 			dest.enabled = obs_data_get_bool(item, "enabled");
+			dest.vertical = strcmp(obs_data_get_string(item, "canvas"), "vertical") == 0;
 			const char *quality = obs_data_get_string(item, "quality");
 			dest.quality = strcmp(quality, "max") == 0      ? MultistreamQualityMode::Max
 				       : strcmp(quality, "preset") == 0 ? MultistreamQualityMode::Preset
@@ -511,6 +538,7 @@ bool MultistreamOutput::Save() const
 		obs_data_set_string(item, "server", dest.server.c_str());
 		obs_data_set_string(item, "key", dest.key.c_str());
 		obs_data_set_bool(item, "enabled", dest.enabled);
+		obs_data_set_string(item, "canvas", dest.vertical ? "vertical" : "main");
 		obs_data_set_string(item, "quality",
 				    dest.quality == MultistreamQualityMode::Max      ? "max"
 				    : dest.quality == MultistreamQualityMode::Preset ? "preset"
@@ -589,7 +617,8 @@ void MultistreamOutput::ApplyPrimaryEncoderSettings(obs_data_t *videoSettings) c
 
 	bool hasDestinations = false;
 	for (const auto &dest : destinations) {
-		hasDestinations = hasDestinations || dest.enabled;
+		/* Vertical destinations have their own encoder */
+		hasDestinations = hasDestinations || (dest.enabled && !dest.vertical);
 	}
 	if (!hasDestinations) {
 		return;
@@ -691,7 +720,7 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 
 	if (quality.width && quality.height) {
 		obs_video_info ovi;
-		if (!obs_get_video_info(&ovi) || ovi.output_width != quality.width ||
+		if (!GetDestinationVideoInfo(dest, ovi) || ovi.output_width != quality.width ||
 		    ovi.output_height != quality.height) {
 			/* Rescale on the GPU instead of on the CPU */
 			obs_encoder_set_scaled_size(encoder, quality.width, quality.height);
@@ -703,7 +732,7 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 		obs_encoder_set_frame_rate_divisor(encoder, quality.fpsDivisor);
 	}
 
-	obs_encoder_set_video(encoder, obs_get_video());
+	obs_encoder_set_video(encoder, GetDestinationVideo(dest));
 	return encoder;
 }
 
@@ -796,7 +825,8 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 	 * needs its own encoders, as the bitrate is adjusted per connection. */
 	string key = encoderId + "|" + to_string(quality.videoBitrate) + "|" + to_string(quality.width) + "x" +
 		     to_string(quality.height) + "/" + to_string(quality.fpsDivisor) + "|" +
-		     to_string(quality.audioBitrate) + "|" + to_string(mixer) + "|" + dest.platform;
+		     to_string(quality.audioBitrate) + "|" + to_string(mixer) + "|" + dest.platform +
+		     (dest.vertical ? "|vertical" : "|main");
 	if (dynamicBitrate) {
 		key += "|" + dest.id;
 	}
@@ -849,8 +879,14 @@ bool MultistreamOutput::Start(const string &id)
 	config_t *config = OBSBasic::Get()->Config();
 	bool dynamicBitrate = config_get_bool(config, "Output", "DynamicBitrate");
 
+	if (dest->vertical && !GetDestinationVideo(*dest)) {
+		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.VerticalOff"));
+		return false;
+	}
+
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
-	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo;
+	/* The main stream's encoders encode the main canvas */
+	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo && !dest->vertical;
 	if (useShared && !PlatformSupportsCodec(dest->platform, obs_encoder_get_codec(primaryVideo))) {
 		blog(LOG_INFO, "[Multistream] %s doesn't support the main stream's %s video; using a separate encoder",
 		     dest->platform.c_str(), obs_encoder_get_codec(primaryVideo));
@@ -961,6 +997,20 @@ void MultistreamOutput::StopAll(bool force)
 	vector<string> ids;
 	for (const auto &[id, run] : running) {
 		ids.push_back(id);
+	}
+	for (const auto &id : ids) {
+		Stop(id, force);
+	}
+}
+
+void MultistreamOutput::StopVertical(bool force)
+{
+	vector<string> ids;
+	for (const auto &[id, run] : running) {
+		const MultistreamDestination *dest = FindDestination(id);
+		if (dest && dest->vertical) {
+			ids.push_back(id);
+		}
 	}
 	for (const auto &id : ids) {
 		Stop(id, force);

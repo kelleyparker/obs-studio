@@ -94,6 +94,9 @@ struct MultistreamDestination {
 	std::string server;
 	std::string key;
 	bool enabled = true;
+	/* Streams the vertical canvas instead of the main canvas. Vertical
+	 * destinations always use their own encoder. */
+	bool vertical = false;
 
 	/* Only used in separate encoder mode */
 	MultistreamQualityMode quality = MultistreamQualityMode::Custom;
@@ -171,6 +174,8 @@ public:
 	bool Start(const std::string &id);
 	void Stop(const std::string &id, bool force = false);
 	void StopAll(bool force = false);
+	/* Stops the destinations that stream the vertical canvas */
+	void StopVertical(bool force = false);
 
 	bool Active() const;
 	bool IsActive(const std::string &id) const;

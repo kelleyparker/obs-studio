@@ -144,7 +144,11 @@ void MultistreamDock::Rebuild()
 	int line = 0;
 	for (const auto &dest : multistream->Destinations()) {
 		Row row;
-		row.name = new QLabel(QString::fromStdString(dest.name));
+		QString displayName = QString::fromStdString(dest.name);
+		if (dest.vertical) {
+			displayName += " " + QTStr("Multistream.Canvas.VerticalTag");
+		}
+		row.name = new QLabel(displayName);
 		row.status = new QLabel();
 		row.stats = new QLabel();
 		row.toggle = new QPushButton();

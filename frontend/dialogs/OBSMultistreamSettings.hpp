@@ -27,6 +27,7 @@ private:
 	MultistreamDestination destination;
 
 	QComboBox *platform;
+	QComboBox *canvas;
 	QLineEdit *name;
 	QLineEdit *server;
 	QLineEdit *key;
