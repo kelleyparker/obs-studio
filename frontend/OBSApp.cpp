@@ -773,11 +773,10 @@ bool OBSApp::InitLocale()
 {
 	ProfileScope("OBSApp::InitLocale");
 
-	const char *lang = config_get_string(userConfig, "General", "Language");
-	bool userLocale = config_has_user_value(userConfig, "General", "Language");
-	if (!userLocale || !lang || lang[0] == '\0') {
-		lang = DEFAULT_LANG;
-	}
+	/* OBS is always in English. It isn't a setting: a saved Language and the
+	 * system's preferred languages are ignored. */
+	const char *lang = DEFAULT_LANG;
+	bool userLocale = true;
 
 	locale = lang;
 

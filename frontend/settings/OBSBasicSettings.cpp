@@ -361,6 +361,10 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	 * SimpleOutput::StartStreaming and AdvancedOutput::StartStreaming) */
 	ui->advNetworkGroupBox->setVisible(false);
 
+	/* OBS is always in English (see OBSApp::InitLocale) */
+	ui->label->setVisible(false);
+	ui->language->setVisible(false);
+
 	/* Stream Delay (always off) and Automatically Reconnect (always on, 2 s,
 	 * 25 retries) are fixed as well */
 	ui->groupBox_5->setVisible(false);
@@ -3050,13 +3054,7 @@ void OBSBasicSettings::LoadSettings(bool changedOnly)
 
 void OBSBasicSettings::SaveGeneralSettings()
 {
-	int languageIndex = ui->language->currentIndex();
-	QVariant langData = ui->language->itemData(languageIndex);
-	string language = langData.toString().toStdString();
-
-	if (WidgetChanged(ui->language)) {
-		config_set_string(App()->GetUserConfig(), "General", "Language", language.c_str());
-	}
+	/* The language is always English (see OBSApp::InitLocale) */
 
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 	if (WidgetChanged(ui->enableAutoUpdates)) {
