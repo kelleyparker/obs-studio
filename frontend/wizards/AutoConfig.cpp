@@ -17,6 +17,24 @@
 
 #include "moc_AutoConfig.cpp"
 
+extern const char *get_simple_output_encoder(const char *encoder);
+
+/* The streaming encoder's settings, as Settings > Output (Advanced) saves
+ * them. There is no Simple output mode. */
+static std::filesystem::path StreamEncoderPath()
+{
+	return OBSBasic::Get()->GetCurrentProfile().path / "streamEncoder.json";
+}
+
+static OBSData LoadStreamEncoderSettings()
+{
+	OBSDataAutoRelease data = obs_data_create_from_json_file_safe(StreamEncoderPath().u8string().c_str(), "bak");
+	if (!data) {
+		data = obs_data_create();
+	}
+	return data.Get();
+}
+
 constexpr std::string_view OBSServiceFileName = "service.json";
 
 enum class ListOpt : int {
@@ -175,7 +193,9 @@ AutoConfig::AutoConfig(QWidget *parent) : QWizard(parent)
 
 	TestHardwareEncoding();
 
-	int bitrate = config_get_int(main->Config(), "SimpleOutput", "VBitrate");
+	OBSData streamEncoderSettings = LoadStreamEncoderSettings();
+	obs_data_set_default_int(streamEncoderSettings, "bitrate", 6000);
+	int bitrate = (int)obs_data_get_int(streamEncoderSettings, "bitrate");
 	bool multitrackVideoEnabled = config_has_user_value(main->Config(), "Stream1", "EnableMultitrackVideo")
 					      ? config_get_bool(main->Config(), "Stream1", "EnableMultitrackVideo")
 					      : true;
@@ -337,9 +357,21 @@ void AutoConfig::SaveStreamSettings()
 	/* ---------------------------------- */
 	/* save stream settings               */
 
-	config_set_int(main->Config(), "SimpleOutput", "VBitrate", idealBitrate);
-	config_set_string(main->Config(), "SimpleOutput", "StreamEncoder", GetEncoderId(streamingEncoder));
-	config_remove_value(main->Config(), "SimpleOutput", "UseAdvanced");
+	/* Keep the encoder's other settings when the encoder stays the same */
+	const char *encoderId = get_simple_output_encoder(GetEncoderId(streamingEncoder));
+	const char *oldEncoderId = config_get_string(main->Config(), "AdvOut", "Encoder");
+	OBSData encoderSettings;
+	if (oldEncoderId && strcmp(oldEncoderId, encoderId) == 0) {
+		encoderSettings = LoadStreamEncoderSettings();
+	} else {
+		OBSDataAutoRelease newSettings = obs_data_create();
+		encoderSettings = newSettings.Get();
+	}
+	obs_data_set_string(encoderSettings, "rate_control", "CBR");
+	obs_data_set_int(encoderSettings, "bitrate", idealBitrate);
+	obs_data_save_json_safe(encoderSettings, StreamEncoderPath().u8string().c_str(), "tmp", "bak");
+
+	config_set_string(main->Config(), "AdvOut", "Encoder", encoderId);
 
 	config_set_bool(main->Config(), "Stream1", "EnableMultitrackVideo", multitrackVideo.testSuccessful);
 
@@ -364,14 +396,16 @@ void AutoConfig::SaveSettings()
 {
 	OBSBasic *main = OBSBasic::Get();
 
-	if (recordingEncoder != Encoder::Stream) {
-		config_set_string(main->Config(), "SimpleOutput", "RecEncoder", GetEncoderId(recordingEncoder));
+	/* Record with the streaming encoder unless the wizard picked a separate
+	 * one for high quality recording */
+	if (recordingEncoder != Encoder::Stream && recordingQuality == Quality::High) {
+		config_set_string(main->Config(), "AdvOut", "RecEncoder",
+				  get_simple_output_encoder(GetEncoderId(recordingEncoder)));
+	} else {
+		config_set_string(main->Config(), "AdvOut", "RecEncoder", "none");
 	}
 
-	const char *quality = recordingQuality == Quality::High ? "Small" : "Stream";
-
-	config_set_string(main->Config(), "Output", "Mode", "Simple");
-	config_set_string(main->Config(), "SimpleOutput", "RecQuality", quality);
+	config_set_string(main->Config(), "Output", "Mode", "Advanced");
 	config_set_int(main->Config(), "Video", "BaseCX", baseResolutionCX);
 	config_set_int(main->Config(), "Video", "BaseCY", baseResolutionCY);
 	config_set_int(main->Config(), "Video", "OutputCX", idealResolutionCX);

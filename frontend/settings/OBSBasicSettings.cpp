@@ -2228,10 +2228,12 @@ void OBSBasicSettings::LoadOutputSettings()
 
 	ResetEncoders();
 
-	const char *mode = config_get_string(main->Config(), "Output", "Mode");
-
-	int modeIdx = astrcmpi(mode, "Advanced") == 0 ? 1 : 0;
-	ui->outputMode->setCurrentIndex(modeIdx);
+	/* There is no Simple output mode (see
+	 * OBSBasic::MigrateSimpleOutputMode), so the Output page always shows
+	 * Advanced and the Output Mode choice is hidden */
+	ui->outputMode->setCurrentIndex(1);
+	ui->outputModeLabel->setVisible(false);
+	ui->outputMode->setVisible(false);
 
 	LoadSimpleOutputSettings();
 	LoadAdvOutputStreamingSettings();
@@ -3370,15 +3372,6 @@ void OBSBasicSettings::SaveAdvancedSettings()
 	}
 }
 
-static inline const char *OutputModeFromIdx(int idx)
-{
-	if (idx == 1) {
-		return "Advanced";
-	} else {
-		return "Simple";
-	}
-}
-
 static inline const char *RecTypeFromIdx(int idx)
 {
 	if (idx == 1) {
@@ -3480,7 +3473,7 @@ void OBSBasicSettings::SaveEncoder(QComboBox *combo, const char *section, const 
 
 void OBSBasicSettings::SaveOutputSettings()
 {
-	config_set_string(main->Config(), "Output", "Mode", OutputModeFromIdx(ui->outputMode->currentIndex()));
+	config_set_string(main->Config(), "Output", "Mode", "Advanced");
 
 	QString encoder = ui->simpleOutStrEncoder->currentData().toString();
 	const char *presetType;

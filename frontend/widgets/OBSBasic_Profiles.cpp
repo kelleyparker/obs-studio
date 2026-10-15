@@ -747,6 +747,106 @@ void OBSBasic::UpdateProfileEncoders()
 	InitBasicConfigDefaults2();
 	CheckForMissingEncoders();
 	CheckForSimpleModeX264Fallback();
+	MigrateSimpleOutputMode();
+}
+
+extern const char *get_simple_output_encoder(const char *encoder);
+
+/* There is no Simple output mode: OBS always uses Advanced. A profile in
+ * Simple mode, including a new profile (which starts from the Simple
+ * defaults), has its Simple settings copied to Advanced once. */
+void OBSBasic::MigrateSimpleOutputMode()
+{
+	const char *mode = config_get_string(activeConfiguration, "Output", "Mode");
+	if (mode && astrcmpi(mode, "Advanced") == 0) {
+		return;
+	}
+
+	/* Streaming: the same encoder settings SimpleOutput::Update uses */
+	const char *streamEncoder = config_get_string(activeConfiguration, "SimpleOutput", "StreamEncoder");
+	const char *streamEncoderId = get_simple_output_encoder(streamEncoder);
+
+	const char *presetType = "Preset";
+	if (strcmp(streamEncoder, SIMPLE_ENCODER_QSV) == 0 || strcmp(streamEncoder, SIMPLE_ENCODER_QSV_AV1) == 0) {
+		presetType = "QSVPreset";
+	} else if (strcmp(streamEncoder, SIMPLE_ENCODER_AMD) == 0 ||
+		   strcmp(streamEncoder, SIMPLE_ENCODER_AMD_HEVC) == 0) {
+		presetType = "AMDPreset";
+	} else if (strcmp(streamEncoder, SIMPLE_ENCODER_AMD_AV1) == 0) {
+		presetType = "AMDAV1Preset";
+	} else if (strcmp(streamEncoder, SIMPLE_ENCODER_NVENC) == 0 ||
+		   strcmp(streamEncoder, SIMPLE_ENCODER_NVENC_HEVC) == 0 ||
+		   strcmp(streamEncoder, SIMPLE_ENCODER_NVENC_AV1) == 0) {
+		presetType = "NVENCPreset2";
+	}
+
+	OBSDataAutoRelease streamSettings = obs_data_create();
+	const char *preset = config_get_string(activeConfiguration, "SimpleOutput", presetType);
+	if (preset && *preset) {
+		bool legacyNvenc = strncmp(streamEncoderId, "ffmpeg_", 7) == 0 &&
+				   strcmp(presetType, "NVENCPreset2") == 0;
+		obs_data_set_string(streamSettings, legacyNvenc ? "preset2" : "preset", preset);
+	}
+	obs_data_set_string(streamSettings, "rate_control", "CBR");
+	obs_data_set_int(streamSettings, "bitrate", config_get_uint(activeConfiguration, "SimpleOutput", "VBitrate"));
+
+	const char *x264Settings = config_get_string(activeConfiguration, "SimpleOutput", "x264Settings");
+	if (config_get_bool(activeConfiguration, "SimpleOutput", "UseAdvanced") && x264Settings) {
+		obs_data_set_string(streamSettings, "x264opts", x264Settings);
+	}
+
+	const std::filesystem::path streamEncoderPath = GetCurrentProfile().path / "streamEncoder.json";
+	obs_data_save_json_safe(streamSettings, streamEncoderPath.u8string().c_str(), "tmp", "bak");
+
+	config_set_string(activeConfiguration, "AdvOut", "Encoder", streamEncoderId);
+	config_set_uint(activeConfiguration, "AdvOut", "TrackIndex", 1);
+	config_set_bool(activeConfiguration, "AdvOut", "UseRescale", false);
+	if (strcmp(config_get_string(activeConfiguration, "SimpleOutput", "StreamAudioEncoder"), "opus") == 0) {
+		config_set_string(activeConfiguration, "AdvOut", "AudioEncoder", "ffmpeg_opus");
+	}
+
+	/* Recording. "Same as stream" uses the stream encoder; the other
+	 * qualities use the chosen encoder at its default settings. */
+	config_set_string(activeConfiguration, "AdvOut", "RecType", "Standard");
+	config_set_string(activeConfiguration, "AdvOut", "RecFilePath",
+			  config_get_string(activeConfiguration, "SimpleOutput", "FilePath"));
+	config_set_string(activeConfiguration, "AdvOut", "RecFormat2",
+			  config_get_string(activeConfiguration, "SimpleOutput", "RecFormat2"));
+	config_set_bool(activeConfiguration, "AdvOut", "RecFileNameWithoutSpace",
+			config_get_bool(activeConfiguration, "SimpleOutput", "FileNameWithoutSpace"));
+	config_set_uint(activeConfiguration, "AdvOut", "RecTracks",
+			config_get_uint(activeConfiguration, "SimpleOutput", "RecTracks"));
+	config_set_bool(activeConfiguration, "AdvOut", "RecUseRescale", false);
+
+	const char *muxerCustom = config_get_string(activeConfiguration, "SimpleOutput", "MuxerCustom");
+	if (muxerCustom) {
+		config_set_string(activeConfiguration, "AdvOut", "RecMuxerCustom", muxerCustom);
+	}
+
+	const char *recQuality = config_get_string(activeConfiguration, "SimpleOutput", "RecQuality");
+	if (strcmp(recQuality, "Stream") == 0 || strcmp(recQuality, "Lossless") == 0) {
+		config_set_string(activeConfiguration, "AdvOut", "RecEncoder", "none");
+	} else {
+		const char *recEncoder = config_get_string(activeConfiguration, "SimpleOutput", "RecEncoder");
+		config_set_string(activeConfiguration, "AdvOut", "RecEncoder", get_simple_output_encoder(recEncoder));
+	}
+	if (strcmp(config_get_string(activeConfiguration, "SimpleOutput", "RecAudioEncoder"), "opus") == 0) {
+		config_set_string(activeConfiguration, "AdvOut", "RecAudioEncoder", "ffmpeg_opus");
+	}
+
+	/* Replay buffer */
+	config_set_bool(activeConfiguration, "AdvOut", "RecRB",
+			config_get_bool(activeConfiguration, "SimpleOutput", "RecRB"));
+	config_set_int(activeConfiguration, "AdvOut", "RecRBTime",
+		       config_get_int(activeConfiguration, "SimpleOutput", "RecRBTime"));
+	config_set_int(activeConfiguration, "AdvOut", "RecRBSize",
+		       config_get_int(activeConfiguration, "SimpleOutput", "RecRBSize"));
+
+	config_set_string(activeConfiguration, "Output", "Mode", "Advanced");
+	activeConfiguration.SaveSafe("tmp");
+
+	blog(LOG_INFO, "Moved profile '%s' from Simple to Advanced output (%s, %d kbps)",
+	     GetCurrentProfile().name.c_str(), streamEncoderId, (int)obs_data_get_int(streamSettings, "bitrate"));
 }
 
 void OBSBasic::ResetProfileData()

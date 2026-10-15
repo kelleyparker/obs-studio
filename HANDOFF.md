@@ -103,6 +103,24 @@ At the owner's request:
 - Settings → Accessibility is hidden and its color overrides are ignored. The preview borders and
   the volume meters always use the default (theme) colors.
 
+## Settings fixed at defaults, Simple output mode removed (done, untested on Windows)
+
+At the owner's request, these are fixed in code and hidden in Settings (hidden from code, not
+removed from the `.ui` file, to keep upstream merges simple):
+
+- Settings → Advanced → Network: IPv4 and IPv6, default bind IP, no dynamic bitrate, and on
+  Windows the default socket loop without low latency mode.
+- Settings → Advanced → Stream Delay (always off) and Automatically Reconnect (always on, 2 s,
+  25 retries). This covers multistream destinations too.
+- **Simple output mode is gone.** The Output page always shows Advanced and the Output Mode
+  choice is hidden. `OBSBasic::MigrateSimpleOutputMode` (run from `UpdateProfileEncoders`, before
+  the outputs are created) copies a Simple profile's encoder, bitrate, preset, recording path,
+  format, tracks and replay buffer to Advanced once, writes `streamEncoder.json`, and sets
+  `Mode=Advanced`. New profiles start from the Simple defaults and are migrated the same way.
+  Simple recording qualities other than "Same as stream" become the chosen encoder at its default
+  settings; "Lossless" becomes "Same as stream". The Auto-Configuration Wizard writes Advanced
+  settings. The Simple output code is still there but is never used.
+
 ## Part B: settings backup and restore (done, untested)
 
 In the File menu, after "Show Profile Folder":

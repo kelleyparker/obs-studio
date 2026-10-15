@@ -21,8 +21,7 @@ VerticalOutputSettings VerticalOutputSettings::Load()
 {
 	config_t *config = OBSBasic::Get()->Config();
 
-	config_set_default_string(config, Section, "RecFilePath",
-				  config_get_string(config, "SimpleOutput", "FilePath"));
+	config_set_default_string(config, Section, "RecFilePath", config_get_string(config, "AdvOut", "RecFilePath"));
 	config_set_default_string(config, Section, "RecFormat", "hybrid_mp4");
 	config_set_default_string(config, Section, "RecEncoder", "");
 	config_set_default_int(config, Section, "VideoBitrate", 8000);
@@ -224,7 +223,7 @@ bool VerticalOutput::StartRecording(QString &error)
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
 	bool overwrite = config_get_bool(config, "Output", "OverwriteIfExists");
-	bool noSpace = config_get_bool(config, "SimpleOutput", "FileNameWithoutSpace");
+	bool noSpace = config_get_bool(config, "AdvOut", "RecFileNameWithoutSpace");
 
 	string format = GetFormatString(filenameFormat, nullptr, settings.fileSuffix.c_str());
 	string path = GetOutputFilename(settings.recPath.c_str(), settings.recFormat.c_str(), noSpace, overwrite,
@@ -314,7 +313,7 @@ bool VerticalOutput::StartReplayBuffer(QString &error)
 	VerticalOutputSettings settings = VerticalOutputSettings::Load();
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
-	bool noSpace = config_get_bool(config, "SimpleOutput", "FileNameWithoutSpace");
+	bool noSpace = config_get_bool(config, "AdvOut", "RecFileNameWithoutSpace");
 
 	if (settings.recFormat == "hybrid_mp4" || settings.recFormat == "hybrid_mov") {
 		/* The replay buffer is always written by FFmpeg */

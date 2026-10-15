@@ -658,6 +658,8 @@ bool OBSBasic::InitBasicConfigDefaults()
 
 	/* ----------------------------------------------------- */
 
+	/* There is no Simple output mode: a new profile starts from the Simple
+	 * defaults and MigrateSimpleOutputMode moves it to Advanced */
 	config_set_default_string(activeConfiguration, "Output", "Mode", "Simple");
 
 	config_set_default_bool(activeConfiguration, "Stream1", "IgnoreRecommended", false);

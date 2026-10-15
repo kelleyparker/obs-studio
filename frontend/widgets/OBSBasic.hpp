@@ -938,6 +938,7 @@ private:
 	std::vector<std::string> GetRestartRequirements(const ConfigFile &config) const;
 	void ResetProfileData();
 	void CheckForSimpleModeX264Fallback();
+	void MigrateSimpleOutputMode();
 	void CheckForMissingEncoders();
 
 public:
