@@ -2718,6 +2718,8 @@ EXPORT obs_scene_t *obs_canvas_get_scene_by_name(obs_canvas_t *canvas, const cha
 /* Canvas video */
 /** Reset a canvas's video mix */
 EXPORT bool obs_canvas_reset_video(obs_canvas_t *canvas, struct obs_video_info *ovi);
+/** Remove a canvas's video mix, keeping the canvas and its scenes. Fails while the canvas video is active. */
+EXPORT bool obs_canvas_clear_video(obs_canvas_t *canvas);
 /** Returns true if the canvas video is configured */
 EXPORT bool obs_canvas_has_video(obs_canvas_t *canvas);
 /** Get canvas video output */

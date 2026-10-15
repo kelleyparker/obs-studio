@@ -409,6 +409,19 @@ bool obs_canvas_reset_video(obs_canvas_t *canvas, struct obs_video_info *ovi)
 	return obs_canvas_reset_video_internal(canvas, ovi);
 }
 
+bool obs_canvas_clear_video(obs_canvas_t *canvas)
+{
+	if (!canvas || canvas->flags & MAIN || obs_canvas_video_active(canvas))
+		return false;
+
+	obs_canvas_clear_mix(canvas);
+	/* Clear the video info as well so that obs_reset_video() does not recreate the mix. */
+	memset(&canvas->ovi, 0, sizeof(canvas->ovi));
+
+	canvas_dosignal(canvas, "canvas_video_reset", "video_reset");
+	return true;
+}
+
 video_t *obs_canvas_get_video(const obs_canvas_t *canvas)
 {
 	return canvas->mix ? canvas->mix->video : NULL;
