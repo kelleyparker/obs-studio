@@ -6,7 +6,9 @@ This plan has two parts:
 
 Part B is smaller and doesn't depend on Part A, so it ships first. It also gives users a safety net before the large vertical-canvas changes land.
 
-**Target: Windows x64 only for now.** Other platforms aren't built, tested or worried about. The code stays plain Qt and libobs with no Windows-only APIs, so other platforms can be added later. CI is the only build gate, because the cloud container is Linux and can't build or run the Windows app.
+**Update (2026-10-15): the targets are now Windows x64 and macOS Apple Silicon (arm64).** CI builds both in forks. The rest of this section is the original Windows-only plan and is kept for history. Part C changes accordingly (see "Part C on macOS" below).
+
+**Original target: Windows x64 only for now.** Other platforms aren't built, tested or worried about. The code stays plain Qt and libobs with no Windows-only APIs, so other platforms can be added later. CI is the only build gate, because the cloud container is Linux and can't build or run the Windows app.
 
 # Part 0: CI scoped to Windows x64 (first commit)
 - `.github/workflows/push.yaml:25` passes `platforms: ${{ github.repository_owner == 'obsproject' && 'windows macos ubuntu flatpak' || 'windows' }}` to `build-project.yaml`. This copies what `pr-pull.yaml:26` already does, so pushes to the fork build only Windows x64. Today x64 is already the only Windows architecture.
@@ -345,7 +347,7 @@ Today OBS shows only overall CPU, dropped frames and render lag (`widgets/OBSBas
    - Locale keys under `HardwareLoad.*`.
    - CMake lists updated.
    - `pdh.lib` is linked only in the Windows section of `frontend/cmake/os-windows.cmake`.
-   - On other platforms the feature compiles out with a "Windows only for now" stub.
+   - On other platforms the feature compiles out with a "Windows only for now" stub. (Superseded: see "Part C on macOS".)
 
 ## Verification (Part C)
 - **Unit-style:** feed `LoadEstimator` synthetic configurations in a small standalone test built in the container, and check:
@@ -358,6 +360,23 @@ Today OBS shows only overall CPU, dropped frames and render lag (`widgets/OBSBas
   - Projections are within roughly ±10 points of measured after calibration.
   - The warnings fire when too many sessions are set up on one GPU.
   - With the dock closed and nothing live, there is no measurable overhead.
+
+# Part C on macOS (added 2026-10-15)
+Part C is split into a shared layer and a measurement layer for each platform:
+- **Shared on both platforms:**
+  - `LoadEstimator` (projections, stacking, shared-encoder rules, calibration);
+  - the Hardware Load dock;
+  - the per-destination "Projected load" strip.
+- **Windows:**
+  - DXGI, PDH and NVML as designed;
+  - the per-GPU "Encoder GPU" choice for NVENC.
+- **macOS (Apple Silicon):**
+  - **CPU:** `host_processor_info`/`host_statistics`.
+  - **RAM:** `host_statistics64`.
+  - **Upload:** `getifaddrs` byte counters.
+  - **Disk writes:** IOKit `IOBlockStorageDriver` statistics.
+  - **GPU:** Apple doesn't expose per-engine GPU or media-engine utilisation without root, so GPU and VideoToolbox encoder load are estimates only, calibrated where possible from OBS's own render and encode timings.
+  - There is a single GPU, so there is no Encoder GPU choice.
 
 # Status (handoff)
 See [`HANDOFF.md`](../../HANDOFF.md) at the repository root for where work stopped and what to do next.

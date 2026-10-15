@@ -11,16 +11,21 @@ what the work is for, what is finished, where it stopped, and what to do next. T
   multistreaming was the first such feature and is already on `master`.
 - The owner wants the result to be "as fully functional as possible", with the same features as the
   plugins it replaces.
-- **Only Windows x64 matters for now.** The owner uses a Windows PC: an X299 machine with two
-  NVIDIA GPUs, an RTX 5070 and an RTX 3050. Other platforms are not built or tested, but the code
-  should stay portable (plain Qt and libobs) where possible.
-- The owner tests the Windows x64 build that CI produces. Nobody builds locally.
+- **Targets: Windows x64 and macOS Apple Silicon (arm64) only.** Linux, Flatpak, Intel Macs and
+  Windows on ARM are not built or tested.
+  - The owner's Windows PC is an X299 machine with two NVIDIA GPUs, an RTX 5070 and an RTX 3050.
+  - The owner also uses a MacBook Pro with an M1 chip.
+  - Code should stay portable (plain Qt and libobs). Anything platform-specific (such as Part C's
+    hardware counters) needs a Windows and a macOS implementation.
+- The owner tests the builds that CI produces, and may also build locally on the Mac with Xcode.
+- **Don't start builds unless the owner asks.** As of 2026-10-15 the owner has said not to build
+  yet.
 
 ## Where work stopped
 
 | Part | What it is | State |
 | --- | --- | --- |
-| 0 | CI builds Windows x64 on pushes to `claude/**` branches of the fork | Done |
+| 0 | CI builds Windows x64 and macOS arm64 on pushes to `claude/**` branches of the fork | Done (macOS added 2026-10-15) |
 | B | One-click settings backup and restore (File menu) | **Code done. Not yet compiled on Windows CI and not tested on Windows** |
 | A, phase 1 | Built-in vertical canvas (like Aitum Vertical): canvas, settings, docks, recording, replay buffer, multistream, hotkeys | **Code done. Not yet compiled on Windows CI and not tested on Windows** |
 | A, phases 2–3 | Full drag-and-resize editing in the vertical preview, transitions, vertical virtual camera, projector, websocket | Not started |
@@ -47,11 +52,15 @@ Windows x64 CI build that the owner has tested.
 - **Development branch:** `claude/wonderful-hopper-3mrp6t`, which is several commits ahead of `master`.
   Merge it to `master` only after the owner approves.
 - **CI:**
-  - Pushes to `claude/**` build Windows x64 only (`.github/workflows/push.yaml`). The workflow can
-    also be started by hand with **Run workflow**.
+  - Pushes to `claude/**` and pull requests build Windows x64 and macOS arm64
+    (`.github/workflows/push.yaml`, `pr-pull.yaml`). The push workflow can also be started by hand
+    with **Run workflow**.
   - A push that changes only `*.md` files does not start a build. For a new branch, GitHub only
     looks at the newest commit when it decides this.
-  - The artifact to download is `obs-studio-windows-x64-*`.
+  - The artifacts to download are `obs-studio-windows-x64-*` and `obs-studio-macos-arm64-*`.
+  - The macOS build isn't signed, since the fork has no Apple signing certificate. macOS will
+    refuse to open it at first. To allow it, right-click OBS.app → Open, or run
+    `xattr -cr /Applications/OBS.app`.
 - **Releases:** pushing a `publish/**` branch runs `.github/workflows/fork-release.yaml`. It
   publishes the builds from a given `master` build run as a prerelease. The run id, SHA and tag are
   set in that file.
