@@ -360,6 +360,8 @@ Today OBS shows only overall CPU, dropped frames and render lag (`widgets/OBSBas
   - With the dock closed and nothing live, there is no measurable overhead.
 
 # Status (handoff)
+See [`HANDOFF.md`](../../HANDOFF.md) at the repository root for where work stopped and what to do next.
+
 - Done: Part 0 (CI builds Windows x64 on pushes to `claude/**` in forks).
 - Done but not yet built on Windows CI or tested on Windows: Part B (settings backup and restore). New files:
   - `frontend/utility/ZipArchive.*`

@@ -1,6 +1,7 @@
 name: Push
 run-name: ${{ github.ref_name }} push run 🚀
 on:
+  workflow_dispatch:
   push:
     paths-ignore:
       - '**.md'

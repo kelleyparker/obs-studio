@@ -13,6 +13,10 @@ OBS Studio <https://obsproject.com>
    :alt: OBS Studio Discord Server
    :target: https://obsproject.com/discord
 
+.. note::
+   **Work in progress on this branch:** built-in vertical canvas, settings backup and
+   restore, and hardware load projection. See ``HANDOFF.md`` for status and next steps.
+
 What is OBS Studio?
 -------------------
 
