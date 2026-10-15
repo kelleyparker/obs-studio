@@ -96,6 +96,12 @@ void OBSBasicSettings::InitStreamPage()
 	 * above, extra destinations in the multistream dialog */
 	if (main->multistream) {
 		QGroupBox *multistreamBox = new QGroupBox(QTStr("Multistream.Title"), ui->streamPage);
+
+		/* One-click on/off. It takes effect right away (the next time
+		 * the stream starts), without the Configure dialog. */
+		QCheckBox *multistreamEnable = new QCheckBox(QTStr("Multistream.Enable"), multistreamBox);
+		multistreamEnable->setChecked(main->multistream->Enabled());
+
 		QLabel *multistreamLabel = new QLabel(multistreamBox);
 		multistreamLabel->setWordWrap(true);
 		QPushButton *multistreamButton = new QPushButton(QTStr("Multistream.Configure"), multistreamBox);
@@ -111,15 +117,27 @@ void OBSBasicSettings::InitStreamPage()
 		};
 		updateLabel();
 
-		connect(multistreamButton, &QPushButton::clicked, this, [this, updateLabel]() {
-			OBSMultistreamSettings dialog(main->multistream.get(), this);
-			dialog.exec();
+		connect(multistreamEnable, &QCheckBox::toggled, this, [this, updateLabel](bool checked) {
+			main->multistream->SetEnabled(checked);
+			main->multistream->Save();
 			updateLabel();
 		});
 
-		QHBoxLayout *multistreamLayout = new QHBoxLayout(multistreamBox);
-		multistreamLayout->addWidget(multistreamLabel, 1);
-		multistreamLayout->addWidget(multistreamButton);
+		connect(multistreamButton, &QPushButton::clicked, this, [this, updateLabel, multistreamEnable]() {
+			OBSMultistreamSettings dialog(main->multistream.get(), this);
+			dialog.exec();
+			QSignalBlocker blocker(multistreamEnable);
+			multistreamEnable->setChecked(main->multistream->Enabled());
+			updateLabel();
+		});
+
+		QHBoxLayout *multistreamRow = new QHBoxLayout();
+		multistreamRow->addWidget(multistreamLabel, 1);
+		multistreamRow->addWidget(multistreamButton);
+
+		QVBoxLayout *multistreamLayout = new QVBoxLayout(multistreamBox);
+		multistreamLayout->addWidget(multistreamEnable);
+		multistreamLayout->addLayout(multistreamRow);
 
 		ui->streamPage->layout()->addWidget(multistreamBox);
 	}
