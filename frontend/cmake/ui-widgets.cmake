@@ -43,6 +43,7 @@ target_sources(
     widgets/OBSBasic_SysTray.cpp
     widgets/OBSBasic_Transitions.cpp
     widgets/OBSBasic_Updater.cpp
+    widgets/OBSBasic_Vertical.cpp
     widgets/OBSBasic_VirtualCam.cpp
     widgets/OBSBasic_YouTube.cpp
     widgets/OBSBasicControls.cpp

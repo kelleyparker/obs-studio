@@ -758,6 +758,9 @@ void OBSBasic::ResetProfileData()
 	if (multistream) {
 		multistream->Load(GetCurrentProfile().path);
 	}
+	if (vertical) {
+		vertical->LoadProfile();
+	}
 	ClearHotkeys();
 	CreateHotkeys();
 

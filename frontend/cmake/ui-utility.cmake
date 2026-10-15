@@ -70,6 +70,10 @@ target_sources(
     utility/ThumbnailView.cpp
     utility/ThumbnailView.hpp
     utility/VCamConfig.hpp
+    utility/VerticalCanvas.cpp
+    utility/VerticalCanvas.hpp
+    utility/VerticalOutput.cpp
+    utility/VerticalOutput.hpp
     utility/ZipArchive.cpp
     utility/ZipArchive.hpp
     utility/audio-encoders.cpp

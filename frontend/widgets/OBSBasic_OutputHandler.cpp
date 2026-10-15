@@ -53,6 +53,9 @@ bool OBSBasic::Active() const
 	if (multistream && multistream->Active()) {
 		return true;
 	}
+	if (verticalOutput && verticalOutput->Active()) {
+		return true;
+	}
 	if (!outputHandler) {
 		return false;
 	}

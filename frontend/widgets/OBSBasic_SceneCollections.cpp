@@ -901,6 +901,10 @@ void OBSBasic::Save(SceneCollection &collection)
 	OBSDataArrayAutoRelease savedCanvases = OBS::Canvas::SaveCanvases(canvases);
 	obs_data_set_array(saveData, "canvases", savedCanvases);
 
+	if (vertical) {
+		vertical->SaveCollection(saveData);
+	}
+
 	// Transitions
 	OBSSourceAutoRelease transition = obs_get_output_source(0);
 	OBSDataArrayAutoRelease transitionsData = SaveTransitions();
@@ -1159,6 +1163,9 @@ void OBSBasic::Load(SceneCollection &collection)
 		bool hasFirstRun = config_get_bool(App()->GetUserConfig(), "General", "FirstRun");
 
 		CreateDefaultScene(!hasFirstRun);
+		if (vertical) {
+			vertical->LoadCollection(nullptr);
+		}
 		SaveProject();
 		return;
 	}
@@ -1467,6 +1474,10 @@ retryScene:
 
 	/* ---------------------- */
 
+	if (vertical) {
+		vertical->LoadCollection(data);
+	}
+
 	if (api) {
 		api->on_load(modulesObj);
 	}
@@ -1563,6 +1574,12 @@ void OBSBasic::ClearSceneData()
 	setCursor(Qt::WaitCursor);
 
 	CloseDialogs();
+
+	/* Stops vertical outputs and releases the vertical scene before the
+	 * canvases are removed */
+	if (vertical) {
+		vertical->CollectionCleared();
+	}
 
 	ClearListItems(ui->scenes);
 	ui->sources->Clear();

@@ -92,6 +92,13 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	multistreamDock->setVisible(false);
 	multistreamDock->setFloating(true);
 
+	bool verticalEnabled = vertical && vertical->Enabled();
+	for (QDockWidget *dock : {verticalPreviewDock.data(), verticalScenesDock.data(), verticalSourcesDock.data()}) {
+		dock->setFloating(false);
+		addDockWidget(Qt::RightDockWidgetArea, dock);
+		dock->setVisible(verticalEnabled);
+	}
+
 	QList<QDockWidget *> bottomDocks{ui->mixerDock, ui->transitionsDock, controlsDock};
 
 	resizeDocks(bottomDocks, {bottomDocksHeight, bottomDocksHeight, bottomDocksHeight}, Qt::Vertical);
@@ -120,6 +127,9 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	controlsDock->setFeatures(mainFeatures);
 	statsDock->setFeatures(features);
 	multistreamDock->setFeatures(features);
+	verticalPreviewDock->setFeatures(features);
+	verticalScenesDock->setFeatures(features);
+	verticalSourcesDock->setFeatures(features);
 
 	for (int i = extraDocks.size() - 1; i >= 0; i--) {
 		extraDocks[i]->setFeatures(features);
@@ -207,7 +217,10 @@ bool OBSBasic::IsDockObjectNameUsed(const QString &name)
 	     << "transitionsDock"
 	     << "controlsDock"
 	     << "statsDock"
-	     << "multistreamDock";
+	     << "multistreamDock"
+	     << "verticalPreviewDock"
+	     << "verticalScenesDock"
+	     << "verticalSourcesDock";
 	list << extraDockNames;
 	list << extraCustomDockNames;
 

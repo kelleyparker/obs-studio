@@ -25,6 +25,8 @@
 #include <oauth/Auth.hpp>
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/MultistreamOutput.hpp>
+#include <utility/VerticalCanvas.hpp>
+#include <utility/VerticalOutput.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
 #include <utility/VCamConfig.hpp>
@@ -446,6 +448,9 @@ public slots:
 private:
 	QPointer<QDockWidget> statsDock;
 	QPointer<QDockWidget> multistreamDock;
+	QPointer<QDockWidget> verticalPreviewDock;
+	QPointer<QDockWidget> verticalScenesDock;
+	QPointer<QDockWidget> verticalSourcesDock;
 	QByteArray startingDockLayout;
 	QStringList extraDockNames;
 	QList<std::shared_ptr<QDockWidget>> extraDocks;
@@ -690,6 +695,8 @@ private:
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
 	std::unique_ptr<MultistreamOutput> multistream;
+	std::unique_ptr<VerticalCanvas> vertical;
+	std::unique_ptr<VerticalOutput> verticalOutput;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;
@@ -722,7 +729,8 @@ private:
 
 	inline void OnDeactivate()
 	{
-		if (!outputHandler->Active() && !ui->profileMenu->isEnabled()) {
+		bool verticalActive = verticalOutput && verticalOutput->Active();
+		if (!outputHandler->Active() && !verticalActive && !ui->profileMenu->isEnabled()) {
 			ui->profileMenu->setEnabled(true);
 			ui->autoConfigure->setEnabled(true);
 			App()->DecrementSleepInhibition();
@@ -1160,6 +1168,8 @@ private:
 
 public:
 	const std::vector<OBS::Canvas> &GetCanvases() const noexcept { return canvases; }
+	VerticalCanvas *GetVerticalCanvas() const noexcept { return vertical.get(); }
+	VerticalOutput *GetVerticalOutput() const noexcept { return verticalOutput.get(); }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0);
 
@@ -1656,6 +1666,10 @@ private slots:
 
 	void OpenVirtualCamConfig();
 	void OpenMultistreamSettings();
+	void OpenVerticalSettings();
+	void ShowVerticalDocks();
+	void VerticalOutputStarted();
+	void VerticalOutputStopped();
 	void OpenBackupSettings();
 	void OpenRestoreSettings();
 

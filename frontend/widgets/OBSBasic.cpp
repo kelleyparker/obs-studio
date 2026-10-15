@@ -31,6 +31,8 @@
 #include <docks/YouTubeAppDock.hpp>
 #endif
 #include <docks/MultistreamDock.hpp>
+#include <docks/VerticalDocks.hpp>
+#include <dialogs/OBSVerticalSettings.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -269,6 +271,24 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	multistreamDock->setFloating(true);
 	multistreamDock->resize(560, 320);
 
+	verticalPreviewDock = new OBSDock();
+	verticalPreviewDock->setObjectName(QStringLiteral("verticalPreviewDock"));
+	verticalPreviewDock->setWindowTitle(QTStr("Vertical.Dock.Preview"));
+	addDockWidget(Qt::RightDockWidgetArea, verticalPreviewDock);
+	verticalPreviewDock->setVisible(false);
+
+	verticalScenesDock = new OBSDock();
+	verticalScenesDock->setObjectName(QStringLiteral("verticalScenesDock"));
+	verticalScenesDock->setWindowTitle(QTStr("Vertical.Dock.Scenes"));
+	addDockWidget(Qt::RightDockWidgetArea, verticalScenesDock);
+	verticalScenesDock->setVisible(false);
+
+	verticalSourcesDock = new OBSDock();
+	verticalSourcesDock->setObjectName(QStringLiteral("verticalSourcesDock"));
+	verticalSourcesDock->setWindowTitle(QTStr("Vertical.Dock.Sources"));
+	addDockWidget(Qt::RightDockWidgetArea, verticalSourcesDock);
+	verticalSourcesDock->setVisible(false);
+
 	copyActionsDynamicProperties();
 
 	qRegisterMetaType<int64_t>("int64_t");
@@ -430,6 +450,9 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(controlsDock);
 	SETUP_DOCK(statsDock);
 	SETUP_DOCK(multistreamDock);
+	SETUP_DOCK(verticalPreviewDock);
+	SETUP_DOCK(verticalScenesDock);
+	SETUP_DOCK(verticalSourcesDock);
 #undef SETUP_DOCK
 
 	// Register shortcuts for Undo/Redo
@@ -965,6 +988,11 @@ void OBSBasic::OBSInit()
 
 	InitPrimitives();
 
+	/* The vertical canvas must exist before the scene collection is loaded */
+	vertical = std::make_unique<VerticalCanvas>();
+	vertical->LoadProfile();
+	verticalOutput = std::make_unique<VerticalOutput>(vertical.get());
+
 	sceneDuplicationMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SceneDuplicationMode");
 	swapScenesMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SwapScenesMode");
 	editPropertiesMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "EditPropertiesMode");
@@ -1114,6 +1142,24 @@ void OBSBasic::OBSInit()
 	multistreamAction->setMenuRole(QAction::NoRole);
 	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
+
+	/* setup the vertical canvas */
+	VerticalPreviewDock *verticalPreview =
+		new VerticalPreviewDock(vertical.get(), verticalOutput.get(), verticalPreviewDock);
+	verticalPreviewDock->setWidget(verticalPreview);
+	connect(verticalPreview, &VerticalPreviewDock::OpenSettings, this, &OBSBasic::OpenVerticalSettings);
+	verticalScenesDock->setWidget(new VerticalScenesDock(vertical.get(), verticalScenesDock));
+	verticalSourcesDock->setWidget(new VerticalSourcesDock(vertical.get(), verticalSourcesDock));
+
+	QAction *verticalAction = new QAction(QTStr("Vertical.MenuAction"), this);
+	verticalAction->setMenuRole(QAction::NoRole);
+	connect(verticalAction, &QAction::triggered, this, &OBSBasic::OpenVerticalSettings);
+	ui->menuTools->insertAction(ui->idianPlayground, verticalAction);
+
+	connect(verticalOutput.get(), &VerticalOutput::RecordingStarted, this, &OBSBasic::VerticalOutputStarted);
+	connect(verticalOutput.get(), &VerticalOutput::ReplayBufferStarted, this, &OBSBasic::VerticalOutputStarted);
+	connect(verticalOutput.get(), &VerticalOutput::RecordingStopped, this, &OBSBasic::VerticalOutputStopped);
+	connect(verticalOutput.get(), &VerticalOutput::ReplayBufferStopped, this, &OBSBasic::VerticalOutputStopped);
 
 	/* settings backup and restore, placed after "Show Profile Folder" */
 	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);
@@ -1360,6 +1406,8 @@ void OBSBasic::applicationShutdown() noexcept
 
 	service = nullptr;
 	multistream.reset();
+	verticalOutput.reset();
+	vertical.reset();
 	outputHandler.reset();
 
 	delete interaction;
@@ -1484,6 +1532,9 @@ int OBSBasic::ResetVideo()
 	if (outputHandler && outputHandler->Active()) {
 		return OBS_VIDEO_CURRENTLY_ACTIVE;
 	}
+	if (verticalOutput && verticalOutput->Active()) {
+		return OBS_VIDEO_CURRENTLY_ACTIVE;
+	}
 
 	ProfileScope("OBSBasic::ResetVideo");
 
@@ -1540,6 +1591,10 @@ int OBSBasic::ResetVideo()
 		obs_set_video_levels(sdr_white_level, hdr_nominal_peak_level);
 		OBSBasicStats::InitializeValues();
 		OBSProjector::UpdateMultiviewProjectors();
+
+		if (vertical) {
+			vertical->MainVideoReset();
+		}
 
 		if (!collections.empty()) {
 			const OBS::SceneCollection currentSceneCollection = OBSBasic::GetCurrentSceneCollection();
@@ -1843,7 +1898,8 @@ bool OBSBasic::isReadyToClose()
 bool OBSBasic::shouldPromptForClose()
 {
 	bool confirmOnExit = config_get_bool(App()->GetUserConfig(), "General", "ConfirmOnExit");
-	if (confirmOnExit && outputHandler && outputHandler->Active() && !clearingFailed) {
+	bool active = (outputHandler && outputHandler->Active()) || (verticalOutput && verticalOutput->Active());
+	if (confirmOnExit && active && !clearingFailed) {
 		return true;
 	}
 
@@ -1887,6 +1943,11 @@ void OBSBasic::closeWindow()
 	ui->preview->DestroyDisplay();
 	if (program) {
 		program->DestroyDisplay();
+	}
+	if (verticalPreviewDock) {
+		if (auto verticalPreview = qobject_cast<VerticalPreviewDock *>(verticalPreviewDock->widget())) {
+			verticalPreview->DestroyDisplay();
+		}
 	}
 
 	if (outputHandler->VirtualCamActive()) {
