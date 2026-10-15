@@ -7,6 +7,7 @@ on:
     branches:
       - master
       - 'release/**'
+      - 'claude/**'
     tags:
       - '*'
 permissions:
@@ -21,11 +22,13 @@ jobs:
 
   build-project:
     name: Build 🧱
-    if: github.repository_owner == 'obsproject' || github.ref_type == 'tag'
+    if: github.repository_owner == 'obsproject' || github.ref_type == 'tag' || startsWith(github.ref_name, 'claude/')
     uses: ./.github/workflows/build-project.yaml
     secrets: inherit
     permissions:
       contents: read
+    with:
+      platforms: ${{ github.repository_owner == 'obsproject' && 'windows macos ubuntu flatpak' || 'windows' }}
 
   compatibility-validation:
     name: Validate Compatibility 🕵️
