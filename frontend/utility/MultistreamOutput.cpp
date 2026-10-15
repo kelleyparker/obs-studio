@@ -283,6 +283,40 @@ static bool GetDestinationVideoInfo(const MultistreamDestination &dest, obs_vide
 	return vertical && vertical->Enabled() && vertical->GetVideoInfo(ovi);
 }
 
+/* The most audio the platform accepts, from its guide or else OBS's service
+ * list. 0 if unknown (custom servers). */
+static int GetPlatformMaxAudioBitrate(const string &platform)
+{
+	const MultistreamPlatformPreset *preset = FindMultistreamPlatformPreset(platform);
+	if (preset && preset->limits) {
+		obs_audio_info oai = {};
+		bool surround = obs_get_audio_info(&oai) && get_audio_channels(oai.speakers) > 2;
+		int limit = surround && preset->limits->maxSurroundAudioBitrate
+				    ? preset->limits->maxSurroundAudioBitrate
+				    : preset->limits->maxAudioBitrate;
+		if (limit > 0) {
+			return limit;
+		}
+	}
+
+	OBSServiceAutoRelease service = CreatePlatformService(preset);
+	if (!service) {
+		return 0;
+	}
+	int maxVideoBitrate = 0;
+	int maxAudioBitrate = 0;
+	obs_service_get_max_bitrate(service, &maxVideoBitrate, &maxAudioBitrate);
+	return maxAudioBitrate;
+}
+
+/* The audio bitrate to send a platform: what was asked for, but never more
+ * than the platform accepts */
+static int CapAudioBitrate(const string &platform, int bitrate)
+{
+	int maxAudioBitrate = GetPlatformMaxAudioBitrate(platform);
+	return maxAudioBitrate > 0 ? min(bitrate, maxAudioBitrate) : bitrate;
+}
+
 MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest, const string &codec)
 {
 	MultistreamQuality quality;
@@ -292,7 +326,7 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 		quality.width = dest.width;
 		quality.height = dest.height;
 		quality.videoBitrate = dest.videoBitrate;
-		quality.audioBitrate = FindClosestAvailableSimpleAACBitrate(dest.audioBitrate);
+		quality.audioBitrate = LargestAacBitrateUpTo(CapAudioBitrate(dest.platform, kFixedAudioBitrateKbps));
 		return quality;
 	}
 
@@ -485,7 +519,7 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			OBSDataAutoRelease item = obs_data_array_item(array, i);
 			obs_data_set_default_bool(item, "enabled", true);
 			obs_data_set_default_int(item, "video_bitrate", 6000);
-			obs_data_set_default_int(item, "audio_bitrate", 160);
+			obs_data_set_default_int(item, "audio_bitrate", kFixedAudioBitrateKbps);
 			obs_data_set_default_string(item, "platform", "custom");
 			obs_data_set_default_string(item, "quality", "custom");
 
@@ -736,7 +770,7 @@ obs_encoder_t *MultistreamOutput::CreateVideoEncoder(const MultistreamDestinatio
 	return encoder;
 }
 
-bool MultistreamOutput::AcquireSharedEncoders(Running &run, obs_output_t *primary)
+bool MultistreamOutput::AcquireSharedEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary)
 {
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
 	obs_encoder_t *primaryAudio = obs_output_get_audio_encoder(primary, 0);
@@ -746,21 +780,26 @@ bool MultistreamOutput::AcquireSharedEncoders(Running &run, obs_output_t *primar
 
 	run.videoEncoder = obs_encoder_get_ref(primaryVideo);
 
-	/* RTMP needs AAC: reuse the main stream's audio encoder if it is AAC,
-	 * otherwise (e.g. Opus for WHIP) encode AAC once for every destination.
+	/* RTMP needs AAC: reuse the main stream's audio encoder if it is AAC
+	 * and within the platform's limit. Otherwise (e.g. Opus for WHIP, or
+	 * more audio than the platform accepts) encode AAC once per bitrate.
 	 * The video encoder is already running, so libobs won't pair them. */
-	if (IsCodec(primaryAudio, "aac")) {
+	int primaryBitrate = primaryAudio ? GetEncoderBitrate(primaryAudio) : 0;
+	int bitrate = LargestAacBitrateUpTo(
+		CapAudioBitrate(dest.platform, primaryBitrate > 0 ? primaryBitrate : kFixedAudioBitrateKbps));
+	if (IsCodec(primaryAudio, "aac") && primaryBitrate <= bitrate) {
 		run.audioEncoder = obs_encoder_get_ref(primaryAudio);
 		return true;
 	}
 
-	run.audioEncoder = obs_weak_encoder_get_encoder(sharedModeAudioEncoder);
+	OBSWeakEncoderAutoRelease &cached = sharedModeAudioEncoders[bitrate];
+	run.audioEncoder = obs_weak_encoder_get_encoder(cached);
 	if (!run.audioEncoder) {
 		size_t mixer = primaryAudio ? obs_encoder_get_mixer_index(primaryAudio) : 0;
-		int bitrate = primaryAudio ? GetEncoderBitrate(primaryAudio) : 0;
-		run.audioEncoder = CreateAudioEncoder("multistream_shared_aac", bitrate > 0 ? bitrate : 160, mixer);
+		string name = "multistream_shared_aac_" + to_string(bitrate);
+		run.audioEncoder = CreateAudioEncoder(name, bitrate, mixer);
 		if (run.audioEncoder) {
-			sharedModeAudioEncoder = obs_encoder_get_weak_encoder(run.audioEncoder);
+			cached = obs_encoder_get_weak_encoder(run.audioEncoder);
 		}
 	}
 
@@ -906,7 +945,7 @@ bool MultistreamOutput::Start(const string &id)
 	string outputName = "multistream_" + dest->name;
 	run->output = obs_output_create("rtmp_output", outputName.c_str(), nullptr, nullptr);
 
-	bool encodersAcquired = useShared ? AcquireSharedEncoders(*run, primary)
+	bool encodersAcquired = useShared ? AcquireSharedEncoders(*run, *dest, primary)
 					  : AcquireSeparateEncoders(*run, *dest, primary, dynamicBitrate);
 
 	if (!run->service || !run->output || !encodersAcquired) {
@@ -1086,7 +1125,7 @@ void MultistreamOutput::OnStopped(const string &id, uint64_t serial, int code, c
 	/* Nothing uses the cached encoders anymore */
 	if (running.empty()) {
 		separateModeEncoders.clear();
-		sharedModeAudioEncoder = nullptr;
+		sharedModeAudioEncoders.clear();
 	}
 
 	const MultistreamDestination *dest = FindDestination(id);

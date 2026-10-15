@@ -1,6 +1,7 @@
 #pragma once
 
 #include <obs.hpp>
+#include <utility/audio-encoders.hpp>
 
 #include <QObject>
 #include <QString>
@@ -105,7 +106,7 @@ struct MultistreamDestination {
 
 	/* Custom quality */
 	int videoBitrate = 6000;
-	int audioBitrate = 160;
+	int audioBitrate = kFixedAudioBitrateKbps;
 	uint32_t width = 0; /* 0 = use the output resolution */
 	uint32_t height = 0;
 };
@@ -238,14 +239,14 @@ private:
 	OBSWeakOutputAutoRelease primaryOutput;
 	bool primarySharedEncoders = true;
 
-	OBSWeakEncoderAutoRelease sharedModeAudioEncoder;
+	std::map<int, OBSWeakEncoderAutoRelease> sharedModeAudioEncoders;
 	std::map<std::string, EncoderPair> separateModeEncoders;
 
 	uint64_t nextSerial = 0;
 	std::map<std::string, std::unique_ptr<Running>> running;
 	std::map<std::string, StateInfo> states;
 
-	bool AcquireSharedEncoders(Running &run, obs_output_t *primary);
+	bool AcquireSharedEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary);
 	bool AcquireSeparateEncoders(Running &run, const MultistreamDestination &dest, obs_output_t *primary,
 				     bool dynamicBitrate);
 	obs_encoder_t *CreateVideoEncoder(const MultistreamDestination &dest, const std::string &encoderId,

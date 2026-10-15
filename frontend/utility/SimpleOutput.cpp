@@ -159,9 +159,13 @@ void SimpleOutput::LoadRecordingPreset()
 		bool success = false;
 
 		if (strcmp(audio_encoder, "opus") == 0) {
-			success = CreateSimpleOpusEncoder(audioRecording, 192, "simple_opus_recording", 0);
+			success = CreateSimpleOpusEncoder(audioRecording,
+							  FindClosestAvailableSimpleOpusBitrate(kFixedAudioBitrateKbps),
+							  "simple_opus_recording", 0);
 		} else {
-			success = CreateSimpleAACEncoder(audioRecording, 192, "simple_aac_recording", 0);
+			success = CreateSimpleAACEncoder(audioRecording,
+							 FindClosestAvailableSimpleAACBitrate(kFixedAudioBitrateKbps),
+							 "simple_aac_recording", 0);
 		}
 
 		if (!success) {
@@ -268,7 +272,7 @@ SimpleOutput::SimpleOutput(OBSBasic *main_) : BasicOutputHandler(main_)
 int SimpleOutput::GetAudioBitrate() const
 {
 	const char *audio_encoder = config_get_string(main->Config(), "SimpleOutput", "StreamAudioEncoder");
-	int bitrate = (int)config_get_uint(main->Config(), "SimpleOutput", "ABitrate");
+	int bitrate = kFixedAudioBitrateKbps;
 
 	if (strcmp(audio_encoder, "opus") == 0) {
 		return FindClosestAvailableSimpleOpusBitrate(bitrate);
@@ -401,11 +405,10 @@ void SimpleOutput::UpdateRecordingAudioSettings()
 	const char *quality = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
 	bool flv = strcmp(recFormat, "flv") == 0;
 
-	constexpr int kDefaultStereoBitrateKbps{192};
 	constexpr int kStereoChannelCount{2};
 
 	int channels = (int)audio_output_get_channels(obs_get_audio());
-	int channelScaledBitrate{kDefaultStereoBitrateKbps * channels / kStereoChannelCount};
+	int channelScaledBitrate{kFixedAudioBitrateKbps * channels / kStereoChannelCount};
 
 	int bitrate = strcmp(audioEncoder, "opus") == 0 ? FindClosestAvailableSimpleOpusBitrate(channelScaledBitrate)
 							: FindClosestAvailableSimpleAACBitrate(channelScaledBitrate);

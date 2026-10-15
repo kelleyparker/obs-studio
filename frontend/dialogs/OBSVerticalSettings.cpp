@@ -131,14 +131,6 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 	videoBitrate->setValue(output.videoBitrate);
 	recForm->addRow(QTStr("Basic.Settings.Output.VideoBitrate"), videoBitrate);
 
-	audioBitrate = new QComboBox(recBox);
-	for (const auto &item : GetSimpleAACEncoderBitrateMap()) {
-		audioBitrate->addItem(QString::number(item.first), item.first);
-	}
-	int closestAudio = FindClosestAvailableSimpleAACBitrate(output.audioBitrate);
-	audioBitrate->setCurrentIndex(std::max(0, audioBitrate->findData(closestAudio)));
-	recForm->addRow(QTStr("Basic.Settings.Output.AudioBitrate"), audioBitrate);
-
 	audioTrack = new QSpinBox(recBox);
 	audioTrack->setRange(1, MAX_AUDIO_MIXES);
 	audioTrack->setValue(output.audioTrack);
@@ -243,7 +235,6 @@ void OBSVerticalSettings::accept()
 	output.recFormat = recFormat->currentData().toString().toStdString();
 	output.encoder = encoder->currentData().toString().toStdString();
 	output.videoBitrate = videoBitrate->value();
-	output.audioBitrate = audioBitrate->currentData().toInt();
 	output.audioTrack = audioTrack->value();
 	output.fileSuffix = fileSuffix->text().trimmed().toStdString();
 	output.replayTimeSec = replayTime->value();

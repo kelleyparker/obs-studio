@@ -1749,7 +1749,7 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 	int videoBitrate = config_get_uint(main->Config(), "SimpleOutput", "VBitrate");
 	const char *streamEnc = config_get_string(main->Config(), "SimpleOutput", "StreamEncoder");
 	const char *streamAudioEnc = config_get_string(main->Config(), "SimpleOutput", "StreamAudioEncoder");
-	int audioBitrate = config_get_uint(main->Config(), "SimpleOutput", "ABitrate");
+	int audioBitrate = kFixedAudioBitrateKbps;
 	bool advanced = config_get_bool(main->Config(), "SimpleOutput", "UseAdvanced");
 	const char *preset = config_get_string(main->Config(), "SimpleOutput", "Preset");
 	const char *qsvPreset = config_get_string(main->Config(), "SimpleOutput", "QSVPreset");
@@ -2132,7 +2132,7 @@ void OBSBasicSettings::LoadAdvOutputFFmpegSettings()
 	const char *vEncoder = config_get_string(main->Config(), "AdvOut", "FFVEncoder");
 	int vEncoderId = config_get_int(main->Config(), "AdvOut", "FFVEncoderId");
 	const char *vEncCustom = config_get_string(main->Config(), "AdvOut", "FFVCustom");
-	int audioBitrate = config_get_int(main->Config(), "AdvOut", "FFABitrate");
+	int audioBitrate = kFixedAudioBitrateKbps;
 	int audioMixes = config_get_int(main->Config(), "AdvOut", "FFAudioMixes");
 	const char *aEncoder = config_get_string(main->Config(), "AdvOut", "FFAEncoder");
 	int aEncoderId = config_get_int(main->Config(), "AdvOut", "FFAEncoderId");
@@ -2166,12 +2166,12 @@ void OBSBasicSettings::LoadAdvOutputFFmpegSettings()
 
 void OBSBasicSettings::LoadAdvOutputAudioSettings()
 {
-	int track1Bitrate = config_get_uint(main->Config(), "AdvOut", "Track1Bitrate");
-	int track2Bitrate = config_get_uint(main->Config(), "AdvOut", "Track2Bitrate");
-	int track3Bitrate = config_get_uint(main->Config(), "AdvOut", "Track3Bitrate");
-	int track4Bitrate = config_get_uint(main->Config(), "AdvOut", "Track4Bitrate");
-	int track5Bitrate = config_get_uint(main->Config(), "AdvOut", "Track5Bitrate");
-	int track6Bitrate = config_get_uint(main->Config(), "AdvOut", "Track6Bitrate");
+	int track1Bitrate = kFixedAudioBitrateKbps;
+	int track2Bitrate = kFixedAudioBitrateKbps;
+	int track3Bitrate = kFixedAudioBitrateKbps;
+	int track4Bitrate = kFixedAudioBitrateKbps;
+	int track5Bitrate = kFixedAudioBitrateKbps;
+	int track6Bitrate = kFixedAudioBitrateKbps;
 	const char *name1 = config_get_string(main->Config(), "AdvOut", "Track1Name");
 	const char *name2 = config_get_string(main->Config(), "AdvOut", "Track2Name");
 	const char *name3 = config_get_string(main->Config(), "AdvOut", "Track3Name");
@@ -2246,6 +2246,17 @@ void OBSBasicSettings::LoadOutputSettings()
 	}
 	LoadAdvOutputFFmpegSettings();
 	LoadAdvOutputAudioSettings();
+
+	/* Audio is always encoded at kFixedAudioBitrateKbps, so there is nothing
+	 * to set */
+	for (QWidget *widget : std::initializer_list<QWidget *>{
+		     ui->simpleOutputABitrateLabel, ui->simpleOutputABitrate, ui->advOutTrack1BitrateLabel,
+		     ui->advOutTrack1Bitrate, ui->advOutTrack2BitrateLabel, ui->advOutTrack2Bitrate,
+		     ui->advOutTrack3BitrateLabel, ui->advOutTrack3Bitrate, ui->advOutTrack4BitrateLabel,
+		     ui->advOutTrack4Bitrate, ui->advOutTrack5BitrateLabel, ui->advOutTrack5Bitrate,
+		     ui->advOutTrack6BitrateLabel, ui->advOutTrack6Bitrate, ui->label_41, ui->advOutFFABitrate}) {
+		widget->setVisible(false);
+	}
 
 	if (obs_video_active()) {
 		ui->outputMode->setEnabled(false);
@@ -5395,16 +5406,9 @@ void OBSBasicSettings::SimpleRecordingEncoderChanged()
 		obs_service_apply_encoder_settings(service, videoSettings, audioSettings);
 
 		int newVBitrate = obs_data_get_int(videoSettings, "bitrate");
-		int newABitrate = obs_data_get_int(audioSettings, "bitrate");
 
 		if (newVBitrate < oldVBitrate) {
 			warning = SIMPLE_OUTPUT_WARNING("VideoBitrate").arg(newVBitrate);
-		}
-		if (newABitrate < oldABitrate) {
-			if (!warning.isEmpty()) {
-				warning += "\n\n";
-			}
-			warning += SIMPLE_OUTPUT_WARNING("AudioBitrate").arg(newABitrate);
 		}
 	}
 

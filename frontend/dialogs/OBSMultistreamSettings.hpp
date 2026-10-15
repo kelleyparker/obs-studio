@@ -42,7 +42,6 @@ private:
 	QLabel *maxSummary;
 	QWidget *customQuality;
 	QSpinBox *videoBitrate;
-	QComboBox *audioBitrate;
 	QComboBox *resolution;
 
 	std::string CurrentPlatform() const;

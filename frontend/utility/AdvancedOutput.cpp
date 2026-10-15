@@ -446,7 +446,7 @@ inline void AdvancedOutput::SetupFFmpeg()
 	const char *vEncoder = config_get_string(main->Config(), "AdvOut", "FFVEncoder");
 	int vEncoderId = config_get_int(main->Config(), "AdvOut", "FFVEncoderId");
 	const char *vEncCustom = config_get_string(main->Config(), "AdvOut", "FFVCustom");
-	int aBitrate = config_get_int(main->Config(), "AdvOut", "FFABitrate");
+	int aBitrate = kFixedAudioBitrateKbps;
 	int aMixes = config_get_int(main->Config(), "AdvOut", "FFAudioMixes");
 	const char *aEncoder = config_get_string(main->Config(), "AdvOut", "FFAEncoder");
 	int aEncoderId = config_get_int(main->Config(), "AdvOut", "FFAEncoderId");
@@ -586,11 +586,8 @@ void AdvancedOutput::SetupOutputs()
 
 int AdvancedOutput::GetAudioBitrate(size_t i, const char *id) const
 {
-	static const char *names[] = {
-		"Track1Bitrate", "Track2Bitrate", "Track3Bitrate", "Track4Bitrate", "Track5Bitrate", "Track6Bitrate",
-	};
-	int bitrate = (int)config_get_uint(main->Config(), "AdvOut", names[i]);
-	return FindClosestAvailableAudioBitrate(id, bitrate);
+	UNUSED_PARAMETER(i);
+	return FindClosestAvailableAudioBitrate(id, kFixedAudioBitrateKbps);
 }
 
 inline std::optional<size_t> AdvancedOutput::VodTrackMixerIdx(obs_service_t *service)

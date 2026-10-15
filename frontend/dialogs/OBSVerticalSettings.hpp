@@ -29,7 +29,6 @@ private:
 	QComboBox *recFormat;
 	QComboBox *encoder;
 	QSpinBox *videoBitrate;
-	QComboBox *audioBitrate;
 	QSpinBox *audioTrack;
 	QLineEdit *fileSuffix;
 	QSpinBox *replayTime;

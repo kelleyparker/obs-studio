@@ -26,7 +26,6 @@ VerticalOutputSettings VerticalOutputSettings::Load()
 	config_set_default_string(config, Section, "RecFormat", "hybrid_mp4");
 	config_set_default_string(config, Section, "RecEncoder", "");
 	config_set_default_int(config, Section, "VideoBitrate", 8000);
-	config_set_default_int(config, Section, "AudioBitrate", 160);
 	config_set_default_int(config, Section, "AudioTrack", 1);
 	config_set_default_string(config, Section, "FileSuffix", "Vertical");
 	config_set_default_int(config, Section, "RBTime", 30);
@@ -37,7 +36,7 @@ VerticalOutputSettings VerticalOutputSettings::Load()
 	settings.recFormat = config_get_string(config, Section, "RecFormat");
 	settings.encoder = config_get_string(config, Section, "RecEncoder");
 	settings.videoBitrate = std::clamp((int)config_get_int(config, Section, "VideoBitrate"), 200, 200000);
-	settings.audioBitrate = (int)config_get_int(config, Section, "AudioBitrate");
+	settings.audioBitrate = kFixedAudioBitrateKbps;
 	settings.audioTrack = std::clamp((int)config_get_int(config, Section, "AudioTrack"), 1, MAX_AUDIO_MIXES);
 	settings.fileSuffix = config_get_string(config, Section, "FileSuffix");
 	settings.replayTimeSec = std::clamp((int)config_get_int(config, Section, "RBTime"), 5, 21600);
@@ -53,7 +52,6 @@ void VerticalOutputSettings::Save() const
 	config_set_string(config, Section, "RecFormat", recFormat.c_str());
 	config_set_string(config, Section, "RecEncoder", encoder.c_str());
 	config_set_int(config, Section, "VideoBitrate", videoBitrate);
-	config_set_int(config, Section, "AudioBitrate", audioBitrate);
 	config_set_int(config, Section, "AudioTrack", audioTrack);
 	config_set_string(config, Section, "FileSuffix", fileSuffix.c_str());
 	config_set_int(config, Section, "RBTime", replayTimeSec);

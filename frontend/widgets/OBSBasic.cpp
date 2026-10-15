@@ -668,7 +668,7 @@ bool OBSBasic::InitBasicConfigDefaults()
 	config_set_default_string(activeConfiguration, "SimpleOutput", "FilePath", GetDefaultVideoSavePath().c_str());
 	config_set_default_string(activeConfiguration, "SimpleOutput", "RecFormat2", DEFAULT_CONTAINER);
 	config_set_default_uint(activeConfiguration, "SimpleOutput", "VBitrate", 6000);
-	config_set_default_uint(activeConfiguration, "SimpleOutput", "ABitrate", 160);
+	config_set_default_uint(activeConfiguration, "SimpleOutput", "ABitrate", 320);
 	config_set_default_bool(activeConfiguration, "SimpleOutput", "UseAdvanced", false);
 	config_set_default_string(activeConfiguration, "SimpleOutput", "Preset", "veryfast");
 	config_set_default_string(activeConfiguration, "SimpleOutput", "NVENCPreset2", "p5");
@@ -703,15 +703,15 @@ bool OBSBasic::InitBasicConfigDefaults()
 	config_set_default_uint(activeConfiguration, "AdvOut", "FFVGOPSize", 250);
 	config_set_default_bool(activeConfiguration, "AdvOut", "FFUseRescale", false);
 	config_set_default_bool(activeConfiguration, "AdvOut", "FFIgnoreCompat", false);
-	config_set_default_uint(activeConfiguration, "AdvOut", "FFABitrate", 160);
+	config_set_default_uint(activeConfiguration, "AdvOut", "FFABitrate", 320);
 	config_set_default_uint(activeConfiguration, "AdvOut", "FFAudioMixes", 1);
 
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track1Bitrate", 160);
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track2Bitrate", 160);
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track3Bitrate", 160);
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track4Bitrate", 160);
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track5Bitrate", 160);
-	config_set_default_uint(activeConfiguration, "AdvOut", "Track6Bitrate", 160);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track1Bitrate", 320);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track2Bitrate", 320);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track3Bitrate", 320);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track4Bitrate", 320);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track5Bitrate", 320);
+	config_set_default_uint(activeConfiguration, "AdvOut", "Track6Bitrate", 320);
 
 	config_set_default_uint(activeConfiguration, "AdvOut", "RecSplitFileTime", 15);
 	config_set_default_uint(activeConfiguration, "AdvOut", "RecSplitFileSize", 2048);

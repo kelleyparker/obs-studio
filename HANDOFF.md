@@ -80,6 +80,19 @@ Windows x64 CI build that the owner has tested.
 - New source files must be added to the lists in `frontend/cmake/ui-*.cmake`.
 - Commit messages follow the OBS style, for example `frontend: Add X`, with a short body.
 
+## Audio bitrate fixed at 320 kbps (done, untested)
+
+At the owner's request, audio is always encoded at 320 kbps and there is no audio bitrate setting
+(`kFixedAudioBitrateKbps` in `frontend/utility/audio-encoders.hpp`). This covers Simple and
+Advanced output, custom FFmpeg output, vertical recording and multistream. The bitrate rows are
+hidden in code (`OBSBasicSettings::LoadOutputSettings`), not removed from the `.ui` file, so
+merges from upstream stay simple. Saved `ABitrate`/`TrackNBitrate` values are ignored.
+
+Streams still go lower where the platform accepts less: the main stream through "Enforce
+streaming service bitrate limits", and every multistream destination (shared or separate
+encoders) through `CapAudioBitrate` in `MultistreamOutput.cpp`, for example 160 kbps for YouTube
+and 128 kbps for Facebook.
+
 ## Part B: settings backup and restore (done, untested)
 
 In the File menu, after "Show Profile Folder":

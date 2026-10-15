@@ -4,6 +4,10 @@
 #include <string>
 #include <vector>
 
+/* Audio is always encoded at this bitrate. It isn't a setting: streams only go
+ * lower where the platform accepts less. */
+constexpr int kFixedAudioBitrateKbps = 320;
+
 const std::map<int, std::string> &GetSimpleAACEncoderBitrateMap();
 const char *GetSimpleAACEncoderForBitrate(int bitrate);
 int FindClosestAvailableSimpleAACBitrate(int bitrate);

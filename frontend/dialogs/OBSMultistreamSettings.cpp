@@ -141,11 +141,6 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	videoBitrate->setSingleStep(250);
 	videoBitrate->setSuffix(" kbps");
 
-	audioBitrate = new QComboBox(this);
-	for (const auto &[bitrate, encoderId] : GetSimpleAACEncoderBitrateMap()) {
-		audioBitrate->addItem(QString("%1 kbps").arg(bitrate), bitrate);
-	}
-
 	resolution = new QComboBox(this);
 	resolution->setEditable(true);
 	resolution->addItem(QTStr("Multistream.Resolution.Output"), QString());
@@ -159,7 +154,6 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	QFormLayout *customForm = new QFormLayout(customQuality);
 	customForm->setContentsMargins(0, 0, 0, 0);
 	customForm->addRow(QTStr("Basic.Settings.Output.VideoBitrate"), videoBitrate);
-	customForm->addRow(QTStr("Basic.Settings.Output.AudioBitrate"), audioBitrate);
 	customForm->addRow(QTStr("Basic.Settings.Video.ScaledResolution"), resolution);
 
 	QGroupBox *quality = new QGroupBox(QTStr("Multistream.Quality"), this);
@@ -201,9 +195,6 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	server->setText(QString::fromStdString(dest.server));
 	key->setText(QString::fromStdString(dest.key));
 	videoBitrate->setValue(dest.videoBitrate);
-
-	int audioIdx = audioBitrate->findData(FindClosestAvailableSimpleAACBitrate(dest.audioBitrate));
-	audioBitrate->setCurrentIndex(audioIdx >= 0 ? audioIdx : 0);
 
 	if (dest.width && dest.height) {
 		resolution->setCurrentText(QString("%1x%2").arg(dest.width).arg(dest.height));
@@ -531,7 +522,6 @@ void MultistreamDestinationDialog::accept()
 		destination.qualityPreset = SelectedPreset();
 	}
 	destination.videoBitrate = videoBitrate->value();
-	destination.audioBitrate = audioBitrate->currentData().toInt();
 	destination.encoder = encoder->currentData().toString().toStdString();
 	destination.width = width;
 	destination.height = height;
