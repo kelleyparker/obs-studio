@@ -33,6 +33,43 @@ void OBSBasic::ShowVerticalDocks()
 	}
 }
 
+void OBSBasic::StartVerticalRecording()
+{
+	QString error;
+	if (verticalOutput && !verticalOutput->StartRecording(error) && !error.isEmpty()) {
+		OBSMessageBox::critical(this, QTStr("Output.StartRecordingFailed"), error);
+	}
+}
+
+void OBSBasic::StopVerticalRecording()
+{
+	if (verticalOutput) {
+		verticalOutput->StopRecording();
+	}
+}
+
+void OBSBasic::StartVerticalReplayBuffer()
+{
+	QString error;
+	if (verticalOutput && !verticalOutput->StartReplayBuffer(error)) {
+		OBSMessageBox::critical(this, QTStr("Output.StartReplayFailed"), error);
+	}
+}
+
+void OBSBasic::StopVerticalReplayBuffer()
+{
+	if (verticalOutput) {
+		verticalOutput->StopReplayBuffer();
+	}
+}
+
+void OBSBasic::SaveVerticalReplay()
+{
+	if (verticalOutput) {
+		verticalOutput->SaveReplay();
+	}
+}
+
 void OBSBasic::VerticalOutputStarted()
 {
 	OnActivate();

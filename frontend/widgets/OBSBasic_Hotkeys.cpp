@@ -234,6 +234,37 @@ void OBSBasic::CreateHotkeys()
 				  obs_data_get_json(newData));
 	}
 
+	verticalRecordingHotkeys = obs_hotkey_pair_register_frontend(
+		"OBSBasic.StartVerticalRecording", Str("Vertical.Hotkey.StartRecording"),
+		"OBSBasic.StopVerticalRecording", Str("Vertical.Hotkey.StopRecording"),
+		MAKE_CALLBACK(basic.verticalOutput && !basic.verticalOutput->RecordingActive(),
+			      basic.StartVerticalRecording, "Starting vertical recording"),
+		MAKE_CALLBACK(basic.verticalOutput && basic.verticalOutput->RecordingActive(),
+			      basic.StopVerticalRecording, "Stopping vertical recording"),
+		this, this);
+	LoadHotkeyPair(verticalRecordingHotkeys, "OBSBasic.StartVerticalRecording", "OBSBasic.StopVerticalRecording");
+
+	verticalReplayHotkeys = obs_hotkey_pair_register_frontend(
+		"OBSBasic.StartVerticalReplayBuffer", Str("Vertical.Hotkey.StartReplay"),
+		"OBSBasic.StopVerticalReplayBuffer", Str("Vertical.Hotkey.StopReplay"),
+		MAKE_CALLBACK(basic.verticalOutput && !basic.verticalOutput->ReplayBufferActive(),
+			      basic.StartVerticalReplayBuffer, "Starting vertical replay buffer"),
+		MAKE_CALLBACK(basic.verticalOutput && basic.verticalOutput->ReplayBufferActive(),
+			      basic.StopVerticalReplayBuffer, "Stopping vertical replay buffer"),
+		this, this);
+	LoadHotkeyPair(verticalReplayHotkeys, "OBSBasic.StartVerticalReplayBuffer",
+		       "OBSBasic.StopVerticalReplayBuffer");
+
+	auto verticalSaveReplayCallback = [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+		OBSBasic &basic = *static_cast<OBSBasic *>(data);
+		if (pressed) {
+			basic.SaveVerticalReplay();
+		}
+	};
+	verticalSaveReplayHotkey = obs_hotkey_register_frontend(
+		"OBSBasic.SaveVerticalReplay", Str("Vertical.Hotkey.SaveReplay"), verticalSaveReplayCallback, this);
+	LoadHotkey(verticalSaveReplayHotkey, "OBSBasic.SaveVerticalReplay");
+
 	if (vcamEnabled) {
 		vcamHotkeys = obs_hotkey_pair_register_frontend(
 			"OBSBasic.StartVirtualCam", Str("Basic.Main.StartVirtualCam"), "OBSBasic.StopVirtualCam",
@@ -323,6 +354,9 @@ void OBSBasic::ClearHotkeys()
 	obs_hotkey_unregister(addChapterHotkey);
 	obs_hotkey_pair_unregister(replayBufHotkeys);
 	obs_hotkey_unregister(saveReplayBufferHotkey);
+	obs_hotkey_pair_unregister(verticalRecordingHotkeys);
+	obs_hotkey_pair_unregister(verticalReplayHotkeys);
+	obs_hotkey_unregister(verticalSaveReplayHotkey);
 	obs_hotkey_pair_unregister(vcamHotkeys);
 	obs_hotkey_pair_unregister(togglePreviewHotkeys);
 	obs_hotkey_pair_unregister(contextBarHotkeys);

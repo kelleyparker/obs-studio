@@ -504,6 +504,9 @@ private:
 	obs_hotkey_pair_id streamingHotkeys, recordingHotkeys, pauseHotkeys, replayBufHotkeys, vcamHotkeys,
 		togglePreviewHotkeys, contextBarHotkeys;
 	obs_hotkey_id forceStreamingStopHotkey, splitFileHotkey, addChapterHotkey, saveReplayBufferHotkey;
+	obs_hotkey_pair_id verticalRecordingHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
+	obs_hotkey_pair_id verticalReplayHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
+	obs_hotkey_id verticalSaveReplayHotkey = OBS_INVALID_HOTKEY_ID;
 
 	void InitHotkeys();
 	void CreateHotkeys();
@@ -1670,6 +1673,13 @@ private slots:
 	void ShowVerticalDocks();
 	void VerticalOutputStarted();
 	void VerticalOutputStopped();
+
+public:
+	void StartVerticalRecording();
+	void StopVerticalRecording();
+	void StartVerticalReplayBuffer();
+	void StopVerticalReplayBuffer();
+	void SaveVerticalReplay();
 	void OpenBackupSettings();
 	void OpenRestoreSettings();
 
