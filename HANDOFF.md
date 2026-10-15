@@ -30,13 +30,15 @@ Windows x64 CI build that the owner has tested.
 
 ### Next steps, in order
 
-1. **Get Part B building on Windows CI.** Open the **Actions** tab, find the "Push" run for this
-   branch and fix any MSVC errors. If no run started, use **Run workflow** on the "Push" workflow and
-   pick this branch. Part B has only been compiled against Qt 6.4 on Linux, so expect a few small
-   MSVC or Qt 6.8 fixes.
-2. **The owner tests Part B** with the CI artifact `obs-studio-windows-x64-*`. Use the checklist
+1. **Turn GitHub Actions back on.** As of 2026-10-15, Actions is disabled for this repository, so
+   nothing builds. Turn it on in **Settings → Actions → General** ("Allow all actions and reusable
+   workflows").
+2. **Get Part B building on Windows CI.** Open the **Actions** tab, then **Push**, then
+   **Run workflow**, and pick this branch. Fix any MSVC errors. Part B has only been compiled
+   against Qt 6.4 on Linux, so expect a few small MSVC or Qt 6.8 fixes.
+3. **The owner tests Part B** with the CI artifact `obs-studio-windows-x64-*`. Use the checklist
    under "Testing Part B" below.
-3. **Start Part A, phase 1a:** the `VerticalCanvas` manager. See "Starting Part A" below and the plan.
+4. **Start Part A, phase 1a:** the `VerticalCanvas` manager. See "Starting Part A" below and the plan.
 
 ## Branches and workflow
 
