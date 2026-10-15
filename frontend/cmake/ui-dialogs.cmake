@@ -43,6 +43,8 @@ target_sources(
     dialogs/OBSMultistreamSettings.hpp
     dialogs/OBSRemux.cpp
     dialogs/OBSRemux.hpp
+    dialogs/OBSSettingsBackup.cpp
+    dialogs/OBSSettingsBackup.hpp
     dialogs/OBSWhatsNew.cpp
     dialogs/OBSWhatsNew.hpp
 )

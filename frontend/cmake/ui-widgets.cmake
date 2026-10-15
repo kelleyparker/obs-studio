@@ -16,6 +16,7 @@ target_sources(
     widgets/ColorSelect.hpp
     widgets/OBSBasic.cpp
     widgets/OBSBasic.hpp
+    widgets/OBSBasic_Backup.cpp
     widgets/OBSBasic_Browser.cpp
     widgets/OBSBasic_Canvases.cpp
     widgets/OBSBasic_Clipboard.cpp

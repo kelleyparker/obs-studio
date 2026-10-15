@@ -43,6 +43,7 @@
 #include <utility/QuickTransition.hpp>
 #include <utility/SceneRenameDelegate.hpp>
 #include <utility/ScreenshotObj.hpp>
+#include <utility/SettingsBackup.hpp>
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
@@ -109,7 +110,8 @@ extern void CheckExistingCookieId();
 
 namespace {
 std::once_flag saveOnceFlag;
-}
+std::once_flag autoBackupOnceFlag;
+} // namespace
 
 extern void setupDockAction(QDockWidget *dock);
 
@@ -1113,6 +1115,21 @@ void OBSBasic::OBSInit()
 	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
 
+	/* settings backup and restore, placed after "Show Profile Folder" */
+	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);
+	QAction *restoreAction = new QAction(QTStr("Restore.MenuAction"), this);
+	backupAction->setMenuRole(QAction::NoRole);
+	restoreAction->setMenuRole(QAction::NoRole);
+	connect(backupAction, &QAction::triggered, this, &OBSBasic::OpenBackupSettings);
+	connect(restoreAction, &QAction::triggered, this, &OBSBasic::OpenRestoreSettings);
+
+	QList<QAction *> fileActions = ui->menu_File->actions();
+	qsizetype profileFolderIndex = fileActions.indexOf(ui->actionShowProfileFolder);
+	QAction *insertBefore = profileFolderIndex >= 0 && profileFolderIndex + 1 < fileActions.size()
+					? fileActions[profileFolderIndex + 1]
+					: nullptr;
+	ui->menu_File->insertActions(insertBefore, {backupAction, restoreAction});
+
 	/* ----------------------------- */
 	/* add custom browser docks      */
 #if defined(BROWSER_AVAILABLE) && defined(YOUTUBE_ENABLED)
@@ -1794,6 +1811,8 @@ void OBSBasic::saveAll()
 	config_set_bool(App()->GetUserConfig(), "BasicWindow", "DocksLocked", ui->lockDocks->isChecked());
 	config_set_bool(App()->GetUserConfig(), "BasicWindow", "SideDocks", ui->sideDocks->isChecked());
 	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
+
+	std::call_once(autoBackupOnceFlag, []() { SettingsBackup::RunAutomaticBackup(); });
 }
 
 bool OBSBasic::isReadyToClose()

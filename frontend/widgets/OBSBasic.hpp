@@ -774,6 +774,7 @@ private:
 
 public:
 	bool Active() const;
+	void SaveForBackup();
 	void ResetOutputs();
 
 	inline void EnableOutputs(bool enable)
@@ -1655,6 +1656,8 @@ private slots:
 
 	void OpenVirtualCamConfig();
 	void OpenMultistreamSettings();
+	void OpenBackupSettings();
+	void OpenRestoreSettings();
 
 public:
 	inline bool VCamEnabled() const { return vcamEnabled; }

@@ -23,6 +23,7 @@
 #include <utility/CrashHandler.hpp>
 #include <utility/OBSEventFilter.hpp>
 #include <utility/OBSProxyStyle.hpp>
+#include <utility/SettingsBackup.hpp>
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 #include <utility/models/branches.hpp>
 #endif
@@ -377,6 +378,9 @@ void OBSApp::InitUserConfigDefaults()
 {
 	config_set_default_bool(userConfig, "General", "ConfirmOnExit", true);
 
+	config_set_default_bool(userConfig, "Backup", "AutoBackupOnExit", false);
+	config_set_default_int(userConfig, "Backup", "AutoBackupKeep", 5);
+
 	config_set_default_string(userConfig, "General", "HotkeyFocusType", "NeverDisableHotkeys");
 
 	config_set_default_bool(userConfig, "BasicWindow", "PreviewEnabled", true);
@@ -629,6 +633,10 @@ bool OBSApp::InitGlobalConfig()
 							    ? std::move(currentUserPluginManagerLocation)
 							    : std::move(defaultPluginManagerLocation);
 	}
+
+	/* A restore chosen in File > Restore Settings is applied before any user
+	 * configuration is opened */
+	SettingsBackup::ApplyPendingRestore(SettingsBackup::Roots::Current());
 
 	bool userConfigResult = InitUserConfig(userConfigLocation, lastVersion);
 

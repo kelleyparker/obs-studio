@@ -56,6 +56,8 @@ target_sources(
     utility/SceneRenameDelegate.hpp
     utility/ScreenshotObj.cpp
     utility/ScreenshotObj.hpp
+    utility/SettingsBackup.cpp
+    utility/SettingsBackup.hpp
     utility/SettingsEventFilter.hpp
     utility/SimpleOutput.cpp
     utility/SimpleOutput.hpp
@@ -68,6 +70,8 @@ target_sources(
     utility/ThumbnailView.cpp
     utility/ThumbnailView.hpp
     utility/VCamConfig.hpp
+    utility/ZipArchive.cpp
+    utility/ZipArchive.hpp
     utility/audio-encoders.cpp
     utility/audio-encoders.hpp
     utility/display-helpers.hpp
