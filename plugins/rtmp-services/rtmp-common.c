@@ -381,18 +381,12 @@ static json_t *open_services_file(void)
 	char *file;
 	json_t *root = NULL;
 
-	file = obs_module_config_path("services.json");
+	/* Always use the bundled list of services, never a downloaded update:
+	 * the bundled list is trimmed to the services that are wanted */
+	file = obs_module_file("services.json");
 	if (file) {
 		root = open_json_file(file);
 		bfree(file);
-	}
-
-	if (!root) {
-		file = obs_module_file("services.json");
-		if (file) {
-			root = open_json_file(file);
-			bfree(file);
-		}
 	}
 
 	return root;
@@ -422,6 +416,11 @@ static bool fill_twitch_servers_locked(obs_property_t *servers_prop)
 
 	for (size_t i = 0; i < count; i++) {
 		struct ingest twitch_ing = twitch_ingest(i);
+
+		/* Only the default server and the US servers are listed */
+		if (strcmp(twitch_ing.name, "Default") != 0 && strncmp(twitch_ing.name, "US ", 3) != 0)
+			continue;
+
 		obs_property_list_add_string(servers_prop, twitch_ing.name, twitch_ing.url);
 	}
 

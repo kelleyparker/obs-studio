@@ -499,7 +499,7 @@ void OBSBasicSettings::LoadServices(bool showAll)
 
 	OBSDataAutoRelease settings = obs_data_create();
 
-	obs_data_set_bool(settings, "show_all", showAll);
+	obs_data_set_bool(settings, "show_all", true);
 
 	obs_property_t *prop = obs_properties_get(props, "show_all");
 	obs_property_modified(prop, settings);
@@ -516,21 +516,13 @@ void OBSBasicSettings::LoadServices(bool showAll)
 		names.push_back(name);
 	}
 
-	if (showAll) {
-		names.sort(Qt::CaseInsensitive);
-	}
+	/* The service list is short (see rtmp-services' services.json), so it
+	 * is always shown in full, without "Show All" or WHIP */
+	UNUSED_PARAMETER(showAll);
+	names.sort(Qt::CaseInsensitive);
 
 	for (QString &name : names) {
 		ui->service->addItem(name);
-	}
-
-	if (obs_is_output_protocol_registered("WHIP")) {
-		ui->service->addItem(QTStr("WHIP"), QVariant((int)ListOpt::WHIP));
-	}
-
-	if (!showAll) {
-		ui->service->addItem(QTStr("Basic.AutoConfig.StreamPage.Service.ShowAll"),
-				     QVariant((int)ListOpt::ShowAll));
 	}
 
 	ui->service->insertItem(0, QTStr("Basic.AutoConfig.StreamPage.Service.Custom"), QVariant((int)ListOpt::Custom));
