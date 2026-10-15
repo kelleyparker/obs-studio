@@ -371,4 +371,8 @@ See [`HANDOFF.md`](../../HANDOFF.md) at the repository root for where work stopp
   - The restore hook is in `OBSApp::InitGlobalConfig`, the menu entries are set up in `OBSBasic::OBSInit`, and the auto backup runs in `OBSBasic::saveAll`.
   - The ZipArchive writer and reader were tested standalone on Linux. The rest only had a compile check against Qt 6.4 headers.
   - Deviation from the plan: the automatic-backup options are in the Back Up Settings dialog, not in Settings → General.
-- Not started: Part A (vertical canvas) and Part C (hardware load projection).
+- Done but not yet built on Windows CI or tested on Windows: Part A phase 1 (vertical canvas core, settings dialog, Preview/Scenes/Sources docks, recording, replay buffer, multistream Output choice) plus the phase 3 hotkeys. HANDOFF.md lists the files and the deviations from this plan:
+  - The settings are in their own Tools → Vertical Canvas dialog.
+  - The canvas doesn't mix audio.
+  - A new libobs function `obs_canvas_clear_video()` is used to turn vertical off.
+- Not started: Part A phases 2–3 (except hotkeys) and Part C (hardware load projection).
