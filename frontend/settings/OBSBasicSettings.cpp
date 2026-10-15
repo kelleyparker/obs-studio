@@ -353,6 +353,10 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 
 	ui->listWidget->setAttribute(Qt::WA_MacShowFocusRect, false);
 
+	/* The Accessibility page only overrides colors; the defaults are always
+	 * used (see OBSBasic::GetSelectionColor and VolumeMeter) */
+	ui->listWidget->item(Pages::ACCESSIBILITY)->setHidden(true);
+
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->updateChannelBox,     COMBO_CHANGED,  GENERAL_CHANGED);
@@ -1792,12 +1796,8 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 
 	PopulateSimpleBitrates(ui->simpleOutputABitrate, isOpus);
 
-	const char *speakers = config_get_string(main->Config(), "Audio", "ChannelSetup");
-
-	// restrict list of bitrates when multichannel is OFF
-	if (!IsSurround(speakers)) {
-		RestrictResetBitrates({ui->simpleOutputABitrate}, 320);
-	}
+	// audio is always stereo, so restrict the list of bitrates
+	RestrictResetBitrates({ui->simpleOutputABitrate}, 320);
 
 	SetComboByName(ui->simpleOutputABitrate, QString::number(audioBitrate));
 
@@ -2193,15 +2193,10 @@ void OBSBasicSettings::LoadAdvOutputAudioSettings()
 	track5Bitrate = FindClosestAvailableAudioBitrate(ui->advOutTrack5Bitrate, track5Bitrate);
 	track6Bitrate = FindClosestAvailableAudioBitrate(ui->advOutTrack6Bitrate, track6Bitrate);
 
-	// restrict list of bitrates when multichannel is OFF
-	const char *speakers = config_get_string(main->Config(), "Audio", "ChannelSetup");
-
-	// restrict list of bitrates when multichannel is OFF
-	if (!IsSurround(speakers)) {
-		RestrictResetBitrates({ui->advOutTrack1Bitrate, ui->advOutTrack2Bitrate, ui->advOutTrack3Bitrate,
-				       ui->advOutTrack4Bitrate, ui->advOutTrack5Bitrate, ui->advOutTrack6Bitrate},
-				      320);
-	}
+	// audio is always stereo, so restrict the list of bitrates
+	RestrictResetBitrates({ui->advOutTrack1Bitrate, ui->advOutTrack2Bitrate, ui->advOutTrack3Bitrate,
+			       ui->advOutTrack4Bitrate, ui->advOutTrack5Bitrate, ui->advOutTrack6Bitrate},
+			      320);
 
 	SetComboByName(ui->advOutTrack1Bitrate, QString::number(track1Bitrate));
 	SetComboByName(ui->advOutTrack2Bitrate, QString::number(track2Bitrate));
@@ -2509,8 +2504,11 @@ void OBSBasicSettings::LoadAudioSources()
 
 void OBSBasicSettings::LoadAudioSettings()
 {
-	uint32_t sampleRate = config_get_uint(main->Config(), "Audio", "SampleRate");
-	const char *speakers = config_get_string(main->Config(), "Audio", "ChannelSetup");
+	/* Audio is always 48 kHz stereo (see OBSBasic::ResetAudio), so the
+	 * General section is hidden and only shows those values */
+	uint32_t sampleRate = 48000;
+	const char *speakers = "Stereo";
+	ui->audioGeneralGroupBox->setVisible(false);
 	double meterDecayRate = config_get_double(main->Config(), "Audio", "MeterDecayRate");
 	uint32_t peakMeterTypeIdx = config_get_uint(main->Config(), "Audio", "PeakMeterType");
 	bool enableLLAudioBuffering = config_get_bool(App()->GetUserConfig(), "Audio", "LowLatencyAudioBuffering");
@@ -3616,50 +3614,7 @@ void OBSBasicSettings::SaveOutputSettings()
 
 void OBSBasicSettings::SaveAudioSettings()
 {
-	QString sampleRateStr = ui->sampleRate->currentText();
-	int channelSetupIdx = ui->channelSetup->currentIndex();
-
-	const char *channelSetup;
-	switch (channelSetupIdx) {
-	case 0:
-		channelSetup = "Mono";
-		break;
-	case 1:
-		channelSetup = "Stereo";
-		break;
-	case 2:
-		channelSetup = "2.1";
-		break;
-	case 3:
-		channelSetup = "4.0";
-		break;
-	case 4:
-		channelSetup = "4.1";
-		break;
-	case 5:
-		channelSetup = "5.1";
-		break;
-	case 6:
-		channelSetup = "7.1";
-		break;
-
-	default:
-		channelSetup = "Stereo";
-		break;
-	}
-
-	int sampleRate = 44100;
-	if (sampleRateStr == "48 kHz") {
-		sampleRate = 48000;
-	}
-
-	if (WidgetChanged(ui->sampleRate)) {
-		config_set_uint(main->Config(), "Audio", "SampleRate", sampleRate);
-	}
-
-	if (WidgetChanged(ui->channelSetup)) {
-		config_set_string(main->Config(), "Audio", "ChannelSetup", channelSetup);
-	}
+	/* Sample rate and channels are fixed (see OBSBasic::ResetAudio) */
 
 	if (WidgetChanged(ui->meterDecayRate)) {
 		double meterDecayRate;

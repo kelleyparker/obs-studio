@@ -130,13 +130,8 @@ OBSAdvAudioCtrl::OBSAdvAudioCtrl(QGridLayout *, obs_source_t *source_) : source(
 	balance->setTickInterval(50);
 	balance->setAccessibleName(QTStr("Basic.AdvAudio.BalanceSource").arg(sourceName));
 
-	const char *speakers = config_get_string(main->Config(), "Audio", "ChannelSetup");
-
-	if (strcmp(speakers, "Mono") == 0) {
-		balance->setEnabled(false);
-	} else {
-		balance->setEnabled(true);
-	}
+	/* Audio is always stereo, so balance always applies */
+	balance->setEnabled(true);
 
 	float bal = obs_source_get_balance_value(source) * 100.0f;
 	balance->setValue((int)bal);

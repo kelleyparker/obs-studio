@@ -93,6 +93,16 @@ streaming service bitrate limits", and every multistream destination (shared or 
 encoders) through `CapAudioBitrate` in `MultistreamOutput.cpp`, for example 160 kbps for YouTube
 and 128 kbps for Facebook.
 
+## Audio fixed at 48 kHz stereo, Accessibility page hidden (done, untested)
+
+At the owner's request:
+
+- Audio is always 48 kHz stereo (`OBSBasic::ResetAudio`). Settings → Audio → General is hidden,
+  saved `SampleRate` and `ChannelSetup` values are ignored, and switching profiles never asks for
+  a restart because of audio.
+- Settings → Accessibility is hidden and its color overrides are ignored. The preview borders and
+  the volume meters always use the default (theme) colors.
+
 ## Part B: settings backup and restore (done, untested)
 
 In the File menu, after "Show Profile Folder":

@@ -777,27 +777,10 @@ void OBSBasic::ResetProfileData()
 
 std::vector<std::string> OBSBasic::GetRestartRequirements(const ConfigFile &config) const
 {
-	std::vector<std::string> result;
-
-	const char *oldSpeakers = config_get_string(activeConfiguration, "Audio", "ChannelSetup");
-	const char *newSpeakers = config_get_string(config, "Audio", "ChannelSetup");
-
-	uint64_t oldSampleRate = config_get_uint(activeConfiguration, "Audio", "SampleRate");
-	uint64_t newSampleRate = config_get_uint(config, "Audio", "SampleRate");
-
-	if (oldSpeakers != NULL && newSpeakers != NULL) {
-		if (std::string_view{oldSpeakers} != std::string_view{newSpeakers}) {
-			result.emplace_back(Str("Basic.Settings.Audio.Channels"));
-		}
-	}
-
-	if (oldSampleRate != 0 && newSampleRate != 0) {
-		if (oldSampleRate != newSampleRate) {
-			result.emplace_back(Str("Basic.Settings.Audio.SampleRate"));
-		}
-	}
-
-	return result;
+	/* Audio is always 48 kHz stereo (see ResetAudio), so a profile's
+	 * audio settings never need a restart */
+	UNUSED_PARAMETER(config);
+	return {};
 }
 
 void OBSBasic::CheckForSimpleModeX264Fallback()

@@ -600,36 +600,19 @@ void OBSBasic::UpdatePreviewOverflowSettings()
 	ui->preview->SetOverflowAlwaysVisible(always);
 }
 
-static inline QColor color_from_int(long long val)
-{
-	return QColor(val & 0xff, (val >> 8) & 0xff, (val >> 16) & 0xff, (val >> 24) & 0xff);
-}
-
 QColor OBSBasic::GetSelectionColor() const
 {
-	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectRed"));
-	} else {
-		return QColor::fromRgb(255, 0, 0);
-	}
+	return QColor::fromRgb(255, 0, 0);
 }
 
 QColor OBSBasic::GetCropColor() const
 {
-	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectGreen"));
-	} else {
-		return QColor::fromRgb(0, 255, 0);
-	}
+	return QColor::fromRgb(0, 255, 0);
 }
 
 QColor OBSBasic::GetHoverColor() const
 {
-	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectBlue"));
-	} else {
-		return QColor::fromRgb(0, 127, 255);
-	}
+	return QColor::fromRgb(0, 127, 255);
 }
 
 void OBSBasic::UpdatePreviewSpacingHelpers()

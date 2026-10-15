@@ -74,7 +74,8 @@ static void HandleSampleRate(obs_property_t *prop, const char *id)
 		return;
 	}
 
-	uint32_t sampleRate = config_get_uint(main->Config(), "Audio", "SampleRate");
+	/* Audio is always 48 kHz (see OBSBasic::ResetAudio) */
+	uint32_t sampleRate = 48000;
 
 	obs_data_set_int(data.get(), "samplerate", sampleRate);
 

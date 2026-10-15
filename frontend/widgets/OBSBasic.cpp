@@ -1627,26 +1627,11 @@ bool OBSBasic::ResetAudio()
 {
 	ProfileScope("OBSBasic::ResetAudio");
 
+	/* Audio is always 48 kHz stereo. It isn't a setting: saved
+	 * SampleRate and ChannelSetup values are ignored. */
 	struct obs_audio_info2 ai = {};
-	ai.samples_per_sec = config_get_uint(activeConfiguration, "Audio", "SampleRate");
-
-	const char *channelSetupStr = config_get_string(activeConfiguration, "Audio", "ChannelSetup");
-
-	if (strcmp(channelSetupStr, "Mono") == 0) {
-		ai.speakers = SPEAKERS_MONO;
-	} else if (strcmp(channelSetupStr, "2.1") == 0) {
-		ai.speakers = SPEAKERS_2POINT1;
-	} else if (strcmp(channelSetupStr, "4.0") == 0) {
-		ai.speakers = SPEAKERS_4POINT0;
-	} else if (strcmp(channelSetupStr, "4.1") == 0) {
-		ai.speakers = SPEAKERS_4POINT1;
-	} else if (strcmp(channelSetupStr, "5.1") == 0) {
-		ai.speakers = SPEAKERS_5POINT1;
-	} else if (strcmp(channelSetupStr, "7.1") == 0) {
-		ai.speakers = SPEAKERS_7POINT1;
-	} else {
-		ai.speakers = SPEAKERS_STEREO;
-	}
+	ai.samples_per_sec = 48000;
+	ai.speakers = SPEAKERS_STEREO;
 
 	bool lowLatencyAudioBuffering = config_get_bool(App()->GetUserConfig(), "Audio", "LowLatencyAudioBuffering");
 	if (lowLatencyAudioBuffering) {
