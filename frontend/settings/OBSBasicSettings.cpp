@@ -357,6 +357,10 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	 * used (see OBSBasic::GetSelectionColor and VolumeMeter) */
 	ui->listWidget->item(Pages::ACCESSIBILITY)->setHidden(true);
 
+	/* The network settings are fixed at OBS's defaults (see
+	 * SimpleOutput::StartStreaming and AdvancedOutput::StartStreaming) */
+	ui->advNetworkGroupBox->setVisible(false);
+
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->updateChannelBox,     COMBO_CHANGED,  GENERAL_CHANGED);

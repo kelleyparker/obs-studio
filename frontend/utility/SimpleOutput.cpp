@@ -725,13 +725,15 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 	bool useDelay = config_get_bool(main->Config(), "Output", "DelayEnable");
 	int delaySec = config_get_int(main->Config(), "Output", "DelaySec");
 	bool preserveDelay = config_get_bool(main->Config(), "Output", "DelayPreserve");
-	const char *bindIP = config_get_string(main->Config(), "Output", "BindIP");
-	const char *ipFamily = config_get_string(main->Config(), "Output", "IPFamily");
+	/* The network settings are fixed at OBS's defaults; Settings hides
+	 * them */
+	const char *bindIP = "default";
+	const char *ipFamily = "IPv4+IPv6";
 #ifdef _WIN32
-	bool enableNewSocketLoop = config_get_bool(main->Config(), "Output", "NewSocketLoopEnable");
-	bool enableLowLatencyMode = config_get_bool(main->Config(), "Output", "LowLatencyEnable");
+	bool enableNewSocketLoop = false;
+	bool enableLowLatencyMode = false;
 #endif
-	bool enableDynBitrate = config_get_bool(main->Config(), "Output", "DynamicBitrate");
+	bool enableDynBitrate = false;
 
 	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, "bind_ip", bindIP);

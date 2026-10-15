@@ -916,7 +916,7 @@ bool MultistreamOutput::Start(const string &id)
 	}
 
 	config_t *config = OBSBasic::Get()->Config();
-	bool dynamicBitrate = config_get_bool(config, "Output", "DynamicBitrate");
+	bool dynamicBitrate = false; /* the network settings are fixed */
 
 	if (dest->vertical && !GetDestinationVideo(*dest)) {
 		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.VerticalOff"));
@@ -966,13 +966,12 @@ bool MultistreamOutput::Start(const string &id)
 	bool preserveDelay = config_get_bool(config, "Output", "DelayPreserve");
 
 	OBSDataAutoRelease outputSettings = obs_data_create();
-	obs_data_set_string(outputSettings, "bind_ip", config_get_string(config, "Output", "BindIP"));
-	obs_data_set_string(outputSettings, "ip_family", config_get_string(config, "Output", "IPFamily"));
+	/* The network settings are fixed at OBS's defaults */
+	obs_data_set_string(outputSettings, "bind_ip", "default");
+	obs_data_set_string(outputSettings, "ip_family", "IPv4+IPv6");
 #ifdef _WIN32
-	obs_data_set_bool(outputSettings, "new_socket_loop_enabled",
-			  config_get_bool(config, "Output", "NewSocketLoopEnable"));
-	obs_data_set_bool(outputSettings, "low_latency_mode_enabled",
-			  config_get_bool(config, "Output", "LowLatencyEnable"));
+	obs_data_set_bool(outputSettings, "new_socket_loop_enabled", false);
+	obs_data_set_bool(outputSettings, "low_latency_mode_enabled", false);
 #endif
 	/* A congested destination must not lower the bitrate of an encoder
 	 * that the main stream and the other platforms use as well. */

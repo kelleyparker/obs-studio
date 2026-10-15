@@ -156,12 +156,9 @@ void AutoConfigTestPage::TestBandwidthThread()
 
 	obs_data_set_int(aencoder_settings, "bitrate", 32);
 
-	OBSBasic *main = OBSBasic::Get();
-	const char *bind_ip = config_get_string(main->Config(), "Output", "BindIP");
-	obs_data_set_string(output_settings, "bind_ip", bind_ip);
-
-	const char *ip_family = config_get_string(main->Config(), "Output", "IPFamily");
-	obs_data_set_string(output_settings, "ip_family", ip_family);
+	/* The network settings are fixed at OBS's defaults */
+	obs_data_set_string(output_settings, "bind_ip", "default");
+	obs_data_set_string(output_settings, "ip_family", "IPv4+IPv6");
 
 	/* -----------------------------------*/
 	/* determine which servers to test    */

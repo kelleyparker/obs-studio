@@ -210,7 +210,7 @@ void AdvancedOutput::UpdateStreamSettings()
 {
 	bool applyServiceSettings = config_get_bool(main->Config(), "AdvOut", "ApplyServiceSettings");
 	bool enforceBitrate = !config_get_bool(main->Config(), "Stream1", "IgnoreRecommended");
-	bool dynBitrate = config_get_bool(main->Config(), "Output", "DynamicBitrate");
+	bool dynBitrate = false; /* fixed, see StartStreaming */
 	const char *streamEncoder = config_get_string(main->Config(), "AdvOut", "Encoder");
 
 	OBSData settings = GetDataFromJsonFile("streamEncoder.json");
@@ -725,13 +725,15 @@ bool AdvancedOutput::StartStreaming(obs_service_t *service)
 	bool useDelay = config_get_bool(main->Config(), "Output", "DelayEnable");
 	int delaySec = config_get_int(main->Config(), "Output", "DelaySec");
 	bool preserveDelay = config_get_bool(main->Config(), "Output", "DelayPreserve");
-	const char *bindIP = config_get_string(main->Config(), "Output", "BindIP");
-	const char *ipFamily = config_get_string(main->Config(), "Output", "IPFamily");
+	/* The network settings are fixed at OBS's defaults; Settings hides
+	 * them */
+	const char *bindIP = "default";
+	const char *ipFamily = "IPv4+IPv6";
 #ifdef _WIN32
-	bool enableNewSocketLoop = config_get_bool(main->Config(), "Output", "NewSocketLoopEnable");
-	bool enableLowLatencyMode = config_get_bool(main->Config(), "Output", "LowLatencyEnable");
+	bool enableNewSocketLoop = false;
+	bool enableLowLatencyMode = false;
 #endif
-	bool enableDynBitrate = config_get_bool(main->Config(), "Output", "DynamicBitrate");
+	bool enableDynBitrate = false;
 
 	bool is_rtmp = false;
 	obs_service_t *service_obj = main->GetService();
