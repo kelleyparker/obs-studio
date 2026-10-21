@@ -255,6 +255,13 @@ void RemoveSecrets(const string &entry, string &data)
 				}
 			}
 		});
+	} else if (entry == "user/user.ini") {
+		/* Developer credentials for stream info (Platform Accounts) */
+		EditIni(data, [](config_t *config) {
+			for (const char *key : {"TwitchClientSecret", "YouTubeApiKey", "KickClientSecret"}) {
+				config_remove_value(config, "PlatformAccounts", key);
+			}
+		});
 	} else if (entry == "plugin_config/obs-websocket/config.json") {
 		EditJson(data, [](obs_data_t *json) {
 			obs_data_set_string(json, "server_password", "");

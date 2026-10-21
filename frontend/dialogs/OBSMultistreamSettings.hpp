@@ -33,6 +33,8 @@ private:
 	QLineEdit *key;
 	QPushButton *showKey;
 	QLabel *keyLink;
+	QLabel *channelLabel;
+	QLineEdit *channel;
 	QComboBox *qualityMode;
 	QLabel *encoderLabel;
 	QComboBox *encoder;
@@ -74,8 +76,11 @@ private:
 	QPushButton *removeButton;
 	QLabel *bandwidth;
 	QLabel *activeWarning;
+	QComboBox *primaryPlatform;
+	QLineEdit *primaryChannel;
 
 	MultistreamMode CurrentMode() const;
+	void UpdatePrimaryChannel();
 	void RefreshTable();
 	void UpdateBandwidth();
 	void UpdateButtons();

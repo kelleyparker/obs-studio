@@ -10,6 +10,8 @@ if(TARGET OBS::browser-panels)
       dialogs/OBSExtraBrowsers.hpp
       docks/BrowserDock.cpp
       docks/BrowserDock.hpp
+      docks/ChatDocks.cpp
+      docks/ChatDocks.hpp
       utility/ExtraBrowsersDelegate.cpp
       utility/ExtraBrowsersDelegate.hpp
       utility/ExtraBrowsersModel.cpp

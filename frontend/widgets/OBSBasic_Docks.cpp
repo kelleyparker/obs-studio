@@ -19,6 +19,10 @@
 
 #include "OBSBasic.hpp"
 
+#ifdef BROWSER_AVAILABLE
+#include <docks/ChatDocks.hpp>
+#endif
+
 #include <qt-wrappers.hpp>
 
 void setupDockAction(QDockWidget *dock)
@@ -99,6 +103,12 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 		dock->setVisible(verticalEnabled);
 	}
 
+#ifdef BROWSER_AVAILABLE
+	if (chatDocks) {
+		chatDocks->ResetLayout();
+	}
+#endif
+
 	QList<QDockWidget *> bottomDocks{ui->mixerDock, ui->transitionsDock, controlsDock};
 
 	resizeDocks(bottomDocks, {bottomDocksHeight, bottomDocksHeight, bottomDocksHeight}, Qt::Vertical);
@@ -143,6 +153,9 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	for (int i = extraBrowserDocks.size() - 1; i >= 0; i--) {
 		extraBrowserDocks[i]->setFeatures(features);
 	}
+	if (chatDocks) {
+		chatDocks->SetFeatures(features);
+	}
 #endif
 }
 
@@ -153,7 +166,7 @@ void OBSBasic::on_sideDocks_toggled(bool side)
 	setDockCornersVertical(side);
 }
 
-void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser)
+void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser, bool restore)
 {
 	if (dock->objectName().isEmpty()) {
 		return;
@@ -167,7 +180,11 @@ void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool ex
 
 	setupDockAction(dock);
 	dock->setFeatures(features);
-	addDockWidget(area, dock);
+	/* A dock that is restored must not be added first, or it would be in
+	 * the layout twice */
+	if (!restore || !restoreDockWidget(dock)) {
+		addDockWidget(area, dock);
+	}
 
 #ifdef BROWSER_AVAILABLE
 	if (extraBrowser && extraBrowserMenuDocksSeparator.isNull()) {

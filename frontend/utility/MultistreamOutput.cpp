@@ -506,12 +506,16 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 	enabled = false;
 	mode = MultistreamMode::Shared;
 	destinations.clear();
+	primaryPlatform.clear();
+	primaryChannel.clear();
 
 	OBSDataAutoRelease data = obs_data_create_from_json_file_safe(configPath.u8string().c_str(), "bak");
 	if (data) {
 		obs_data_set_default_string(data, "mode", "shared");
 		enabled = obs_data_get_bool(data, "enabled");
 		mode = ModeFromString(obs_data_get_string(data, "mode"));
+		primaryPlatform = obs_data_get_string(data, "primary_platform");
+		primaryChannel = obs_data_get_string(data, "primary_channel");
 
 		OBSDataArrayAutoRelease array = obs_data_get_array(data, "destinations");
 		size_t count = obs_data_array_count(array);
@@ -531,6 +535,7 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			dest.key = obs_data_get_string(item, "key");
 			dest.enabled = obs_data_get_bool(item, "enabled");
 			dest.vertical = strcmp(obs_data_get_string(item, "canvas"), "vertical") == 0;
+			dest.channel = obs_data_get_string(item, "channel");
 			const char *quality = obs_data_get_string(item, "quality");
 			dest.quality = strcmp(quality, "max") == 0      ? MultistreamQualityMode::Max
 				       : strcmp(quality, "preset") == 0 ? MultistreamQualityMode::Preset
@@ -562,6 +567,8 @@ bool MultistreamOutput::Save() const
 	OBSDataAutoRelease data = obs_data_create();
 	obs_data_set_bool(data, "enabled", enabled);
 	obs_data_set_string(data, "mode", ModeToString(mode));
+	obs_data_set_string(data, "primary_platform", primaryPlatform.c_str());
+	obs_data_set_string(data, "primary_channel", primaryChannel.c_str());
 
 	OBSDataArrayAutoRelease array = obs_data_array_create();
 	for (const auto &dest : destinations) {
@@ -573,6 +580,7 @@ bool MultistreamOutput::Save() const
 		obs_data_set_string(item, "key", dest.key.c_str());
 		obs_data_set_bool(item, "enabled", dest.enabled);
 		obs_data_set_string(item, "canvas", dest.vertical ? "vertical" : "main");
+		obs_data_set_string(item, "channel", dest.channel.c_str());
 		obs_data_set_string(item, "quality",
 				    dest.quality == MultistreamQualityMode::Max      ? "max"
 				    : dest.quality == MultistreamQualityMode::Preset ? "preset"
@@ -606,6 +614,16 @@ void MultistreamOutput::SetDestinations(vector<MultistreamDestination> newDestin
 		}
 	}
 
+	emit DestinationsChanged();
+}
+
+void MultistreamOutput::SetPrimaryChannel(string platform, string channel)
+{
+	if (platform == primaryPlatform && channel == primaryChannel) {
+		return;
+	}
+	primaryPlatform = std::move(platform);
+	primaryChannel = std::move(channel);
 	emit DestinationsChanged();
 }
 

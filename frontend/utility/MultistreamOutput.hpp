@@ -98,6 +98,9 @@ struct MultistreamDestination {
 	/* Streams the vertical canvas instead of the main canvas. Vertical
 	 * destinations always use their own encoder. */
 	bool vertical = false;
+	/* Channel on the platform (Twitch/Kick username, YouTube @handle or
+	 * channel ID), used for chat, dashboard links and stream info */
+	std::string channel;
 
 	/* Only used in separate encoder mode */
 	MultistreamQualityMode quality = MultistreamQualityMode::Custom;
@@ -152,6 +155,16 @@ public:
 	void SetEnabled(bool enable) { enabled = enable; }
 	MultistreamMode Mode() const { return mode; }
 	void SetMode(MultistreamMode newMode) { mode = newMode; }
+
+	/* Platform and channel of the main stream (Settings > Stream), used for
+	 * chat, dashboard links and stream info. An empty platform means it is
+	 * detected from the stream service. */
+	const std::string &PrimaryPlatform() const { return primaryPlatform; }
+	const std::string &PrimaryChannel() const { return primaryChannel; }
+	void SetPrimaryChannel(std::string platform, std::string channel);
+	/* Call when the main stream's service may have changed, so that views of
+	 * the destinations pick up a newly detected platform */
+	void PrimaryServiceChanged() { emit DestinationsChanged(); }
 
 	const std::vector<MultistreamDestination> &Destinations() const { return destinations; }
 	void SetDestinations(std::vector<MultistreamDestination> newDestinations);
@@ -234,6 +247,8 @@ private:
 	bool enabled = false;
 	MultistreamMode mode = MultistreamMode::Shared;
 	std::vector<MultistreamDestination> destinations;
+	std::string primaryPlatform;
+	std::string primaryChannel;
 	std::filesystem::path configPath;
 
 	OBSWeakOutputAutoRelease primaryOutput;

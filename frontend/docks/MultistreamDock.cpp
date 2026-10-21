@@ -1,16 +1,22 @@
 #include "MultistreamDock.hpp"
 
+#include <utility/StreamInfo.hpp>
+#include <utility/StreamPlatforms.hpp>
 #include <widgets/OBSBasic.hpp>
 
 #include <qt-wrappers.hpp>
 #include <util/platform.h>
 
+#include <QDesktopServices>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLocale>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStringList>
 #include <QStyle>
+#include <QUrl>
 #include <QVBoxLayout>
 
 using namespace std;
@@ -58,12 +64,72 @@ static void SetLabelClass(QLabel *label, const char *cls)
 	label->style()->polish(label);
 }
 
-MultistreamDock::MultistreamDock(MultistreamOutput *multistream_, QWidget *parent)
+static bool FindChannel(const MultistreamOutput *multistream, const string &id, StreamChannel &result)
+{
+	for (StreamChannel &channel : GetStreamChannels(multistream)) {
+		if (channel.id == id) {
+			result = std::move(channel);
+			return true;
+		}
+	}
+	return false;
+}
+
+static QPushButton *CreateDashboardButton(QWidget *parent)
+{
+	return new QPushButton(QTStr("Multistream.Dashboard"), parent);
+}
+
+/* "Title · Category" */
+static QString DetailsText(const StreamInfo &info)
+{
+	QStringList parts;
+	if (!info.title.isEmpty()) {
+		parts << info.title;
+	}
+	if (!info.category.isEmpty()) {
+		parts << info.category;
+	}
+	return parts.join(QString(" %1 ").arg(QChar(0x00B7)));
+}
+
+static void SetDetails(QLabel *label, const StreamInfo &info)
+{
+	QString text = DetailsText(info);
+	/* Long titles are cut off; the tooltip shows all of it */
+	label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, 480));
+	label->setToolTip(text);
+	label->setVisible(!text.isEmpty());
+}
+
+static QString ViewersText(const StreamInfo &info)
+{
+	if (!info.live || info.viewers < 0) {
+		return QString(QChar(0x2014));
+	}
+	return QTStr("Multistream.Viewers").arg(QLocale().toString((qlonglong)info.viewers));
+}
+
+MultistreamDock::MultistreamDock(MultistreamOutput *multistream_, StreamInfoFetcher *streamInfo_, QWidget *parent)
 	: QWidget(parent),
-	  multistream(multistream_)
+	  multistream(multistream_),
+	  streamInfo(streamInfo_)
 {
 	primaryStatus = new QLabel(this);
 	primaryStatus->setWordWrap(true);
+	primaryViewers = new QLabel(this);
+	primaryViewers->setToolTip(QTStr("Multistream.Viewers.Tooltip"));
+	primaryDashboard = CreateDashboardButton(this);
+	primaryDetails = new QLabel(this);
+	primaryDetails->setProperty("class", "text-muted");
+	primaryDetails->setVisible(false);
+
+	QHBoxLayout *primaryLayout = new QHBoxLayout();
+	primaryLayout->addWidget(primaryStatus, 1);
+	primaryLayout->addWidget(primaryViewers);
+	primaryLayout->addWidget(primaryDashboard);
+
+	connect(primaryDashboard, &QPushButton::clicked, this, [this]() { OpenDashboard(kPrimaryStreamChannelId); });
 
 	QWidget *gridWidget = new QWidget(this);
 	grid = new QGridLayout(gridWidget);
@@ -82,14 +148,19 @@ MultistreamDock::MultistreamDock(MultistreamOutput *multistream_, QWidget *paren
 	stopAll = new QPushButton(QTStr("Multistream.Dock.StopAll"), this);
 	QPushButton *settings = new QPushButton(QTStr("Settings"), this);
 
+	totalViewers = new QLabel(this);
+	totalViewers->setVisible(false);
+
 	QHBoxLayout *buttons = new QHBoxLayout();
 	buttons->addWidget(startAll);
 	buttons->addWidget(stopAll);
 	buttons->addStretch();
+	buttons->addWidget(totalViewers);
 	buttons->addWidget(settings);
 
 	QVBoxLayout *layout = new QVBoxLayout(this);
-	layout->addWidget(primaryStatus);
+	layout->addLayout(primaryLayout);
+	layout->addWidget(primaryDetails);
 	layout->addWidget(emptyLabel);
 	layout->addWidget(scroll, 1);
 	layout->addLayout(buttons);
@@ -114,17 +185,60 @@ MultistreamDock::MultistreamDock(MultistreamOutput *multistream_, QWidget *paren
 	connect(multistream, &MultistreamOutput::DestinationsChanged, this, &MultistreamDock::Rebuild);
 	connect(multistream, &MultistreamOutput::StatusChanged, this,
 		[this](const QString &id) { UpdateRow(id.toStdString()); });
-	connect(multistream, &MultistreamOutput::PrimaryStateChanged, this, [this]() {
-		UpdatePrimary();
-		for (const auto &[id, row] : rows) {
-			UpdateRow(id);
-		}
-	});
+	/* The main stream's platform may have changed in Settings > Stream */
+	connect(multistream, &MultistreamOutput::PrimaryStateChanged, this, &MultistreamDock::Rebuild);
+
+	if (streamInfo) {
+		connect(streamInfo, &StreamInfoFetcher::InfoChanged, this,
+			[this](const QString &id) { UpdateInfo(id.toStdString()); });
+	}
 
 	statsTimer.setInterval(1000);
 	connect(&statsTimer, &QTimer::timeout, this, &MultistreamDock::UpdateStats);
 
 	Rebuild();
+}
+
+void MultistreamDock::OpenDashboard(const string &id)
+{
+	StreamChannel channel;
+	if (!FindChannel(multistream, id, channel)) {
+		return;
+	}
+	string videoId = streamInfo ? streamInfo->YouTubeVideoId(id) : string();
+	QString url = StreamDashboardUrl(channel.platform, channel.channel, videoId);
+	if (!url.isEmpty()) {
+		QDesktopServices::openUrl(QUrl(url));
+	}
+}
+
+void MultistreamDock::UpdateInfo(const string &id)
+{
+	StreamInfo info = streamInfo ? streamInfo->Info(id) : StreamInfo();
+
+	if (id == kPrimaryStreamChannelId) {
+		primaryViewers->setText(ViewersText(info));
+		SetDetails(primaryDetails, info);
+	} else if (auto it = rows.find(id); it != rows.end()) {
+		it->second.viewers->setText(ViewersText(info));
+		SetDetails(it->second.details, info);
+	}
+
+	/* The total of every channel with a known count */
+	int64_t total = 0;
+	int counted = 0;
+	if (streamInfo && multistream) {
+		for (const StreamChannel &channel : GetStreamChannels(multistream)) {
+			StreamInfo channelInfo = streamInfo->Info(channel.id);
+			if (channelInfo.live && channelInfo.viewers >= 0) {
+				total += channelInfo.viewers;
+				counted++;
+			}
+		}
+	}
+	totalViewers->setText(counted > 1 ? QTStr("Multistream.Viewers.Total").arg(QLocale().toString((qlonglong)total))
+					  : QString());
+	totalViewers->setVisible(counted > 1);
 }
 
 void MultistreamDock::Rebuild()
@@ -133,7 +247,10 @@ void MultistreamDock::Rebuild()
 		delete row.name;
 		delete row.status;
 		delete row.stats;
+		delete row.viewers;
+		delete row.dashboard;
 		delete row.toggle;
+		delete row.details;
 	}
 	rows.clear();
 
@@ -151,19 +268,37 @@ void MultistreamDock::Rebuild()
 		row.name = new QLabel(displayName);
 		row.status = new QLabel();
 		row.stats = new QLabel();
+		row.viewers = new QLabel();
+		row.viewers->setToolTip(QTStr("Multistream.Viewers.Tooltip"));
+		row.dashboard = CreateDashboardButton(nullptr);
 		row.toggle = new QPushButton();
+		row.details = new QLabel();
+		row.details->setProperty("class", "text-muted");
+		row.details->setVisible(false);
 
 		if (!dest.enabled) {
 			row.name->setToolTip(QTStr("Multistream.Dock.DisabledTooltip"));
 			SetLabelClass(row.name, "text-muted");
 		}
 
+		/* Dashboard links, chat and stream info are for Twitch, YouTube
+		 * and Kick only */
+		StreamPlatform platform = StreamPlatformFromId(dest.platform);
+		bool supported = platform != StreamPlatform::None;
+		row.viewers->setVisible(supported);
+		row.dashboard->setVisible(supported);
+		row.dashboard->setToolTip(QTStr("Multistream.Dashboard.Tooltip").arg(StreamPlatformName(platform)));
+
 		grid->addWidget(row.name, line, 0);
 		grid->addWidget(row.status, line, 1);
 		grid->addWidget(row.stats, line, 2);
-		grid->addWidget(row.toggle, line, 3);
+		grid->addWidget(row.viewers, line, 3);
+		grid->addWidget(row.dashboard, line, 4);
+		grid->addWidget(row.toggle, line, 5);
+		grid->addWidget(row.details, line + 1, 0, 1, 6);
 
 		string id = dest.id;
+		connect(row.dashboard, &QPushButton::clicked, this, [this, id]() { OpenDashboard(id); });
 		connect(row.toggle, &QPushButton::clicked, this, [this, id]() {
 			if (!multistream) {
 				return;
@@ -179,10 +314,17 @@ void MultistreamDock::Rebuild()
 
 		rows.emplace(id, row);
 		UpdateRow(id);
-		line++;
+		UpdateInfo(id);
+		line += 2;
 	}
 
 	emptyLabel->setVisible(rows.empty());
+
+	StreamPlatform primary = ResolvePrimaryStreamPlatform(multistream);
+	primaryViewers->setVisible(primary != StreamPlatform::None);
+	primaryDashboard->setVisible(primary != StreamPlatform::None);
+	primaryDashboard->setToolTip(QTStr("Multistream.Dashboard.Tooltip").arg(StreamPlatformName(primary)));
+	UpdateInfo(kPrimaryStreamChannelId);
 	UpdatePrimary();
 }
 

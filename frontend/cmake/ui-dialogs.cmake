@@ -41,6 +41,8 @@ target_sources(
     dialogs/OBSMissingFiles.hpp
     dialogs/OBSMultistreamSettings.cpp
     dialogs/OBSMultistreamSettings.hpp
+    dialogs/OBSPlatformAccounts.cpp
+    dialogs/OBSPlatformAccounts.hpp
     dialogs/OBSRemux.cpp
     dialogs/OBSRemux.hpp
     dialogs/OBSSettingsBackup.cpp

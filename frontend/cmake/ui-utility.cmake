@@ -62,6 +62,10 @@ target_sources(
     utility/SimpleOutput.cpp
     utility/SimpleOutput.hpp
     utility/StartMultiTrackVideoStreamingGuard.hpp
+    utility/StreamInfo.cpp
+    utility/StreamInfo.hpp
+    utility/StreamPlatforms.cpp
+    utility/StreamPlatforms.hpp
     utility/SurfaceEventFilter.hpp
     utility/ThumbnailItem.cpp
     utility/ThumbnailItem.hpp

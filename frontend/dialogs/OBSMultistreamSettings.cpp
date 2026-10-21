@@ -1,5 +1,7 @@
 #include "OBSMultistreamSettings.hpp"
+#include "OBSPlatformAccounts.hpp"
 
+#include <utility/StreamPlatforms.hpp>
 #include <utility/audio-encoders.hpp>
 #include <widgets/OBSBasic.hpp>
 
@@ -103,6 +105,11 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	keyLink = new QLabel(this);
 	keyLink->setOpenExternalLinks(true);
 
+	/* The channel, for its chat dock, dashboard link and stream info */
+	channelLabel = new QLabel(QTStr("Multistream.Channel"), this);
+	channel = new QLineEdit(this);
+	channel->setToolTip(QTStr("Multistream.Channel.Tooltip"));
+
 	/* Which canvas the destination streams */
 	canvas = new QComboBox(this);
 	canvas->addItem(QTStr("Multistream.Canvas.Main"), false);
@@ -121,6 +128,7 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	form->addRow(QTStr("Basic.AutoConfig.StreamPage.Server"), server);
 	form->addRow(QTStr("Basic.AutoConfig.StreamPage.StreamKey"), keyLayout);
 	form->addRow(QString(), keyLink);
+	form->addRow(channelLabel, channel);
 
 	/* Per-destination quality (separate encoder mode only) */
 	qualityMode = new QComboBox(this);
@@ -194,6 +202,7 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	name->setText(QString::fromStdString(dest.name));
 	server->setText(QString::fromStdString(dest.server));
 	key->setText(QString::fromStdString(dest.key));
+	channel->setText(QString::fromStdString(dest.channel));
 	videoBitrate->setValue(dest.videoBitrate);
 
 	if (dest.width && dest.height) {
@@ -275,6 +284,11 @@ void MultistreamDestinationDialog::PlatformChanged()
 	} else {
 		keyLink->setVisible(false);
 	}
+
+	StreamPlatform streamPlatform = StreamPlatformFromId(id);
+	channelLabel->setVisible(streamPlatform != StreamPlatform::None);
+	channel->setVisible(streamPlatform != StreamPlatform::None);
+	channel->setPlaceholderText(StreamChannelPlaceholder(streamPlatform));
 
 	UpdateEncoders();
 	UpdateModes();
@@ -489,6 +503,19 @@ void MultistreamDestinationDialog::accept()
 		return;
 	}
 
+	StreamPlatform streamPlatform = StreamPlatformFromId(CurrentPlatform());
+	string channelName = channel->text().trimmed().toStdString();
+	if (streamPlatform == StreamPlatform::None) {
+		channelName.clear();
+	} else if (!channelName.empty()) {
+		channelName = NormalizeStreamChannel(streamPlatform, channelName);
+		if (channelName.empty()) {
+			OBSMessageBox::warning(this, QTStr("Multistream.Destination.Title"),
+					       QTStr("Multistream.Error.InvalidChannel"));
+			return;
+		}
+	}
+
 	MultistreamQualityMode mode = SelectedMode();
 	uint32_t width = 0;
 	uint32_t height = 0;
@@ -517,6 +544,7 @@ void MultistreamDestinationDialog::accept()
 	destination.platform = platform->currentData().toString().toStdString();
 	destination.server = serverUrl.toStdString();
 	destination.key = streamKey.toStdString();
+	destination.channel = channelName;
 	destination.quality = mode;
 	if (mode == MultistreamQualityMode::Preset) {
 		destination.qualityPreset = SelectedPreset();
@@ -607,6 +635,15 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	tableButtons->addWidget(removeButton);
 	tableButtons->addStretch();
 
+	/* Credentials for viewers, title and category in the Multistream dock */
+	QPushButton *accountsButton = new QPushButton(QTStr("PlatformAccounts.Button"), this);
+	accountsButton->setToolTip(QTStr("PlatformAccounts.Button.Tooltip"));
+	tableButtons->addWidget(accountsButton);
+	connect(accountsButton, &QPushButton::clicked, this, [this]() {
+		OBSPlatformAccounts dialog(this);
+		dialog.exec();
+	});
+
 	bandwidth = new QLabel(this);
 	bandwidth->setWordWrap(true);
 
@@ -618,6 +655,32 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	QLabel *primaryNote = new QLabel(QTStr("Multistream.PrimaryNote"), this);
 	primaryNote->setWordWrap(true);
 
+	/* The main stream's channel, for its chat dock, dashboard link and
+	 * stream info. Auto detects the platform from Settings > Stream. */
+	QGroupBox *primaryGroup = new QGroupBox(QTStr("Multistream.Primary"), this);
+	primaryPlatform = new QComboBox(primaryGroup);
+	primaryPlatform->addItem(QString(), QString());
+	for (StreamPlatform platform : {StreamPlatform::Twitch, StreamPlatform::YouTube, StreamPlatform::Kick}) {
+		primaryPlatform->addItem(StreamPlatformName(platform), QString::fromUtf8(StreamPlatformId(platform)));
+	}
+	primaryChannel = new QLineEdit(primaryGroup);
+	primaryChannel->setToolTip(QTStr("Multistream.Channel.Tooltip"));
+
+	QFormLayout *primaryForm = new QFormLayout(primaryGroup);
+	primaryForm->addRow(QTStr("Multistream.Platform"), primaryPlatform);
+	primaryForm->addRow(QTStr("Multistream.Channel"), primaryChannel);
+
+	/* The "Auto" entry names the platform detected right now */
+	StreamPlatform detected = DetectPrimaryStreamPlatform();
+	primaryPlatform->setItemText(0, detected == StreamPlatform::None
+						? QTStr("Multistream.Primary.AutoNone")
+						: QTStr("Multistream.Primary.Auto").arg(StreamPlatformName(detected)));
+	int primaryIdx = primaryPlatform->findData(QString::fromStdString(multistream->PrimaryPlatform()));
+	primaryPlatform->setCurrentIndex(primaryIdx >= 0 ? primaryIdx : 0);
+	primaryChannel->setText(QString::fromStdString(multistream->PrimaryChannel()));
+	connect(primaryPlatform, &QComboBox::currentIndexChanged, this, &OBSMultistreamSettings::UpdatePrimaryChannel);
+	UpdatePrimaryChannel();
+
 	QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 	connect(buttons, &QDialogButtonBox::accepted, this, &OBSMultistreamSettings::accept);
 	connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -627,6 +690,7 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 	layout->addWidget(enable);
 	layout->addWidget(modeGroup);
 	layout->addWidget(primaryNote);
+	layout->addWidget(primaryGroup);
 	layout->addWidget(table, 1);
 	layout->addLayout(tableButtons);
 	layout->addWidget(bandwidth);
@@ -662,6 +726,20 @@ OBSMultistreamSettings::OBSMultistreamSettings(MultistreamOutput *multistream_, 
 MultistreamMode OBSMultistreamSettings::CurrentMode() const
 {
 	return separateMode->isChecked() ? MultistreamMode::Separate : MultistreamMode::Shared;
+}
+
+static StreamPlatform SelectedPrimaryPlatform(const QComboBox *combo)
+{
+	string id = combo->currentData().toString().toStdString();
+	return id.empty() ? DetectPrimaryStreamPlatform() : StreamPlatformFromId(id);
+}
+
+void OBSMultistreamSettings::UpdatePrimaryChannel()
+{
+	StreamPlatform platform = SelectedPrimaryPlatform(primaryPlatform);
+	primaryChannel->setEnabled(platform != StreamPlatform::None);
+	primaryChannel->setPlaceholderText(platform == StreamPlatform::None ? QTStr("Multistream.Primary.Unsupported")
+									    : StreamChannelPlaceholder(platform));
 }
 
 void OBSMultistreamSettings::RefreshTable()
@@ -788,8 +866,21 @@ void OBSMultistreamSettings::RemoveDestination()
 
 void OBSMultistreamSettings::accept()
 {
+	string platformId = primaryPlatform->currentData().toString().toStdString();
+	string channelName = primaryChannel->text().trimmed().toStdString();
+	StreamPlatform platform = SelectedPrimaryPlatform(primaryPlatform);
+	if (!channelName.empty() && platform != StreamPlatform::None) {
+		channelName = NormalizeStreamChannel(platform, channelName);
+		if (channelName.empty()) {
+			OBSMessageBox::warning(this, QTStr("Multistream.Title"),
+					       QTStr("Multistream.Error.InvalidChannel"));
+			return;
+		}
+	}
+
 	multistream->SetEnabled(enable->isChecked());
 	multistream->SetMode(CurrentMode());
+	multistream->SetPrimaryChannel(platformId, channelName);
 	multistream->SetDestinations(destinations);
 	multistream->Save();
 

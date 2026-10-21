@@ -25,6 +25,7 @@
 #include <oauth/Auth.hpp>
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/MultistreamOutput.hpp>
+#include <utility/StreamInfo.hpp>
 #include <utility/VerticalCanvas.hpp>
 #include <utility/VerticalOutput.hpp>
 #include <utility/OBSCanvas.hpp>
@@ -51,6 +52,7 @@
 extern volatile bool recording_paused;
 
 class ColorSelect;
+class MultistreamChatDocks;
 class OBSAbout;
 class OBSBasicAdvAudio;
 class OBSBasicFilters;
@@ -462,7 +464,9 @@ private:
 	QPointer<OBSDock> mixerDock;
 
 public:
-	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false);
+	/* With restore, a dock created after the window layout was restored
+	 * gets its saved place back (QMainWindow::restoreDockWidget) */
+	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false, bool restore = false);
 	void RemoveDockWidget(const QString &name);
 	bool IsDockObjectNameUsed(const QString &name);
 	void AddCustomDockWidget(QDockWidget *dock);
@@ -698,6 +702,12 @@ private:
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
 	std::unique_ptr<MultistreamOutput> multistream;
+	/* Live video IDs, viewers, title and category of the stream channels */
+	std::unique_ptr<StreamInfoFetcher> streamInfo;
+#ifdef BROWSER_AVAILABLE
+	/* Chat docks of the stream channels */
+	std::unique_ptr<MultistreamChatDocks> chatDocks;
+#endif
 	std::unique_ptr<VerticalCanvas> vertical;
 	std::unique_ptr<VerticalOutput> verticalOutput;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
@@ -1173,6 +1183,7 @@ private:
 public:
 	const std::vector<OBS::Canvas> &GetCanvases() const noexcept { return canvases; }
 	VerticalCanvas *GetVerticalCanvas() const noexcept { return vertical.get(); }
+	StreamInfoFetcher *GetStreamInfo() const noexcept { return streamInfo.get(); }
 	VerticalOutput *GetVerticalOutput() const noexcept { return verticalOutput.get(); }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0);

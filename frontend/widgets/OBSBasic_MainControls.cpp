@@ -220,6 +220,12 @@ void OBSBasic::on_action_Settings_triggered()
 
 	settings_already_executing = false;
 
+	/* The main stream's service, and with it the platform of its chat dock
+	 * and dashboard link, may have changed */
+	if (multistream) {
+		multistream->PrimaryServiceChanged();
+	}
+
 	if (restart) {
 		QMessageBox::StandardButton button =
 			OBSMessageBox::question(this, QTStr("Restart"), QTStr("NeedsRestart"));

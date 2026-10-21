@@ -30,6 +30,9 @@
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#ifdef BROWSER_AVAILABLE
+#include <docks/ChatDocks.hpp>
+#endif
 #include <docks/MultistreamDock.hpp>
 #include <docks/VerticalDocks.hpp>
 #include <dialogs/OBSVerticalSettings.hpp>
@@ -1134,8 +1137,9 @@ void OBSBasic::OBSInit()
 	/* setup multistreaming */
 	multistream = std::make_unique<MultistreamOutput>();
 	multistream->Load(GetCurrentProfile().path);
+	streamInfo = std::make_unique<StreamInfoFetcher>(multistream.get());
 
-	MultistreamDock *multistreamWidget = new MultistreamDock(multistream.get(), multistreamDock);
+	MultistreamDock *multistreamWidget = new MultistreamDock(multistream.get(), streamInfo.get(), multistreamDock);
 	multistreamDock->setWidget(multistreamWidget);
 	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
 
@@ -1197,6 +1201,10 @@ void OBSBasic::OBSInit()
 		ui->menuDocks->insertSeparator(ui->scenesDock->toggleViewAction());
 
 		LoadExtraBrowserDocks();
+
+		/* Created before the window layout is restored, so the chat
+		 * docks get their saved places back */
+		chatDocks = std::make_unique<MultistreamChatDocks>(this, multistream.get(), streamInfo.get());
 	}
 #endif
 
@@ -1410,6 +1418,10 @@ void OBSBasic::applicationShutdown() noexcept
 	ClearHotkeys();
 
 	service = nullptr;
+#ifdef BROWSER_AVAILABLE
+	chatDocks.reset();
+#endif
+	streamInfo.reset();
 	multistream.reset();
 	verticalOutput.reset();
 	vertical.reset();
@@ -1972,6 +1984,7 @@ void OBSBasic::closeWindow()
 
 #ifdef BROWSER_AVAILABLE
 	ClearExtraBrowserDocks();
+	chatDocks.reset();
 
 #ifdef YOUTUBE_ENABLED
 	if (youtubeAppDock) {
