@@ -16,6 +16,8 @@ NV_CREATE_INSTANCE_FUNC nv_create_instance = NULL;
 static struct encoder_caps encoder_capabilities[3];
 static bool codec_supported[3];
 static int num_devices;
+static int num_cuda;
+static char **device_names;
 static int driver_version_major;
 static int driver_version_minor;
 
@@ -249,6 +251,35 @@ int num_encoder_devices(void)
 	return num_devices;
 }
 
+const char *get_encoder_device_name(int idx)
+{
+	if (idx < 0 || idx >= num_cuda || !device_names)
+		return NULL;
+	return device_names[idx];
+}
+
+void add_encoder_device_list(obs_properties_t *props, const char *setting, bool add_auto)
+{
+	obs_property_t *p = obs_properties_add_list(props, setting, obs_module_text("GPU"), OBS_COMBO_TYPE_LIST,
+						    OBS_COMBO_FORMAT_INT);
+	struct dstr label = {0};
+
+	if (add_auto)
+		obs_property_list_add_int(p, obs_module_text("GPU.Auto"), -1);
+
+	for (int idx = 0; idx < num_cuda; idx++) {
+		const char *name = get_encoder_device_name(idx);
+		if (!name)
+			continue;
+
+		/* Keep the index in the label so identical cards can be told apart. */
+		dstr_printf(&label, "%d: %s", idx, *name ? name : obs_module_text("GPU.Unknown"));
+		obs_property_list_add_int(p, label.array, idx);
+	}
+
+	dstr_free(&label);
+}
+
 bool is_codec_supported(enum codec_type codec)
 {
 	return codec_supported[codec];
@@ -285,6 +316,39 @@ static void read_codec_caps(config_t *config, enum codec_type codec, const char 
 	caps->four_four_four = config_get_bool(config, section, "yuv_444");
 	caps->four_two_two = config_get_bool(config, section, "yuv_422");
 	caps->uhq = config_get_bool(config, section, "uhq");
+}
+
+static void read_device_names(config_t *config)
+{
+	struct dstr section = {0};
+
+	num_cuda = (int)config_get_int(config, "general", "cuda_devices");
+	if (num_cuda <= 0) {
+		num_cuda = 0;
+		return;
+	}
+
+	device_names = bzalloc(sizeof(char *) * num_cuda);
+
+	for (int idx = 0; idx < num_cuda; idx++) {
+		bool supported = false;
+
+		/* Only list devices that actually have an NVENC engine. */
+		dstr_printf(&section, "device.%d.h264", idx);
+		supported |= config_get_bool(config, section.array, "codec_supported");
+		dstr_printf(&section, "device.%d.hevc", idx);
+		supported |= config_get_bool(config, section.array, "codec_supported");
+		dstr_printf(&section, "device.%d.av1", idx);
+		supported |= config_get_bool(config, section.array, "codec_supported");
+		if (!supported)
+			continue;
+
+		dstr_printf(&section, "device.%d", idx);
+		const char *name = config_get_string(config, section.array, "name");
+		device_names[idx] = bstrdup(name ? name : "");
+	}
+
+	dstr_free(&section);
 }
 
 static bool nvenc_check(void)
@@ -341,6 +405,7 @@ static bool nvenc_check(void)
 	read_codec_caps(config, CODEC_H264, "h264");
 	read_codec_caps(config, CODEC_HEVC, "hevc");
 	read_codec_caps(config, CODEC_AV1, "av1");
+	read_device_names(config);
 
 	const char *nvenc_ver = config_get_string(config, "general", "nvenc_ver");
 	const char *cuda_ver = config_get_string(config, "general", "cuda_ver");
@@ -386,5 +451,11 @@ void obs_nvenc_load(void)
 
 void obs_nvenc_unload(void)
 {
+	for (int idx = 0; idx < num_cuda; idx++)
+		bfree(device_names[idx]);
+	bfree(device_names);
+	device_names = NULL;
+	num_cuda = 0;
+
 	pthread_mutex_destroy(&init_mutex);
 }

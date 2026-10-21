@@ -236,7 +236,7 @@ static obs_properties_t *nvenc_properties_internal(enum codec_type codec)
 	p = obs_properties_add_bool(props, "psycho_aq", obs_module_text("PsychoVisualTuning"));
 	obs_property_set_long_description(p, obs_module_text("PsychoVisualTuning.ToolTip"));
 
-	obs_properties_add_int(props, "gpu", obs_module_text("GPU"), 0, 8, 1);
+	add_encoder_device_list(props, "gpu", false);
 
 	obs_properties_add_int(props, "bf", obs_module_text("BFrames"), 0, 4, 1);
 

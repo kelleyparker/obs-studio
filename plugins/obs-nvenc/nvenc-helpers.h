@@ -78,6 +78,8 @@ bool nv_failed2(obs_encoder_t *encoder, void *session, NVENCSTATUS err, const ch
 
 struct encoder_caps *get_encoder_caps(enum codec_type codec);
 int num_encoder_devices(void);
+const char *get_encoder_device_name(int idx);
+void add_encoder_device_list(obs_properties_t *props, const char *setting, bool add_auto);
 bool is_codec_supported(enum codec_type codec);
 bool has_broken_split_encoding(void);
 
