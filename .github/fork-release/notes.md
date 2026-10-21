@@ -19,6 +19,7 @@ Go live on YouTube, Twitch and Kick (or any RTMP/RTMPS server) at the same time 
 - **Settings backup and restore** (**File → Back Up Settings / Restore Settings**): profiles, scene collections, app and plugin settings in one `.zip`, with optional automatic backups when OBS closes.
 - **50 themes and 50 styles** (**Settings → Appearance**).
 - **Multistreaming toggle** in **Settings → Stream**.
+- **GPU names for NVENC:** the GPU setting in **Settings → Output** lists each NVIDIA card by name (for example "NVIDIA GeForce RTX 5070") instead of a number, with **Auto** first. Existing profiles keep the GPU they had.
 - **Fewer settings:** audio is always 48 kHz stereo at 320 kbps (lowered per platform where needed), English only, Advanced output mode only, and fixed network, reconnect and stream delay settings.
 - **Fewer services:** Twitch, YouTube (RTMPS and HLS), Facebook Live, Twitter, OnlyFans and Custom.
 - Updated to upstream OBS Studio 33.0.0-rc3.

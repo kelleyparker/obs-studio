@@ -15,8 +15,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       # Push run whose builds are published
-      BUILD_RUN_ID: '39539104141'
-      TARGET_SHA: f756445bb954ede9403f1403e4dad6f71f675bea
+      BUILD_RUN_ID: '39542105143'
+      TARGET_SHA: 6be25096176552f319584fa59c57f2aa543f0a8a
       RELEASE_TAG: 33.0.0-rc3-multistream2
       RELEASE_TITLE: OBS Studio 33.0.0-rc3 with Multistreaming and Chat
     defaults:
