@@ -31,6 +31,11 @@ Added
   with one click in Settings → Stream, or configure destinations in Tools → Multistreaming.
   Destinations can share the main encoder or get their own, can use each platform's maximum
   quality, and can stream the vertical canvas.
+- **Multistream chat, dashboards and stream info:** give each Twitch, YouTube or Kick
+  destination (and the main stream) its channel name. Each channel then has a chat dock (Docks
+  menu) where you sign in once, and a Dashboard button that opens the platform's stream
+  dashboard. With free developer credentials (Tools → Multistreaming → Platform Accounts), the
+  Multistream dock also shows each channel's live viewer count, title and category.
 - **Vertical canvas** (Tools → Vertical Canvas, like Aitum Vertical): a second 9:16 video mix
   with its own scenes and sources, a preview dock, recording, replay buffer and hotkeys.
 - **Settings backup and restore** (File → Back Up Settings / Restore Settings): profiles, scene

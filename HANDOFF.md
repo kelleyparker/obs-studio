@@ -30,6 +30,7 @@ what the work is for, what is finished, where it stopped, and what to do next. T
 | A, phase 1 | Built-in vertical canvas (like Aitum Vertical): canvas, settings, docks, recording, replay buffer, multistream, hotkeys | **Code done. Not yet compiled on Windows CI and not tested on Windows** |
 | A, phases 2–3 | Full drag-and-resize editing in the vertical preview, transitions, vertical virtual camera, projector, websocket | Not started |
 | C | Projected hardware load per output, per GPU; encoder GPU choice per destination | Not started |
+| D | Multistream chat docks, dashboard links, live viewers/title/category (branch `claude/multistream-chat`) | **Code done. Not compiled anywhere yet, not tested** |
 
 Order of work: 0 → B → A phase 1 → C → A phase 2 → A phase 3. Each step should end with a green
 Windows x64 CI build that the owner has tested.
@@ -248,6 +249,74 @@ Known limits and risks to check on Windows:
       Try turning it off while recording: it is refused.
 - [ ] A microphone that is in both canvases is heard once in the vertical recording.
 - [ ] Main preview, scenes, sources, recording, streaming and replay buffer behave as before.
+
+## Part D: multistream chat, dashboards and stream info (done, not compiled)
+
+On branch `claude/multistream-chat`, not merged. Nothing here has been compiled yet. CI and
+local builds wait for the owner's go-ahead, so expect a few small compile fixes on the first
+build.
+
+- **Channels:** each Twitch, YouTube or Kick destination has a **Channel** field (Tools →
+  Multistreaming → Edit). The main stream gets one under "Main stream channel", where Platform
+  is Auto (detected from Settings → Stream) or Twitch, YouTube or Kick. A pasted channel URL
+  works too. It's stored in `multistream.json` as `channel`, `primary_platform` and
+  `primary_channel`.
+- **Chat docks:** one dock per channel, named "<name> Chat" in the Docks menu and hidden until
+  shown.
+  - It loads the platform's pop-out chat and uses the custom browser docks' cookie store, so a
+    sign-in survives restarts and profile switches.
+  - The header has **Dashboard**, **Open in Browser** and **Reload** buttons.
+  - YouTube's chat needs the live video ID. It's found by reading the channel's `/live` page
+    (canonical `watch?v=` link) once the channel is live, then every minute until found. With
+    an API key, the API is the fallback.
+  - Docks created after start-up get their saved place back through
+    `OBSBasic::AddDockWidget(..., restore = true)`, which calls `restoreDockWidget`.
+- **Dashboard links** open in the system browser, because Google blocks sign-in inside
+  embedded browsers:
+  - Twitch: `dashboard.twitch.tv/u/<login>/stream-manager`
+  - YouTube: `studio.youtube.com/video/<id>/livestreaming` once live, otherwise
+    `youtube.com/live_dashboard`
+  - Kick: `dashboard.kick.com/stream`
+- **Stream info:** while a channel is live, `StreamInfoFetcher` polls every 60 s on its own
+  one-thread pool using `GetRemoteFile`.
+  - The Multistream dock shows the viewers per channel, a line with the title and category, and
+    a total.
+  - Twitch uses Helix `streams` with an app token, Kick `public/v1/channels?slug=` with an app
+    token, and YouTube `videos?part=snippet,liveStreamingDetails` with an API key (about 60
+    quota units an hour).
+- **Credentials:** Tools → Multistreaming → **Platform Accounts…**, saved in `user.ini`
+  `[PlatformAccounts]`. Each platform has a Test button. A backup made without stream keys also
+  drops the secrets.
+
+| File | Purpose |
+| --- | --- |
+| `frontend/utility/StreamPlatforms.{hpp,cpp}` | Platform ids, channel normalizing, chat, dashboard and `/live` URLs, main-stream platform detection, list of channels |
+| `frontend/utility/StreamInfo.{hpp,cpp}` | `PlatformCredentials`, `TestPlatformCredentials`, `StreamInfoFetcher` (YouTube live video ID, viewers, title, category) |
+| `frontend/docks/ChatDocks.{hpp,cpp}` | `MultistreamChatDocks`, only built with browser panels |
+| `frontend/dialogs/OBSPlatformAccounts.{hpp,cpp}` | The Platform Accounts dialog |
+| `frontend/docks/MultistreamDock.*`, `frontend/dialogs/OBSMultistreamSettings.*`, `frontend/utility/MultistreamOutput.*` | Channel fields, Dashboard buttons, viewers, title and category |
+| `frontend/widgets/OBSBasic*.cpp` | Creation (before `restoreState`), teardown, lock and reset of docks, refresh after Settings |
+
+Known limits: posting in the YouTube chat dock may fail, because Google often refuses sign-in
+there. Use **Open in Browser** instead. Kick's dock may show a one-time Cloudflare check.
+
+### Testing Part D (owner, once built)
+
+- [ ] Set channels for the main stream and the destinations. The Docks menu lists "<name> Chat"
+      for each.
+- [ ] Each Dashboard button opens the right page in the web browser. For YouTube, that's the
+      stream's Studio page once live.
+- [ ] Twitch and Kick chat load while offline. Sign in once, restart OBS, and you're still
+      signed in.
+- [ ] Go live: the YouTube chat dock switches from "waiting" to the live chat within about a
+      minute.
+- [ ] Dock positions and visibility survive a restart and a profile switch. Removing a
+      destination removes its dock. Lock Docks and Reset UI include the chat docks.
+- [ ] Platform Accounts → Test passes with valid credentials and shows a clear error with a
+      wrong secret.
+- [ ] While live, the Multistream dock shows viewers, title and category for each platform
+      within about a minute, plus a total. Without credentials it shows "—" and nothing breaks.
+- [ ] A backup made without stream keys has no `[PlatformAccounts]` secrets in `user.ini`.
 
 ## Notes for the remaining Part A work
 
