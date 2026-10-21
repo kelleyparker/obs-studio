@@ -14,11 +14,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      # Push run on master whose builds are published
-      BUILD_RUN_ID: '38481024051'
-      TARGET_SHA: 3663093e82d4c602cdf1f6a5e61ebf55f53b2c9c
-      RELEASE_TAG: 33.0.0-rc1-multistream1
-      RELEASE_TITLE: OBS Studio 33.0.0-rc1 with Multistreaming
+      # Push run whose builds are published
+      BUILD_RUN_ID: '39539104141'
+      TARGET_SHA: f756445bb954ede9403f1403e4dad6f71f675bea
+      RELEASE_TAG: 33.0.0-rc3-multistream2
+      RELEASE_TITLE: OBS Studio 33.0.0-rc3 with Multistreaming and Chat
     defaults:
       run:
         shell: bash
@@ -40,9 +40,7 @@ jobs:
           hash="${TARGET_SHA:0:9}"
           gh run download "${BUILD_RUN_ID}" --dir artifacts \
             --name "obs-studio-windows-x64-${hash}" \
-            --name "obs-studio-macos-arm64-${hash}" \
-            --name "obs-studio-ubuntu-26.04-x86_64-${hash}" \
-            --name "obs-studio-ubuntu-26.04-sources-${hash}"
+            --name "obs-studio-macos-arm64-${hash}"
           find artifacts -type f
 
       - name: Collect Release Files 🏷️
@@ -65,17 +63,6 @@ jobs:
 
           collect 'obs-studio-*-windows-x64.zip' 'Windows-x64.zip'
           collect 'obs-studio-*-macos-apple.dmg' 'macOS-Apple.dmg'
-          collect 'obs-studio-*-x86_64-ubuntu-gnu.deb' 'Ubuntu-26.04-x86_64.deb'
-
-          # The source tarball comes in more than one compression format
-          mapfile -t sources < <(find artifacts -type f -name 'obs-studio-*-sources.tar.*')
-          if (( ${#sources[@]} == 0 )); then
-            echo "::error::No source tarball found"
-            exit 1
-          fi
-          for file in "${sources[@]}"; do
-            cp -v "${file}" "release/OBS-Studio-${RELEASE_TAG}-Sources.tar.${file##*.}"
-          done
 
           cp .github/fork-release/notes.md notes.md
           {
