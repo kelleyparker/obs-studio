@@ -186,6 +186,12 @@ private:
 	void LoadGeneralSettings();
 	void LoadStream1Settings();
 	void LoadOutputSettings();
+	void InitOutputGuidePanel();
+	static QString GetStreamingGuideHtml();
+	static QString GetRecordingGuideHtml();
+	static QString GetAudioGuideHtml();
+	static QString GetReplayBufferGuideHtml();
+	static QString GetPlatformGuidelinesHtml();
 	void LoadAudioSettings();
 	void LoadVideoSettings();
 	void LoadHotkeySettings(obs_hotkey_id ignoreKey = OBS_INVALID_HOTKEY_ID);

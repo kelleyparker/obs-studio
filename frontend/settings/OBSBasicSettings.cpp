@@ -42,6 +42,14 @@
 #include <qt-wrappers.hpp>
 
 #include <QCompleter>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTextBrowser>
+#include <QTextCursor>
+#include <QVBoxLayout>
 #include <QStandardItemModel>
 
 #include <sstream>
@@ -947,10 +955,12 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 
 	UpdateAudioWarnings();
 	UpdateAdvNetworkGroup();
+	InitOutputGuidePanel();
 
 	ui->audioMsg->setVisible(false);
 	ui->advancedMsg->setVisible(false);
 	ui->advancedMsg2->setVisible(false);
+
 }
 
 OBSBasicSettings::~OBSBasicSettings()
@@ -2584,6 +2594,7 @@ void OBSBasicSettings::UpdateColorFormatSpaceWarning()
 		if ((format == "P010") || (format == "P216") || (format == "P416")) {
 			ui->advancedMsg2->clear();
 			ui->advancedMsg2->setVisible(false);
+
 		} else if (format == "I010") {
 			ui->advancedMsg2->setText(QTStr("Basic.Settings.Advanced.FormatWarning"));
 			ui->advancedMsg2->setVisible(true);
@@ -2596,6 +2607,7 @@ void OBSBasicSettings::UpdateColorFormatSpaceWarning()
 		if (format == "NV12") {
 			ui->advancedMsg2->clear();
 			ui->advancedMsg2->setVisible(false);
+
 		} else if ((format == "I010") || (format == "P010") || (format == "P216") || (format == "P416")) {
 			ui->advancedMsg2->setText(QTStr("Basic.Settings.Advanced.FormatWarningPreciseSdr"));
 			ui->advancedMsg2->setVisible(true);
@@ -5990,4 +6002,579 @@ void OBSBasicSettings::AdvAudioEncodersChanged()
 	RestrictResetBitrates({ui->advOutTrack1Bitrate, ui->advOutTrack2Bitrate, ui->advOutTrack3Bitrate,
 			       ui->advOutTrack4Bitrate, ui->advOutTrack5Bitrate, ui->advOutTrack6Bitrate},
 			      320);
+}
+
+
+void OBSBasicSettings::InitOutputGuidePanel()
+{
+	if (!ui->outputPage || !ui->verticalLayout_2 || !ui->frame)
+		return;
+
+	ui->verticalLayout_2->removeWidget(ui->frame);
+
+	QSplitter *splitter = new QSplitter(Qt::Horizontal, ui->outputPage);
+	splitter->setObjectName("outputSplitter");
+	splitter->setChildrenCollapsible(false);
+
+	splitter->addWidget(ui->frame);
+
+	QFrame *guidePanel = new QFrame(splitter);
+	guidePanel->setObjectName("outputGuidePanel");
+	guidePanel->setMinimumWidth(340);
+	guidePanel->setStyleSheet(
+		"QFrame#outputGuidePanel {"
+		"  background-color: palette(window);"
+		"  border: 1px solid palette(mid);"
+		"  border-radius: 6px;"
+		"}"
+	);
+
+	QVBoxLayout *guideLayout = new QVBoxLayout(guidePanel);
+	guideLayout->setContentsMargins(10, 10, 10, 10);
+	guideLayout->setSpacing(8);
+
+	QHBoxLayout *headerLayout = new QHBoxLayout();
+	QLabel *titleLabel = new QLabel(QTStr("📖 Output Guide & Reference"), guidePanel);
+	titleLabel->setStyleSheet("font-weight: bold; font-size: 13px; color: palette(text);");
+	headerLayout->addWidget(titleLabel);
+	headerLayout->addStretch();
+
+	// Mode selector buttons (2 rows or flow layout for clean look)
+	QVBoxLayout *btnContainer = new QVBoxLayout();
+	btnContainer->setSpacing(4);
+
+	QHBoxLayout *btnRow1 = new QHBoxLayout();
+	QPushButton *streamBtn = new QPushButton(QTStr("📡 Streaming"), guidePanel);
+	QPushButton *recordBtn = new QPushButton(QTStr("🎬 Recording"), guidePanel);
+	QPushButton *audioBtn = new QPushButton(QTStr("🔊 Audio"), guidePanel);
+
+	QHBoxLayout *btnRow2 = new QHBoxLayout();
+	QPushButton *replayBtn = new QPushButton(QTStr("⏪ Replay Buffer"), guidePanel);
+	QPushButton *platformBtn = new QPushButton(QTStr("🌐 Twitch / YT / Kick"), guidePanel);
+
+	const QString btnStyle =
+		"QPushButton { padding: 4px 6px; font-weight: bold; font-size: 11px; border-radius: 4px; border: 1px solid palette(mid); }"
+		"QPushButton:checked { background-color: #2b5c8f; color: #ffffff; border: 1px solid #4daafc; }";
+
+	streamBtn->setStyleSheet(btnStyle);
+	recordBtn->setStyleSheet(btnStyle);
+	audioBtn->setStyleSheet(btnStyle);
+	replayBtn->setStyleSheet(btnStyle);
+	platformBtn->setStyleSheet(btnStyle);
+
+	streamBtn->setCheckable(true);
+	recordBtn->setCheckable(true);
+	audioBtn->setCheckable(true);
+	replayBtn->setCheckable(true);
+	platformBtn->setCheckable(true);
+	streamBtn->setChecked(true);
+
+	btnRow1->addWidget(streamBtn);
+	btnRow1->addWidget(recordBtn);
+	btnRow1->addWidget(audioBtn);
+
+	btnRow2->addWidget(replayBtn);
+	btnRow2->addWidget(platformBtn);
+
+	btnContainer->addLayout(btnRow1);
+	btnContainer->addLayout(btnRow2);
+
+	guideLayout->addLayout(headerLayout);
+	guideLayout->addLayout(btnContainer);
+
+	QTextBrowser *guideBrowser = new QTextBrowser(guidePanel);
+	guideBrowser->setObjectName("outputGuideBrowser");
+	guideBrowser->setOpenExternalLinks(true);
+	guideBrowser->setReadOnly(true);
+	guideBrowser->setStyleSheet(
+		"QTextBrowser#outputGuideBrowser {"
+		"  background-color: palette(base);"
+		"  border: 1px solid palette(mid);"
+		"  border-radius: 4px;"
+		"  font-size: 12px;"
+		"}"
+	);
+	guideLayout->addWidget(guideBrowser, 1);
+
+	splitter->addWidget(guidePanel);
+	splitter->setStretchFactor(0, 3);
+	splitter->setStretchFactor(1, 2);
+
+	ui->verticalLayout_2->addWidget(splitter);
+
+	auto setGuideMode = [=](int mode) {
+		streamBtn->setChecked(mode == 0);
+		recordBtn->setChecked(mode == 1);
+		audioBtn->setChecked(mode == 2);
+		replayBtn->setChecked(mode == 3);
+		platformBtn->setChecked(mode == 4);
+
+		if (mode == 0) {
+			guideBrowser->setHtml(GetStreamingGuideHtml());
+		} else if (mode == 1) {
+			guideBrowser->setHtml(GetRecordingGuideHtml());
+		} else if (mode == 2) {
+			guideBrowser->setHtml(GetAudioGuideHtml());
+		} else if (mode == 3) {
+			guideBrowser->setHtml(GetReplayBufferGuideHtml());
+		} else {
+			guideBrowser->setHtml(GetPlatformGuidelinesHtml());
+		}
+		guideBrowser->moveCursor(QTextCursor::Start);
+	};
+
+	connect(streamBtn, &QPushButton::clicked, this, [=]() { setGuideMode(0); });
+	connect(recordBtn, &QPushButton::clicked, this, [=]() { setGuideMode(1); });
+	connect(audioBtn, &QPushButton::clicked, this, [=]() { setGuideMode(2); });
+	connect(replayBtn, &QPushButton::clicked, this, [=]() { setGuideMode(3); });
+	connect(platformBtn, &QPushButton::clicked, this, [=]() { setGuideMode(4); });
+
+	if (ui->advOutTabs) {
+		connect(ui->advOutTabs, &QTabWidget::currentChanged, this, [=](int idx) {
+			if (idx >= 0 && idx <= 3) {
+				setGuideMode(idx);
+			}
+		});
+	}
+
+	setGuideMode(ui->advOutTabs && ui->advOutTabs->currentIndex() >= 0 ? ui->advOutTabs->currentIndex() : 0);
+
+	resize(qMax(width() + 400, 1340), qMax(height(), 780));
+}
+
+QString OBSBasicSettings::GetStreamingGuideHtml()
+{
+	return QString::fromUtf8(R"html(
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 12px; line-height: 1.55; color: #e4e6eb; margin: 6px; }
+  h2 { font-size: 15px; color: #4daafc; margin: 2px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+  h3 { font-size: 13px; color: #69c0ff; margin: 12px 0 4px 0; font-weight: bold; }
+  .box { background-color: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 5px; padding: 8px 10px; margin-bottom: 10px; }
+  .pro { color: #52c41a; font-weight: bold; }
+  .con { color: #ff4d4f; font-weight: bold; }
+  .pill-pro { background-color: rgba(82,196,26,0.18); color: #73d13d; border-radius: 3px; padding: 1px 5px; font-weight: bold; font-size: 10.5px; }
+  .pill-con { background-color: rgba(255,77,79,0.18); color: #ff7875; border-radius: 3px; padding: 1px 5px; font-weight: bold; font-size: 10.5px; }
+  .example { background-color: rgba(77, 170, 252, 0.08); border-left: 3px solid #1890ff; padding: 6px 8px; margin-top: 6px; font-size: 11.5px; }
+  .badge { background-color: #2b5c8f; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold; text-transform: uppercase; }
+  a { color: #4daafc; text-decoration: underline; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  li { margin-bottom: 3px; }
+</style>
+
+<h2>📡 Streaming Optimization Guide</h2>
+
+<div class='box' style='border: 1px solid #2b5c8f; background-color: rgba(43, 92, 143, 0.15);'>
+  <b style='color: #4daafc; font-size: 13px;'>🌐 Official Platform Quick-Links:</b><br/>
+  &bull; <a href="https://help.twitch.tv/s/article/broadcasting-guidelines"><b>Twitch Broadcasting Guidelines</b></a><br/>
+  &bull; <a href="https://support.google.com/youtube/answer/2853702?hl=en"><b>YouTube Live Encoder Guidelines</b></a><br/>
+  &bull; <a href="https://help.kick.com/en/articles/7066931-how-to-stream-on-kick-com"><b>Kick.com Streaming Setup Guide</b></a>
+  <div style='margin-top: 5px; font-size: 11px; color: #aaa;'><i>(Click any link above to open in your browser, or click the [🌐 Twitch / YT / Kick] tab above)</i></div>
+</div>
+
+<div class='box'>
+  <h3>1. Rate Control: CBR (Constant Bitrate)</h3>
+  <p><b>What it does:</b> Forces your stream to transmit at an exact, predictable data rate (e.g. 6000 Kbps).</p>
+  <p><b>Why you need it:</b> Streaming servers (Twitch, Kick, YouTube RTMP) strictly require CBR. Variable Bitrate (VBR) causes packet surges that exceed your internet connection or cause dropped frames.</p>
+  <ul>
+    <li><span class='pro'>Pros:</span> Maximum stream stability, prevents dropped frames and viewer buffering.</li>
+    <li><span class='con'>Cons:</span> Inefficient bit usage during static pause screens.</li>
+  </ul>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> If you stream at 6000 Kbps on CBR, a sudden flashbang or smoke grenade won't spike your bitrate to 15,000 Kbps and choke your viewer's buffer or your home upload speed.
+  </div>
+</div>
+
+<div class='box'>
+  <h3>2. Recommended Bitrates</h3>
+  <ul>
+    <li><b>1080p 60fps:</b> 6,000 – 8,000 Kbps (Twitch standard limit is ~8,000; YouTube can handle 9,000+).</li>
+    <li><b>720p 60fps:</b> 4,500 Kbps (Ideal for viewers on mobile or restricted broadband).</li>
+    <li><b>Safety Rule:</b> Your home upload speed must be at least 30–40% higher than your chosen bitrate.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>3. Keyframe Interval (GOP Size)</h3>
+  <p><b>What it does:</b> Determines how frequently a complete standalone image (I-Frame) is sent.</p>
+  <ul>
+    <li><span class='pill-pro'>MANDATORY</span> <b>Set to 2 seconds:</b> Streaming platforms chunk video into 2-second fragments (HLS/DASH).</li>
+    <li><span class='pro'>Pros:</span> Instant stream startup when viewers click your channel; low latency playback and clean seeking.</li>
+    <li><span class='con'>Cons of 0 (Auto):</span> Viewers may see an endless spinning loading wheel when joining your stream.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>4. Encoder Presets (P1 to P7 / Veryfast to Slow)</h3>
+  <ul>
+    <li><b>P1 – P3 (Performance):</b> Lowest GPU load. Great for low-end graphics cards or extreme CPU/GPU-bound titles.</li>
+    <li><span class='badge'>Sweet Spot</span> <b>P4 – P5 (Medium / Balanced):</b> Pristine visual quality with near-zero gaming performance impact on Nvidia Turing/Ampere/Ada GPUs.</li>
+    <li><b>P6 – P7 (High Quality):</b> Maximum visual clarity using multi-pass GPU encoding. Only use if your GPU has headroom.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>5. Tuning &amp; Multipass Mode</h3>
+  <ul>
+    <li><b>Tuning &rarr; High Quality:</b> Best visual fidelity for 60fps gameplay.</li>
+    <li><b>Tuning &rarr; Low Latency:</b> For high-interaction talk shows or real-time chat responsiveness.</li>
+    <li><span class='badge'>Recommended</span> <b>Two Passes (Quarter Resolution):</b> Delivers ~90% of dual-pass image quality benefits with almost no performance overhead.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>6. Lookahead &amp; Psycho Visual Tuning</h3>
+  <ul>
+    <li><b>Lookahead:</b> Allows the encoder to peek into future frames to decide if B-frames are needed.
+      <br/><span class='pro'>Pros:</span> Cleaner fast-action gameplay (Apex Legends, Call of Duty).
+      <br/><span class='con'>Cons:</span> Uses GPU CUDA cores; may cause micro-stutter in 100% GPU-bound titles.
+    </li>
+    <li><b>Psycho Visual Tuning:</b> Directs bits to high-contrast edges and human faces where eyes notice flaws. <b>Always leave enabled</b>.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>7. B-Frames &amp; "B-Frame as Reference"</h3>
+  <p><b>What it does:</b> Bidirectional predicted frames that store differences between prior and following frames.</p>
+  <ul>
+    <li><b>Max B-Frames (Default: 2):</b>
+      <br/><span class='pro'>Pros of Enabling (2):</span> Greatly increases image sharpness at the same bitrate.
+      <br/><span class='con'>When to set to 0:</span> Low-latency live esports broadcasts or streaming to legacy ingest hardware that rejects B-frames.
+    </li>
+    <li><b>B-Frame as Reference:</b>
+      <br/><span class='pro'>Why Enable:</span> Reuses intermediate B-frames as reference points for extra compression efficiency without bitrate increase.
+      <br/><span class='con'>Why Disable:</span> Turn off only if streaming to platforms or older decoders that report dropped frames or stutter on hierarchical B-frames.
+    </li>
+  </ul>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> In high-speed racing games (Forza, F1), enabling 2 B-frames with "B-Frame as Reference" prevents asphalt textures and guardrails from turning into muddy macroblocks.
+  </div>
+</div>
+)html");
+}
+
+QString OBSBasicSettings::GetRecordingGuideHtml()
+{
+	return QString::fromUtf8(R"html(
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 12px; line-height: 1.55; color: #e4e6eb; margin: 6px; }
+  h2 { font-size: 15px; color: #4daafc; margin: 2px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+  h3 { font-size: 13px; color: #69c0ff; margin: 12px 0 4px 0; font-weight: bold; }
+  .box { background-color: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 5px; padding: 8px 10px; margin-bottom: 10px; }
+  .pro { color: #52c41a; font-weight: bold; }
+  .con { color: #ff4d4f; font-weight: bold; }
+  .pill-pro { background-color: rgba(82,196,26,0.18); color: #73d13d; border-radius: 3px; padding: 1px 5px; font-weight: bold; font-size: 10.5px; }
+  .pill-con { background-color: rgba(255,77,79,0.18); color: #ff7875; border-radius: 3px; padding: 1px 5px; font-weight: bold; font-size: 10.5px; }
+  .example { background-color: rgba(77, 170, 252, 0.08); border-left: 3px solid #1890ff; padding: 6px 8px; margin-top: 6px; font-size: 11.5px; }
+  .badge { background-color: #2b5c8f; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold; text-transform: uppercase; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  li { margin-bottom: 3px; }
+</style>
+
+<h2>🎬 Recording Optimization Guide</h2>
+
+<div class='box' style='border: 1px solid #1e4620; background-color: rgba(30, 70, 32, 0.2);'>
+  <b style='color: #73d13d; font-size: 13px;'>🛡️ Default Protection Active:</b><br/>
+  This custom build is configured with <b>MKV Recording</b> and <b>Automatic Remux to MP4</b> enabled by default. You get 100% crash-proof recordings while outputting standard MP4s ready for Premiere, Resolve, and YouTube!
+</div>
+
+<div class='box'>
+  <h3>1. Recording Container Format (MKV vs MP4 vs fMP4)</h3>
+  <p><b>What it does:</b> The file format wrapping your encoded video, audio, and subtitle streams.</p>
+  <p><b>Why you need it:</b> Choosing the right container prevents catastrophic file corruption.</p>
+  <ul>
+    <li><span class='pill-pro'>RECOMMENDED</span> <b>MKV (Matroska):</b> Writes index headers continuously as you record.
+      <br/><span class='pro'>Pros:</span> <b>Crash-Proof.</b> If OBS crashes, your PC loses power, or a bluescreen happens at 1 hr 59 min, 100% of the video up to the exact millisecond of the crash is preserved.
+      <br/><span class='con'>Cons:</span> Some legacy video editors (e.g., older Premiere versions) cannot import MKV directly.
+      <br/><b>Solution:</b> With <i>Auto Remux to MP4</i> enabled, OBS automatically converts MKV to MP4 the second recording stops.
+    </li>
+    <li><span class='pill-con'>RISKY</span> <b>Standard MP4:</b> Only writes the index table (the <code>moov atom</code>) at the very end when you hit "Stop Recording".
+      <br/><span class='con'>Cons:</span> If OBS crashes or PC turns off before finishing, the entire file is 100% permanently corrupt and unrecoverable.
+    </li>
+    <li><b>Fragmented MP4 / MOV:</b> Writes periodic chunks. Crash-proof like MKV, but with native MP4 compatibility.</li>
+  </ul>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> You are recording a 3-hour game playthrough or podcast. At minute 175, Windows runs out of RAM or your graphics driver crashes. With standard MP4, all 3 hours are lost forever. With MKV, every second recorded up to the crash is safe.
+  </div>
+</div>
+
+<div class='box'>
+  <h3>2. Rate Control (CQP vs CBR)</h3>
+  <p><b>What it does:</b> Dictates how the encoder allocates bits to frames based on scene complexity.</p>
+  <p><b>Why CQP is King for Local Recording:</b> Local recording is NOT limited by internet upload bandwidth! You should <b>never</b> use CBR for recording.</p>
+  <ul>
+    <li><b>CQP (Constant Quantization Parameter):</b> Sets a target visual quality level. The GPU automatically uses high bitrate for complex explosion scenes and near-zero bitrate for still pause menus.
+      <br/><span class='pro'>Pros:</span> Flawless, consistent visual sharpness without wasting gigabytes of disk space on quiet scenes.
+      <br/><span class='badge'>Sweet Spot</span> <b>CQP 18–20:</b> Pristine, visually lossless for 1080p/1440p/4K YouTube uploads.
+      <br/><b>CQP 14–16:</b> Archival master quality (massive files).
+      <br/><b>CQP 22–26:</b> Great quality with compact file sizes for limited SSD space.
+    </li>
+    <li><b>CBR (Constant Bitrate):</b> Forces a fixed bitrate (e.g. 6000 Kbps) regardless of scene content.
+      <br/><span class='con'>Cons:</span> Starves high-motion scenes causing pixelation, while wasting storage during static moments.
+    </li>
+  </ul>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> You are playing Cyberpunk 2077. Standing still inside an elevator: CQP only writes 800 Kbps (saving SSD space). You step outside into rain and neon traffic: CQP dynamically spikes to 45,000 Kbps so no pixelation occurs.
+  </div>
+</div>
+
+<div class='box'>
+  <h3>3. B-Frames &amp; "B-Frame as Reference"</h3>
+  <p><b>What it does:</b> B-frames (Bidirectional predictive frames) store only the mathematical difference between the frame before AND the frame after it.</p>
+  <ul>
+    <li><b>Max B-Frames (Default: 2):</b>
+      <br/><span class='pro'>Pros of Enabling (2-4):</span> Gives <b>15% to 25% smaller file sizes</b> with the exact same visual quality. Text and textures remain sharper.
+      <br/><span class='con'>Cons of Enabling:</span> Adds slight GPU encode buffer latency (negligible for local recording).
+      <br/><span class='pill-con'>When to Disable (0):</span> If scrubbing backwards on your video editing timeline (NLE) feels laggy or drops frames on older PCs.
+    </li>
+    <li><b>B-Frame as Reference:</b>
+      <br/>Allows intermediate B-frames to be used as reference points for other B-frames (hierarchical B-frame structure).
+      <br/><span class='pro'>Why Enable (Recommended):</span> Higher compression efficiency for free on modern Nvidia (Turing/Ampere/Ada) and AMD (RDNA) GPUs. Keeps high-motion details sharp.
+      <br/><span class='con'>Why Disable:</span> Certain older or budget video editing programs (like legacy Sony Vegas or Premiere CS6) glitch or display green frames when decoding hierarchical B-frames.
+    </li>
+  </ul>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> If you record 4K 60fps gameplay, enabling 2 B-frames with "B-Frame as Reference" can save 8–12 GB of SSD space per hour while making grass and particle effects look noticeably crisper.
+  </div>
+</div>
+
+<div class='box'>
+  <h3>4. Keyframe Interval (GOP Size)</h3>
+  <p><b>What it does:</b> Sets how often a complete standalone picture (I-Frame) is saved.</p>
+  <ul>
+    <li><b>Recommended: 1s or 2s:</b> Essential for video editing! When you drag the scrubber in Premiere Pro or DaVinci Resolve, the video player snaps instantly to the nearest keyframe.
+      <br/><span class='pro'>Pros:</span> Super responsive, buttery-smooth timeline scrubbing and cutting.
+    </li>
+    <li><b>Auto (0):</b> Lets the encoder decide. Keyframes might be 10 seconds apart.
+      <br/><span class='con'>Cons:</span> Timeline scrubbing in editing software will feel sluggish or pause while waiting to decode keyframes.
+    </li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>5. Multi-Track Audio Separation</h3>
+  <p><b>What it does:</b> Records different audio sources (Microphone, Game Audio, Discord, Music) onto separate audio tracks inside the same video file.</p>
+  <div class='example'>
+    <b>💡 Real-Life Example:</b> You record a game tournament. Your friend yells into Discord, or a loud boss battle drowns out your voice. If audio was recorded on 1 track, the video is ruined. With multi-track audio, you open the video in your editor and simply turn down Track 3 (Discord) or boost Track 2 (Your Mic) independently.
+  </div>
+</div>
+
+<div class='box'>
+  <h3>6. Encoder Selection: Hardware vs Software</h3>
+  <ul>
+    <li><b>Hardware (NVENC / QuickSync / AMF / AV1):</b> Uses a dedicated physical chip on your graphics card (e.g. NVENC chip). <b>Zero gaming FPS loss.</b></li>
+    <li><b>Software (x264):</b> Uses your computer's CPU cores. High CPU load; will cause stutter and frame drops in modern games.</li>
+  </ul>
+</div>
+)html");
+}
+
+QString OBSBasicSettings::GetAudioGuideHtml()
+{
+	return QString::fromUtf8(R"html(
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 12px; line-height: 1.55; color: #e4e6eb; margin: 6px; }
+  h2 { font-size: 15px; color: #4daafc; margin: 2px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+  h3 { font-size: 13px; color: #69c0ff; margin: 12px 0 4px 0; font-weight: bold; }
+  .box { background-color: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 5px; padding: 10px; margin-bottom: 12px; }
+  .pro { color: #52c41a; font-weight: bold; }
+  .con { color: #ff4d4f; font-weight: bold; }
+  .bar-container { background-color: rgba(255, 255, 255, 0.08); border-radius: 4px; height: 16px; margin: 3px 0; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; font-size: 10px; font-weight: bold; color: #fff; padding-left: 6px; line-height: 16px; }
+  .example { background-color: rgba(77, 170, 252, 0.08); border-left: 3px solid #1890ff; padding: 6px 8px; margin-top: 6px; font-size: 11.5px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11.5px; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); text-align: left; }
+  th { color: #4daafc; font-weight: bold; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  li { margin-bottom: 3px; }
+</style>
+
+<h2>🔊 Audio Bitrate &amp; Sizing Guide</h2>
+
+<div class='box'>
+  <h3>📊 1-Hour Audio File Size Comparison (Per Track)</h3>
+  <p>How much storage or bandwidth 1 hour of continuous audio consumes at various bitrates:</p>
+
+  <div style='margin-bottom: 6px;'>
+    <b>64 Kbps</b> (~28.8 MB / hr) — Voice Only / Low Bandwidth
+    <div class='bar-container'><div class='bar-fill' style='width: 20%; background-color: #52c41a;'>28.8 MB</div></div>
+  </div>
+
+  <div style='margin-bottom: 6px;'>
+    <b>128 Kbps</b> (~57.6 MB / hr) — YouTube / Kick Standard Quality
+    <div class='bar-container'><div class='bar-fill' style='width: 40%; background-color: #1890ff;'>57.6 MB</div></div>
+  </div>
+
+  <div style='margin-bottom: 6px;'>
+    <b>160 Kbps</b> (~72.0 MB / hr) — Twitch Sweet Spot / High Quality
+    <div class='bar-container'><div class='bar-fill' style='width: 50%; background-color: #722ed1;'>72.0 MB</div></div>
+  </div>
+
+  <div style='margin-bottom: 6px;'>
+    <b>192 Kbps</b> (~86.4 MB / hr) — Music &amp; High-Fidelity Broadcasts
+    <div class='bar-container'><div class='bar-fill' style='width: 60%; background-color: #fa8c16;'>86.4 MB</div></div>
+  </div>
+
+  <div style='margin-bottom: 6px;'>
+    <b>320 Kbps</b> (~144.0 MB / hr) — Studio Archival / Transparent Master
+    <div class='bar-container'><div class='bar-fill' style='width: 100%; background-color: #eb2f96;'>144.0 MB</div></div>
+  </div>
+</div>
+
+<div class='box'>
+  <h3>💥 The Multi-Track Audio Multiplier</h3>
+  <p>If you record multi-track audio (e.g. separate tracks for Game, Mic, Discord, Music), <b>each track uses its own bitrate</b>:</p>
+  <table>
+    <tr><th>Configuration</th><th>1 Track</th><th>4 Tracks</th><th>6 Tracks</th></tr>
+    <tr><td><b>128 Kbps</b></td><td>58 MB / hr</td><td>230 MB / hr</td><td>345 MB / hr</td></tr>
+    <tr><td><b>160 Kbps</b></td><td>72 MB / hr</td><td>288 MB / hr</td><td>432 MB / hr</td></tr>
+    <tr><td><b>320 Kbps</b></td><td>144 MB / hr</td><td><span class='con'>576 MB / hr</span></td><td><span class='con'>864 MB / hr</span></td></tr>
+  </table>
+  <div class='example'>
+    <b>💡 Pro Tip:</b> Set your Game/Master track to <b>192–320 Kbps</b> for full music/game richness, but set Discord and Microphone tracks to <b>128–160 Kbps</b>. Human voice does not benefit from 320 Kbps, saving you hundreds of megabytes per session!
+  </div>
+</div>
+
+<div class='box'>
+  <h3>🎧 Sample Rate: 48 kHz vs 44.1 kHz</h3>
+  <ul>
+    <li><span class='pro'>48 kHz (Broadcast Standard):</span> Matches Windows audio output, modern PC gaming engines, and video editing suites (Premiere/Resolve). Always use 48 kHz to eliminate audio resampling jitter.</li>
+    <li><b>44.1 kHz (CD Standard):</b> Used primarily for legacy audio CDs and music recording.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>Codec Recommendations</h3>
+  <ul>
+    <li><b>AAC (Advanced Audio Coding):</b> Universal compatibility across all platforms, editors, browsers, and mobile devices. Default for 99% of creators.</li>
+    <li><b>Opus:</b> Incredible compression quality even at low bitrates (96-128k beats 160k AAC). Supported in WebRTC and MKV, but some video editors lack native Opus support.</li>
+  </ul>
+</div>
+)html");
+}
+
+QString OBSBasicSettings::GetReplayBufferGuideHtml()
+{
+	return QString::fromUtf8(R"html(
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 12px; line-height: 1.55; color: #e4e6eb; margin: 6px; }
+  h2 { font-size: 15px; color: #4daafc; margin: 2px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+  h3 { font-size: 13px; color: #69c0ff; margin: 12px 0 4px 0; font-weight: bold; }
+  .box { background-color: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 5px; padding: 10px; margin-bottom: 12px; }
+  .pro { color: #52c41a; font-weight: bold; }
+  .con { color: #ff4d4f; font-weight: bold; }
+  .example { background-color: rgba(77, 170, 252, 0.08); border-left: 3px solid #1890ff; padding: 6px 8px; margin-top: 6px; font-size: 11.5px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11.5px; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); text-align: left; }
+  th { color: #4daafc; font-weight: bold; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  li { margin-bottom: 3px; }
+</style>
+
+<h2>⏪ Replay Buffer Optimization Guide</h2>
+
+<div class='box'>
+  <h3>What is the Replay Buffer?</h3>
+  <p>The Replay Buffer keeps a rolling recording in your computer's <b>RAM</b>. When you hit a hotkey (e.g. <code>F9</code>), OBS writes only the last 30 to 120 seconds directly to an MP4/MKV file on your SSD!</p>
+  <ul>
+    <li><span class='pro'>Pros:</span> Capture clutches, funny moments, and highlights without filling up your hard drive with 6-hour recordings or wearing down your SSD.</li>
+    <li><span class='con'>Cons:</span> Consumes system RAM while running.</li>
+  </ul>
+</div>
+
+<div class='box'>
+  <h3>🧠 RAM Usage Calculation Guide</h3>
+  <p>RAM consumption depends directly on your <b>Recording Bitrate</b> and your <b>Buffer Time (seconds)</b>:</p>
+  <table>
+    <tr><th>Buffer Time</th><th>At 15 Mbps (1080p)</th><th>At 30 Mbps (1440p)</th><th>At 60 Mbps (4K)</th></tr>
+    <tr><td><b>30 Seconds</b></td><td>~70 MB RAM</td><td>~140 MB RAM</td><td>~280 MB RAM</td></tr>
+    <tr><td><b>60 Seconds</b></td><td>~140 MB RAM</td><td>~270 MB RAM</td><td>~540 MB RAM</td></tr>
+    <tr><td><b>120 Seconds</b></td><td>~280 MB RAM</td><td>~540 MB RAM</td><td>~1.1 GB RAM</td></tr>
+    <tr><td><b>300 Seconds (5 min)</b></td><td>~700 MB RAM</td><td>~1.4 GB RAM</td><td>~2.8 GB RAM</td></tr>
+  </table>
+  <div class='example'>
+    <b>💡 Pro Tip:</b> Set <b>Maximum Memory (MB)</b> to at least 1.5&times; your estimated usage (e.g., 1024 MB or 2048 MB). This prevents high-motion gameplay spikes from overflowing your buffer!
+  </div>
+</div>
+
+<div class='box'>
+  <h3>⚙️ Best Practices</h3>
+  <ul>
+    <li><b>Buffer Duration:</b> <b>30 to 60 seconds</b> is the sweet spot for esports &amp; battle royales. It captures the entire team fight without fluff.</li>
+    <li><b>Assign a Hotkey:</b> Go to <i>Settings &rarr; Hotkeys &rarr; Replay Buffer &rarr; Save Replay</i> and bind a key (e.g. <code>F9</code> or a mouse macro).</li>
+    <li><b>Start Automatically:</b> In <i>Settings &rarr; General</i>, check <i>"Automatically start replay buffer when streaming"</i> so you never forget to turn it on!</li>
+  </ul>
+</div>
+)html");
+}
+
+QString OBSBasicSettings::GetPlatformGuidelinesHtml()
+{
+	return QString::fromUtf8(R"html(
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 12px; line-height: 1.55; color: #e4e6eb; margin: 6px; }
+  h2 { font-size: 15px; color: #4daafc; margin: 2px 0 8px 0; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+  h3 { font-size: 13.5px; margin: 10px 0 4px 0; font-weight: bold; }
+  .box { background-color: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 5px; padding: 10px; margin-bottom: 12px; }
+  .twitch-box { border-left: 4px solid #9146ff; background-color: rgba(145, 70, 255, 0.08); }
+  .youtube-box { border-left: 4px solid #ff0000; background-color: rgba(255, 0, 0, 0.08); }
+  .kick-box { border-left: 4px solid #53fc18; background-color: rgba(83, 252, 24, 0.08); }
+  .btn-link { display: inline-block; background-color: #2b5c8f; color: #ffffff !important; padding: 4px 10px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 11px; margin-top: 6px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 11.5px; }
+  td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  td.label { color: #aaa; width: 35%; font-weight: bold; }
+  a { color: #4daafc; text-decoration: underline; }
+</style>
+
+<h2>🌐 Platform Broadcasting Specs &amp; Guidelines</h2>
+<p style='color: #bbb; margin-bottom: 10px;'>Official technical ingest specifications for the major live streaming platforms. Click any button to view the official support document online.</p>
+
+<!-- TWITCH -->
+<div class='box twitch-box'>
+  <h3 style='color: #bf94ff;'>🟣 Twitch</h3>
+  <a class='btn-link' href="https://help.twitch.tv/s/article/broadcasting-guidelines">🔗 Open Official Twitch Guidelines &rarr;</a>
+  <table>
+    <tr><td class='label'>Rate Control</td><td><b>CBR (Constant Bitrate)</b> — Strictly required</td></tr>
+    <tr><td class='label'>Max Bitrate</td><td><b>6,000 – 8,000 Kbps</b> (8,500 Kbps hard ceiling with audio)</td></tr>
+    <tr><td class='label'>Resolution / FPS</td><td><b>1080p 60fps</b> (6k-8k Kbps) &bull; <b>720p 60fps</b> (4.5k Kbps)</td></tr>
+    <tr><td class='label'>Keyframe Interval</td><td><b>2.0 seconds</b> (Mandatory for HLS segmenting)</td></tr>
+    <tr><td class='label'>Video Codec</td><td><b>H.264 (AVC)</b> &bull; HEVC &amp; AV1 (Enhanced Broadcasting)</td></tr>
+    <tr><td class='label'>B-Frames</td><td><b>2 B-Frames</b> (B-Frame as reference supported)</td></tr>
+    <tr><td class='label'>Encoder Preset</td><td>NVIDIA NVENC: <b>P4 - P6 (Quality)</b> &bull; CPU: <b>veryfast</b></td></tr>
+    <tr><td class='label'>Audio Format</td><td><b>AAC-LC</b> stereo, <b>160 Kbps max</b>, 48 kHz or 44.1 kHz</td></tr>
+  </table>
+</div>
+
+<!-- YOUTUBE -->
+<div class='box youtube-box'>
+  <h3 style='color: #ff6b6b;'>🔴 YouTube Live</h3>
+  <a class='btn-link' href="https://support.google.com/youtube/answer/2853702?hl=en">🔗 Open Official YouTube Guidelines &rarr;</a>
+  <table>
+    <tr><td class='label'>Rate Control</td><td><b>CBR (Constant Bitrate)</b> — Strongly recommended</td></tr>
+    <tr><td class='label'>4K (2160p) 60fps</td><td><b>20,000 – 51,000 Kbps</b></td></tr>
+    <tr><td class='label'>1440p (2K) 60fps</td><td><b>9,000 – 18,000 Kbps</b></td></tr>
+    <tr><td class='label'>1080p 60fps</td><td><b>4,500 – 9,000 Kbps</b></td></tr>
+    <tr><td class='label'>720p 60fps</td><td><b>2,250 – 6,000 Kbps</b></td></tr>
+    <tr><td class='label'>Keyframe Interval</td><td><b>2.0 seconds</b> (Do not exceed 4 seconds)</td></tr>
+    <tr><td class='label'>Video Codecs</td><td><b>H.264 (AVC)</b>, <b>H.265 (HEVC)</b>, <b>AV1</b></td></tr>
+    <tr><td class='label'>Audio Format</td><td><b>AAC-LC</b> or MP3, <b>128 Kbps</b> (stereo) up to 384 Kbps (5.1)</td></tr>
+  </table>
+</div>
+
+<!-- KICK -->
+<div class='box kick-box'>
+  <h3 style='color: #53fc18;'>🟢 Kick.com</h3>
+  <a class='btn-link' href="https://help.kick.com/en/articles/7066931-how-to-stream-on-kick-com">🔗 Open Official Kick.com Setup Guide &rarr;</a>
+  <table>
+    <tr><td class='label'>Rate Control</td><td><b>CBR (Constant Bitrate)</b> — VBR is NOT supported</td></tr>
+    <tr><td class='label'>Max Bitrate</td><td><b>1,000 – 8,000 Kbps</b> (Strict 8,000 Kbps ceiling)</td></tr>
+    <tr><td class='label'>Max Resolution</td><td><b>1080p 60fps</b> (1920&times;1080 max)</td></tr>
+    <tr><td class='label'>Keyframe Interval</td><td><b>2.0 seconds</b> (Mandatory for stability)</td></tr>
+    <tr><td class='label'>Supported Codec</td><td><b>H.264 only</b> (NVENC H.264, AMD HW, or x264 CPU).<br/><i>*HEVC and AV1 ingest not supported.</i></td></tr>
+    <tr><td class='label'>NVENC Preset</td><td><b>P6: Slower (Better Quality)</b> &bull; Tuning: <b>Ultra Low Latency</b></td></tr>
+    <tr><td class='label'>NVENC Multipass</td><td><b>Single Pass</b> &bull; Profile: <b>main</b></td></tr>
+    <tr><td class='label'>CPU (x264) Preset</td><td>Preset: <b>veryfast</b> &bull; Tune: <b>zerolatency</b> &bull; Profile: <b>main</b></td></tr>
+    <tr><td class='label'>Audio Format</td><td><b>AAC</b> stereo, <b>128 – 160 Kbps</b></td></tr>
+  </table>
+</div>
+)html");
 }

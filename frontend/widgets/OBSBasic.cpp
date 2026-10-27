@@ -522,7 +522,7 @@ static const double scaled_vals[] = {1.0, 1.25, (1.0 / 0.75), 1.5, (1.0 / 0.6), 
 #ifdef __APPLE__ // macOS
 #define DEFAULT_CONTAINER "hybrid_mov"
 #else // Windows/Linux
-#define DEFAULT_CONTAINER "hybrid_mp4"
+#define DEFAULT_CONTAINER "mkv"
 #endif
 
 bool OBSBasic::InitBasicConfigDefaults()
@@ -664,6 +664,7 @@ bool OBSBasic::InitBasicConfigDefaults()
 	/* There is no Simple output mode: a new profile starts from the Simple
 	 * defaults and MigrateSimpleOutputMode moves it to Advanced */
 	config_set_default_string(activeConfiguration, "Output", "Mode", "Simple");
+	config_set_default_bool(activeConfiguration, "Video", "AutoRemux", true);
 
 	config_set_default_bool(activeConfiguration, "Stream1", "IgnoreRecommended", false);
 	config_set_default_bool(activeConfiguration, "Stream1", "EnableMultitrackVideo", false);
