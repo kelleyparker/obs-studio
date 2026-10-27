@@ -377,6 +377,7 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	 * 25 retries) are fixed as well */
 	ui->groupBox_5->setVisible(false);
 	ui->groupBox_7->setVisible(false);
+	ui->updateSettingsGroupBox->setVisible(false);
 
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);

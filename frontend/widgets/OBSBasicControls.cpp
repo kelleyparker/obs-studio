@@ -28,6 +28,16 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
 		ui->pauseRecordButton, &QPushButton::clicked, this, [this]() { emit this->PauseRecordButtonClicked(); },
 		Qt::DirectConnection);
 	connect(
+		ui->youtubeWorkflowButton, &QPushButton::clicked, this,
+		[]() {
+			OBSMessageBox::information(
+				nullptr,
+				"YouTube Workflow",
+				"🎬 YouTube Auto-Edit & Upload Pipeline triggered.\n\nThis button is ready. Automated editing and upload steps will run here."
+			);
+		},
+		Qt::DirectConnection);
+	connect(
 		ui->replayBufferButton, &QPushButton::clicked, this,
 		[this]() { emit this->ReplayBufferButtonClicked(); }, Qt::DirectConnection);
 	connect(
