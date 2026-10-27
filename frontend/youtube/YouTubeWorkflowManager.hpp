@@ -21,9 +21,9 @@ struct YouTubeWorkflowConfig {
 	QString clientSecretFilePath;
 
 	// Smart Video Editing Presets
-	double silenceDb = -32.0;
-	double minSilenceSec = 0.50;
-	double paddingSec = 0.15;
+	double silenceDb = -42.0;
+	double minSilenceSec = 1.20;
+	double paddingSec = 0.25;
 	bool cutRetakes = true;
 };
 
@@ -68,7 +68,8 @@ signals:
 	void WorkflowArmedChanged(bool armed);
 	void PipelineStateChanged(const QString &bannerText, bool running);
 	void StepProgressUpdated(const QString &stepName, int percent, const QString &message);
-	void MetadataGenerated(const QString &title, const QString &description, const QString &hookText,
+	void MetadataGenerated(const QString &title, const QStringList &alternativeTitles,
+			       const QString &description, const QString &hookText,
 			       const QString &providerBadge);
 	void ThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
 	void PipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,

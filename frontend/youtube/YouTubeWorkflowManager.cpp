@@ -491,8 +491,14 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		emit StepProgressUpdated(step, pct, msg);
 		emit PipelineStateChanged(QString("⚙️ %1").arg(msg), true);
 	} else if (type == "metadata_ready") {
+		QStringList altTitles;
+		QJsonArray altArr = obj.value("alternative_titles").toArray();
+		for (const auto &v : altArr) {
+			altTitles.append(v.toString());
+		}
 		emit MetadataGenerated(
 			obj.value("title").toString(),
+			altTitles,
 			obj.value("description").toString(),
 			obj.value("thumbnail_hook").toString(),
 			obj.value("provider").toString()

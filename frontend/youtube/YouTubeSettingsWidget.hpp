@@ -62,6 +62,7 @@ private:
 	QCheckBox *madeForKidsCheck = nullptr;
 
 	// Section 4: Smart Video Editing Presets
+	QComboBox *editingPresetCombo = nullptr;
 	QDoubleSpinBox *silenceDbSpin = nullptr;
 	QDoubleSpinBox *minSilenceSecSpin = nullptr;
 	QDoubleSpinBox *paddingSecSpin = nullptr;

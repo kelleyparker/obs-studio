@@ -1,6 +1,7 @@
 #include "YouTubePipelineDock.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
+#include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QFileInfo>
@@ -103,16 +104,30 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		"QLabel { background-color: #191222; border: 1px dashed #6b4c85; border-radius: 4px; color: #9a88ab; }");
 	metaLayout->addWidget(thumbnailPreview);
 
-	QLabel *titleLbl = new QLabel("Generated Title:", metaGroup);
+	QLabel *titleLbl = new QLabel("Generated Title (Current #1 Preferred):", metaGroup);
 	titleEdit = new QLineEdit(metaGroup);
 	titleEdit->setPlaceholderText("AI-generated YouTube title will appear here...");
 	metaLayout->addWidget(titleLbl);
 	metaLayout->addWidget(titleEdit);
 
+	QLabel *altTitleLbl = new QLabel("Prospective Alternative Titles (Click to Swap Title):", metaGroup);
+	alternativeTitlesCombo = new QComboBox(metaGroup);
+	alternativeTitlesCombo->addItem("— Select a Prospective Alternative Title to Swap —");
+	connect(alternativeTitlesCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index) {
+		if (index >= 0) {
+			QString selected = alternativeTitlesCombo->itemData(index).toString();
+			if (!selected.isEmpty()) {
+				titleEdit->setText(selected);
+			}
+		}
+	});
+	metaLayout->addWidget(altTitleLbl);
+	metaLayout->addWidget(alternativeTitlesCombo);
+
 	QLabel *descLbl = new QLabel("Generated SEO Description & Chapters:", metaGroup);
 	descriptionEdit = new QPlainTextEdit(metaGroup);
 	descriptionEdit->setPlaceholderText("AI-generated description & chapter timestamps will appear here...");
-	descriptionEdit->setMaximumHeight(85);
+	descriptionEdit->setMaximumHeight(150);
 	metaLayout->addWidget(descLbl);
 	metaLayout->addWidget(descriptionEdit);
 
@@ -194,12 +209,23 @@ void YouTubePipelineDock::OnStepProgressUpdated(const QString &stepName, int per
 	row.detailLabel->setText(message);
 }
 
-void YouTubePipelineDock::OnMetadataGenerated(const QString &title, const QString &description,
-					      const QString &hookText, const QString &providerBadge)
+void YouTubePipelineDock::OnMetadataGenerated(const QString &title, const QStringList &alternativeTitles,
+					      const QString &description, const QString &hookText,
+					      const QString &providerBadge)
 {
 	titleEdit->setText(title);
 	descriptionEdit->setPlainText(description);
 	providerBadgeLabel->setText(QString("✨ Metadata via %1 | Hook: \"%2\"").arg(providerBadge, hookText));
+
+	alternativeTitlesCombo->clear();
+	alternativeTitlesCombo->addItem(QString("Primary #1 (Current): %1").arg(title), title);
+	int num = 2;
+	for (const QString &alt : alternativeTitles) {
+		QString trimmed = alt.trimmed();
+		if (!trimmed.isEmpty()) {
+			alternativeTitlesCombo->addItem(QString("#%1: %2").arg(num++).arg(trimmed), trimmed);
+		}
+	}
 }
 
 void YouTubePipelineDock::OnThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge)

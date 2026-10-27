@@ -249,25 +249,32 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		new QGroupBox("4. Talking-Head Smart Editor Presets (Dead Air & Butchered Sentences)", container);
 	QFormLayout *editForm = new QFormLayout(editGroup);
 
+	editingPresetCombo = new QComboBox(editGroup);
+	editingPresetCombo->addItem("Conservative (Default — Safe & Natural)", "conservative");
+	editingPresetCombo->addItem("Aggressive (Fast Jumpcut Style)", "aggressive");
+	editingPresetCombo->addItem("Dead-Air Only (No Sentence Cuts)", "dead_air_only");
+	editingPresetCombo->addItem("Custom (Manual Thresholds)", "custom");
+	editForm->addRow("Editing Pacing Preset:", editingPresetCombo);
+
 	silenceDbSpin = new QDoubleSpinBox(editGroup);
 	silenceDbSpin->setRange(-60.0, -10.0);
 	silenceDbSpin->setSingleStep(1.0);
 	silenceDbSpin->setSuffix(" dB");
-	silenceDbSpin->setValue(-32.0);
+	silenceDbSpin->setValue(-42.0);
 	editForm->addRow("Dead-Air Silence Threshold:", silenceDbSpin);
 
 	minSilenceSecSpin = new QDoubleSpinBox(editGroup);
 	minSilenceSecSpin->setRange(0.20, 5.00);
 	minSilenceSecSpin->setSingleStep(0.10);
 	minSilenceSecSpin->setSuffix(" sec");
-	minSilenceSecSpin->setValue(0.50);
+	minSilenceSecSpin->setValue(1.20);
 	editForm->addRow("Minimum Dead-Air Duration to Cut:", minSilenceSecSpin);
 
 	paddingSecSpin = new QDoubleSpinBox(editGroup);
 	paddingSecSpin->setRange(0.05, 0.50);
 	paddingSecSpin->setSingleStep(0.05);
 	paddingSecSpin->setSuffix(" sec");
-	paddingSecSpin->setValue(0.15);
+	paddingSecSpin->setValue(0.25);
 	editForm->addRow("Natural Speech Breath Cushion / Padding:", paddingSecSpin);
 
 	cutRetakesCheck = new QCheckBox(
@@ -282,6 +289,27 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	outerLayout->addWidget(scroll);
 
 	// Connect signals
+	connect(editingPresetCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
+		QString preset = editingPresetCombo->itemData(idx).toString();
+		if (preset == "conservative") {
+			silenceDbSpin->setValue(-42.0);
+			minSilenceSecSpin->setValue(1.20);
+			paddingSecSpin->setValue(0.25);
+			cutRetakesCheck->setChecked(true);
+		} else if (preset == "aggressive") {
+			silenceDbSpin->setValue(-36.0);
+			minSilenceSecSpin->setValue(0.70);
+			paddingSecSpin->setValue(0.15);
+			cutRetakesCheck->setChecked(true);
+		} else if (preset == "dead_air_only") {
+			silenceDbSpin->setValue(-42.0);
+			minSilenceSecSpin->setValue(1.20);
+			paddingSecSpin->setValue(0.25);
+			cutRetakesCheck->setChecked(false);
+		}
+		emit SettingsModified();
+	});
+
 	connect(preferredDefaultCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 		&YouTubeSettingsWidget::OnPreferredDefaultChanged);
 	connect(moveUpBtn, &QPushButton::clicked, this, &YouTubeSettingsWidget::OnMovePriorityUp);
@@ -499,6 +527,19 @@ void YouTubeSettingsWidget::LoadFromManager()
 	minSilenceSecSpin->setValue(cfg.minSilenceSec);
 	paddingSecSpin->setValue(cfg.paddingSec);
 	cutRetakesCheck->setChecked(cfg.cutRetakes);
+
+	if (qFuzzyCompare(cfg.silenceDb, -42.0) && qFuzzyCompare(cfg.minSilenceSec, 1.20) &&
+	    qFuzzyCompare(cfg.paddingSec, 0.25) && cfg.cutRetakes) {
+		editingPresetCombo->setCurrentIndex(0); // Conservative
+	} else if (qFuzzyCompare(cfg.silenceDb, -36.0) && qFuzzyCompare(cfg.minSilenceSec, 0.70) &&
+		   qFuzzyCompare(cfg.paddingSec, 0.15) && cfg.cutRetakes) {
+		editingPresetCombo->setCurrentIndex(1); // Aggressive
+	} else if (qFuzzyCompare(cfg.silenceDb, -42.0) && qFuzzyCompare(cfg.minSilenceSec, 1.20) &&
+		   !cfg.cutRetakes) {
+		editingPresetCombo->setCurrentIndex(2); // Dead-Air Only
+	} else {
+		editingPresetCombo->setCurrentIndex(3); // Custom
+	}
 
 	internalUpdating = false;
 }
