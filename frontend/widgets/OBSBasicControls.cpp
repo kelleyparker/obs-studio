@@ -1,6 +1,7 @@
 #include "OBSBasicControls.hpp"
 #include "OBSBasic.hpp"
 #include "qt-wrappers.hpp"
+#include <youtube/YouTubeWorkflowManager.hpp>
 
 #include "moc_OBSBasicControls.cpp"
 
@@ -29,14 +30,24 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
 		Qt::DirectConnection);
 	connect(
 		ui->youtubeWorkflowButton, &QPushButton::clicked, this,
-		[]() {
-			OBSMessageBox::information(
-				nullptr,
-				"YouTube Workflow",
-				"🎬 YouTube Auto-Edit & Upload Pipeline triggered.\n\nThis button is ready. Automated editing and upload steps will run here."
-			);
+		[this, main]() {
+			main->ShowYouTubePipelineDock();
+			if (!main->RecordingActive()) {
+				YouTubeWorkflowManager::Instance()->SetWorkflowArmed(true);
+				emit this->RecordButtonClicked();
+			} else {
+				emit this->RecordButtonClicked();
+			}
 		},
 		Qt::DirectConnection);
+	connect(
+		YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::WorkflowArmedChanged, this,
+		[this](bool armed) {
+			ui->youtubeWorkflowButton->setText(armed ? "⏹ YT" : "▶ YT");
+			ui->youtubeWorkflowButton->setStyleSheet(
+				armed ? "QPushButton { font-weight: bold; color: #ffffff; background-color: #cc2222; }"
+				      : "QPushButton { font-weight: bold; color: #ff3333; }");
+		});
 	connect(
 		ui->replayBufferButton, &QPushButton::clicked, this,
 		[this]() { emit this->ReplayBufferButtonClicked(); }, Qt::DirectConnection);

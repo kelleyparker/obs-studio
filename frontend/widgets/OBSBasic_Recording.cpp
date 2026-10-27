@@ -21,6 +21,7 @@
 
 #include <components/UIValidation.hpp>
 #include <dialogs/OBSRemux.hpp>
+#include <youtube/YouTubeWorkflowManager.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -47,10 +48,14 @@ extern volatile bool replaybuf_active;
 void OBSBasic::AutoRemux(QString input, bool no_show)
 {
 	auto config = Config();
+	bool ytArmed = YouTubeWorkflowManager::Instance()->IsWorkflowArmed();
 
-	bool autoRemux = config_get_bool(config, "Video", "AutoRemux");
+	bool autoRemux = config_get_bool(config, "Video", "AutoRemux") || ytArmed;
 
 	if (!autoRemux) {
+		if (ytArmed && !input.isEmpty()) {
+			YouTubeWorkflowManager::Instance()->OnRecordingStopped(input, false);
+		}
 		return;
 	}
 
@@ -101,6 +106,17 @@ void OBSBasic::AutoRemux(QString input, bool no_show)
 		output += "mov";
 	} else {
 		output += "mp4";
+	}
+
+	if (input.compare(output, Qt::CaseInsensitive) == 0) {
+		if (ytArmed) {
+			YouTubeWorkflowManager::Instance()->OnRecordingStopped(input, false);
+		}
+		return;
+	}
+
+	if (ytArmed) {
+		YouTubeWorkflowManager::Instance()->OnRecordingStopped(input, true);
 	}
 
 	OBSRemux *remux = new OBSRemux(QT_TO_UTF8(path), this, true);
@@ -176,6 +192,7 @@ void OBSBasic::RecordingStart()
 	}
 
 	OnActivate();
+	YouTubeWorkflowManager::Instance()->OnRecordingStarted();
 
 	blog(LOG_INFO, RECORDING_START);
 }

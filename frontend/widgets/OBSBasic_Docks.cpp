@@ -95,6 +95,11 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	statsDock->setFloating(true);
 	multistreamDock->setVisible(false);
 	multistreamDock->setFloating(true);
+	if (youtubePipelineDock) {
+		youtubePipelineDock->setFloating(false);
+		addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
+		youtubePipelineDock->setVisible(true);
+	}
 
 	bool verticalEnabled = vertical && vertical->Enabled();
 	for (QDockWidget *dock : {verticalPreviewDock.data(), verticalScenesDock.data(), verticalSourcesDock.data()}) {
@@ -137,6 +142,9 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	controlsDock->setFeatures(mainFeatures);
 	statsDock->setFeatures(features);
 	multistreamDock->setFeatures(features);
+	if (youtubePipelineDock) {
+		youtubePipelineDock->setFeatures(features);
+	}
 	verticalPreviewDock->setFeatures(features);
 	verticalScenesDock->setFeatures(features);
 	verticalSourcesDock->setFeatures(features);
@@ -210,6 +218,14 @@ void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool ex
 	extraDocks.push_back(std::shared_ptr<QDockWidget>(dock));
 }
 
+void OBSBasic::ShowYouTubePipelineDock()
+{
+	if (youtubePipelineDock) {
+		youtubePipelineDock->setVisible(true);
+		youtubePipelineDock->raise();
+	}
+}
+
 void OBSBasic::RemoveDockWidget(const QString &name)
 {
 	if (extraDockNames.contains(name)) {
@@ -235,6 +251,7 @@ bool OBSBasic::IsDockObjectNameUsed(const QString &name)
 	     << "controlsDock"
 	     << "statsDock"
 	     << "multistreamDock"
+	     << "youtubePipelineDock"
 	     << "verticalPreviewDock"
 	     << "verticalScenesDock"
 	     << "verticalSourcesDock";

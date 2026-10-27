@@ -7,4 +7,12 @@ target_sources(
     docks/OBSDock.hpp
     docks/VerticalDocks.cpp
     docks/VerticalDocks.hpp
+    youtube/YouTubePipelineDock.cpp
+    youtube/YouTubePipelineDock.hpp
+    youtube/YouTubeSecretVault.cpp
+    youtube/YouTubeSecretVault.hpp
+    youtube/YouTubeSettingsWidget.cpp
+    youtube/YouTubeSettingsWidget.hpp
+    youtube/YouTubeWorkflowManager.cpp
+    youtube/YouTubeWorkflowManager.hpp
 )

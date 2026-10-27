@@ -35,6 +35,7 @@
 #endif
 #include <docks/MultistreamDock.hpp>
 #include <docks/VerticalDocks.hpp>
+#include <youtube/YouTubePipelineDock.hpp>
 #include <dialogs/OBSVerticalSettings.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
@@ -274,6 +275,12 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	multistreamDock->setFloating(true);
 	multistreamDock->resize(560, 320);
 
+	youtubePipelineDock = new OBSDock();
+	youtubePipelineDock->setObjectName(QStringLiteral("youtubePipelineDock"));
+	youtubePipelineDock->setWindowTitle(QStringLiteral("YouTube Pipeline"));
+	addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
+	youtubePipelineDock->setVisible(true);
+
 	verticalPreviewDock = new OBSDock();
 	verticalPreviewDock->setObjectName(QStringLiteral("verticalPreviewDock"));
 	verticalPreviewDock->setWindowTitle(QTStr("Vertical.Dock.Preview"));
@@ -453,6 +460,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(controlsDock);
 	SETUP_DOCK(statsDock);
 	SETUP_DOCK(multistreamDock);
+	SETUP_DOCK(youtubePipelineDock);
 	SETUP_DOCK(verticalPreviewDock);
 	SETUP_DOCK(verticalScenesDock);
 	SETUP_DOCK(verticalSourcesDock);
@@ -1142,6 +1150,9 @@ void OBSBasic::OBSInit()
 
 	MultistreamDock *multistreamWidget = new MultistreamDock(multistream.get(), streamInfo.get(), multistreamDock);
 	multistreamDock->setWidget(multistreamWidget);
+
+	YouTubePipelineDock *ytDockWidget = new YouTubePipelineDock(youtubePipelineDock);
+	youtubePipelineDock->setWidget(ytDockWidget);
 	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
 
 	QAction *multistreamAction = new QAction(QTStr("Multistream.MenuAction"), this);

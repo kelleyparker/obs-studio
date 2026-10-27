@@ -30,6 +30,7 @@
 
 class Auth;
 class OBSBasic;
+class YouTubeSettingsWidget;
 class OBSHotkeyWidget;
 class OBSPropertiesView;
 struct FFmpegFormat;
@@ -67,6 +68,8 @@ private:
 	bool a11yChanged = false;
 	bool appearanceChanged = false;
 	bool advancedChanged = false;
+	bool youtubeChanged = false;
+	YouTubeSettingsWidget *youtubeSettingsWidget = nullptr;
 	int pageIndex = 0;
 	bool loading = true;
 	bool forceAuthReload = false;
@@ -144,7 +147,7 @@ private:
 	inline bool Changed() const
 	{
 		return generalChanged || appearanceChanged || outputsChanged || stream1Changed || audioChanged ||
-		       videoChanged || advancedChanged || hotkeysChanged || a11yChanged;
+		       videoChanged || advancedChanged || hotkeysChanged || a11yChanged || youtubeChanged;
 	}
 
 	inline void EnableApplyButton(bool en) { ui->buttonBox->button(QDialogButtonBox::Apply)->setEnabled(en); }
@@ -160,6 +163,7 @@ private:
 		a11yChanged = false;
 		advancedChanged = false;
 		appearanceChanged = false;
+		youtubeChanged = false;
 		EnableApplyButton(false);
 	}
 

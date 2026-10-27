@@ -17,6 +17,7 @@
  ******************************************************************************/
 
 #include "OBSBasicSettings.hpp"
+#include <youtube/YouTubeSettingsWidget.hpp>
 #include "OBSHotkeyLabel.hpp"
 #include "OBSHotkeyWidget.hpp"
 
@@ -378,6 +379,18 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	ui->groupBox_5->setVisible(false);
 	ui->groupBox_7->setVisible(false);
 	ui->updateSettingsGroupBox->setVisible(false);
+
+	youtubeSettingsWidget = new YouTubeSettingsWidget(this);
+	QListWidgetItem *ytNavItem =
+		new QListWidgetItem(QIcon(":/settings/images/settings/stream.svg"), "YouTube Automation");
+	ui->listWidget->addItem(ytNavItem);
+	ui->settingsPages->addWidget(youtubeSettingsWidget);
+	connect(youtubeSettingsWidget, &YouTubeSettingsWidget::SettingsModified, this, [this]() {
+		if (!loading) {
+			youtubeChanged = true;
+			EnableApplyButton(true);
+		}
+	});
 
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
@@ -3760,6 +3773,9 @@ void OBSBasicSettings::SaveSettings()
 	if (appearanceChanged) {
 		SaveAppearanceSettings();
 	}
+	if (youtubeChanged && youtubeSettingsWidget) {
+		youtubeSettingsWidget->SaveToManager();
+	}
 	if (videoChanged || advancedChanged) {
 		main->ResetVideo();
 	}
@@ -5649,6 +5665,9 @@ void OBSBasicSettings::SetAppearanceIcon(const QIcon &icon)
 void OBSBasicSettings::SetStreamIcon(const QIcon &icon)
 {
 	ui->listWidget->item(Pages::STREAM)->setIcon(icon);
+	if (ui->listWidget->count() > Pages::ADVANCED + 1) {
+		ui->listWidget->item(Pages::ADVANCED + 1)->setIcon(icon);
+	}
 }
 
 void OBSBasicSettings::SetOutputIcon(const QIcon &icon)

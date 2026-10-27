@@ -450,6 +450,7 @@ public slots:
 private:
 	QPointer<QDockWidget> statsDock;
 	QPointer<QDockWidget> multistreamDock;
+	QPointer<QDockWidget> youtubePipelineDock;
 	QPointer<QDockWidget> verticalPreviewDock;
 	QPointer<QDockWidget> verticalScenesDock;
 	QPointer<QDockWidget> verticalSourcesDock;
@@ -468,6 +469,7 @@ public:
 	 * gets its saved place back (QMainWindow::restoreDockWidget) */
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false, bool restore = false);
 	void RemoveDockWidget(const QString &name);
+	void ShowYouTubePipelineDock();
 	bool IsDockObjectNameUsed(const QString &name);
 	void AddCustomDockWidget(QDockWidget *dock);
 	void setDockCornersVertical(bool vertical);
