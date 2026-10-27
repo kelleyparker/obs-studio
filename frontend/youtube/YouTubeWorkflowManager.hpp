@@ -15,7 +15,7 @@ struct YouTubeWorkflowConfig {
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
-	QString categoryId = "22";          // 22 = People & Blogs, 20 = Gaming, 28 = Tech
+	QString categoryId = "28";          // 28 = Science & Technology (Default), 22 = People & Blogs, 20 = Gaming
 	bool madeForKids = false;
 	QString connectedChannelTitle;
 	QString clientSecretFilePath;

@@ -146,9 +146,9 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		editOut->setPlaceholderText(placeholder);
 		QPushButton *showBtn = new QPushButton("Show", rowW);
 		showBtn->setCheckable(true);
-		showBtn->setFixedWidth(60);
+		showBtn->setMinimumWidth(75);
 		QPushButton *clearBtn = new QPushButton("Clear", rowW);
-		clearBtn->setFixedWidth(60);
+		clearBtn->setMinimumWidth(75);
 
 		connect(showBtn, &QPushButton::toggled, this, [editOut, showBtn](bool checked) {
 			editOut->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
@@ -228,9 +228,9 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	uploadDefaultsForm->addRow("Default Upload Privacy:", privacyCombo);
 
 	categoryCombo = new QComboBox(ytGroup);
+	categoryCombo->addItem("Science & Technology (28)", "28");
 	categoryCombo->addItem("People & Blogs (22)", "22");
 	categoryCombo->addItem("Gaming (20)", "20");
-	categoryCombo->addItem("Science & Technology (28)", "28");
 	categoryCombo->addItem("Education (27)", "27");
 	categoryCombo->addItem("Entertainment (24)", "24");
 	categoryCombo->addItem("Howto & Style (26)", "26");

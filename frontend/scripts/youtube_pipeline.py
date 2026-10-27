@@ -880,7 +880,7 @@ def upload_to_youtube(
             "title": metadata.get("title", "OBS Automated Video")[:100],
             "description": metadata.get("description", ""),
             "tags": metadata.get("tags", ["OBS", "YouTube"]),
-            "categoryId": str(category_id or "22")
+            "categoryId": str(category_id or "28")
         },
         "status": {
             "privacyStatus": privacy_status or "unlisted",
@@ -944,7 +944,7 @@ def run_pipeline(config: dict):
     priority_list = config.get("priority_list", ["gemini", "openai", "claude", "local"])
     thumb_style = config.get("thumbnail_style", "ai_graphic")
     privacy_status = config.get("privacy_status", "unlisted")
-    category_id = config.get("category_id", "22")
+    category_id = config.get("category_id", "28")
     made_for_kids = bool(config.get("made_for_kids", False))
     secrets = config.get("secrets", {})
 
