@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcessEnvironment>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -21,6 +22,16 @@
 #endif
 
 static YouTubeWorkflowManager *g_ytWorkflowInstance = nullptr;
+
+/* Run the Python worker in UTF-8 mode so its stdio pipes don't fall back to
+ * the Windows ANSI code page (cp1252) and fail on emoji or non-Latin text. */
+static void SetPythonUtf8Environment(QProcess *process)
+{
+	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+	env.insert("PYTHONUTF8", "1");
+	env.insert("PYTHONIOENCODING", "utf-8");
+	process->setProcessEnvironment(env);
+}
 
 YouTubeWorkflowManager *YouTubeWorkflowManager::Instance()
 {
@@ -332,6 +343,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 			}
 		});
 
+	SetPythonUtf8Environment(workerProcess);
 	workerProcess->start(QStringLiteral("python"), {scriptPath, QStringLiteral("--stdin-config")});
 	if (!workerProcess->waitForStarted(5000)) {
 		emit PipelineStateChanged("❌ Failed to start Python worker process", false);
@@ -411,6 +423,7 @@ void YouTubeWorkflowManager::StartOAuthLogin()
 			}
 		});
 
+	SetPythonUtf8Environment(workerProcess);
 	workerProcess->start(QStringLiteral("python"), {scriptPath, QStringLiteral("--stdin-config")});
 	if (!workerProcess->waitForStarted(5000)) {
 		emit OAuthStatusUpdated(false, QString(), "Failed to launch Python for Google OAuth.");

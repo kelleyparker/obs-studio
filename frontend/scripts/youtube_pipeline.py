@@ -25,19 +25,23 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+# OBS writes the stdin config as UTF-8; without this, Windows decodes the
+# pipes with the ANSI code page (cp1252) and chokes on emoji / non-Latin text.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def emit(event_type: str, **kwargs):
     """Send a structured JSON-line event to OBS Studio over stdout."""
     payload = {"type": event_type, "timestamp": time.time()}
     payload.update(kwargs)
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    # ensure_ascii keeps the wire format pure ASCII (non-ASCII becomes \uXXXX,
+    # which QJsonDocument decodes), so no console code page can crash emit().
+    sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
@@ -552,7 +556,7 @@ def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
     seen = set()
     ordered_models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
 
-    last_err = None
+    errors = []
     for model in ordered_models:
         try:
             body = {
@@ -568,10 +572,19 @@ def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
             parsed = extract_json_object(data.get("response", "{}"))
             parsed["_model_used"] = f"Local GPU Ollama ({model})"
             return parsed
+        except urllib.error.HTTPError as e:
+            # Ollama puts the real reason (missing model, broken runner, OOM)
+            # in the JSON body; the bare status line just says "500".
+            detail = str(e)
+            try:
+                detail = json.loads(e.read().decode("utf-8", "replace")).get("error", detail)
+            except Exception:
+                pass
+            errors.append(f"{model}: {detail}")
         except Exception as e:
-            last_err = e
+            errors.append(f"{model}: {e}")
 
-    raise RuntimeError(f"Local Ollama failed ({last_err})")
+    raise RuntimeError("Local Ollama failed (" + " | ".join(errors) + ")")
 
 
 def generate_heuristic_transcript_metadata(segments: list[dict], transcript_text: str) -> dict:

@@ -16,3 +16,24 @@ target_sources(
     youtube/YouTubeWorkflowManager.cpp
     youtube/YouTubeWorkflowManager.hpp
 )
+
+# YouTubeWorkflowManager runs scripts/youtube_pipeline.py from the data
+# directory, so refresh it on every build instead of leaving a stale copy.
+if(OS_WINDOWS)
+  target_sources(obs-studio PRIVATE scripts/youtube_pipeline.py)
+  add_custom_command(
+    TARGET obs-studio
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/obs-studio/scripts"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/scripts/youtube_pipeline.py"
+      "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/obs-studio/scripts/youtube_pipeline.py"
+    COMMENT "Copy YouTube pipeline script to data directory"
+    VERBATIM
+  )
+  install(
+    FILES scripts/youtube_pipeline.py
+    DESTINATION "${OBS_DATA_DESTINATION}/obs-studio/scripts"
+    COMPONENT Runtime
+  )
+endif()
