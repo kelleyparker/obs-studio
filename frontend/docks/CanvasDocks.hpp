@@ -16,16 +16,16 @@ class QListWidgetItem;
 class QMenu;
 class QPushButton;
 class QStackedWidget;
-class VerticalCanvas;
-class VerticalOutput;
+class ExtraCanvas;
+class CanvasOutput;
 
 /* Preview of the vertical canvas with recording and replay buffer controls */
-class VerticalPreviewDock : public QWidget {
+class CanvasPreviewDock : public QWidget {
 	Q_OBJECT
 
 public:
-	VerticalPreviewDock(VerticalCanvas *vertical, VerticalOutput *output, QWidget *parent = nullptr);
-	~VerticalPreviewDock();
+	CanvasPreviewDock(ExtraCanvas *vertical, CanvasOutput *output, QWidget *parent = nullptr);
+	~CanvasPreviewDock();
 
 	/* Called when OBS closes, before the docks are deleted */
 	void DestroyDisplay();
@@ -34,8 +34,8 @@ signals:
 	void OpenSettings();
 
 private:
-	QPointer<VerticalCanvas> vertical;
-	QPointer<VerticalOutput> output;
+	QPointer<ExtraCanvas> vertical;
+	QPointer<CanvasOutput> output;
 
 	QStackedWidget *stack;
 	OBSQTDisplay *display;
@@ -58,14 +58,14 @@ private:
 };
 
 /* Scene list of the vertical canvas */
-class VerticalScenesDock : public QWidget {
+class CanvasScenesDock : public QWidget {
 	Q_OBJECT
 
 public:
-	VerticalScenesDock(VerticalCanvas *vertical, QWidget *parent = nullptr);
+	CanvasScenesDock(ExtraCanvas *vertical, QWidget *parent = nullptr);
 
 private:
-	QPointer<VerticalCanvas> vertical;
+	QPointer<ExtraCanvas> vertical;
 	QListWidget *list;
 	QPushButton *removeButton;
 	QPushButton *upButton;
@@ -85,14 +85,14 @@ private:
 };
 
 /* Sources of the vertical canvas's current scene */
-class VerticalSourcesDock : public QWidget {
+class CanvasSourcesDock : public QWidget {
 	Q_OBJECT
 
 public:
-	VerticalSourcesDock(VerticalCanvas *vertical, QWidget *parent = nullptr);
+	CanvasSourcesDock(ExtraCanvas *vertical, QWidget *parent = nullptr);
 
 private:
-	QPointer<VerticalCanvas> vertical;
+	QPointer<ExtraCanvas> vertical;
 	QListWidget *list;
 	QPushButton *addButton;
 	QMenu *addMenu;

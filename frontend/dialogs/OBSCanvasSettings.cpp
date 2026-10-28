@@ -1,7 +1,7 @@
-#include "OBSVerticalSettings.hpp"
+#include "OBSCanvasSettings.hpp"
 
-#include <utility/VerticalCanvas.hpp>
-#include <utility/VerticalOutput.hpp>
+#include <utility/ExtraCanvas.hpp>
+#include <utility/CanvasOutput.hpp>
 #include <utility/audio-encoders.hpp>
 
 #include <OBSApp.hpp>
@@ -41,7 +41,7 @@ static bool ParseResolution(const QString &text, uint32_t &cx, uint32_t &cy)
 	return cx >= 32 && cy >= 32 && cx <= 16384 && cy <= 16384;
 }
 
-OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputsActive_, QWidget *parent)
+OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_, QWidget *parent)
 	: QDialog(parent),
 	  vertical(vertical_),
 	  outputsActive(outputsActive_)
@@ -49,8 +49,8 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 	setWindowTitle(QTStr("Vertical.Settings.Title"));
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-	const VerticalVideoSettings &video = vertical->VideoSettings();
-	VerticalOutputSettings output = VerticalOutputSettings::Load();
+	const CanvasVideoSettings &video = vertical->VideoSettings();
+	CanvasOutputSettings output = CanvasOutputSettings::Load();
 
 	enabled = new QCheckBox(QTStr("Vertical.Settings.Enable"), this);
 	enabled->setChecked(vertical->Enabled());
@@ -75,7 +75,7 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 	videoForm->addRow(QTStr("Basic.Settings.Video.ScaledResolution"), outputResolution);
 	UpdateOutputResolutions();
 	outputResolution->setCurrentText(ResolutionText(video.outputWidth, video.outputHeight));
-	connect(baseResolution, &QComboBox::currentTextChanged, this, &OBSVerticalSettings::UpdateOutputResolutions);
+	connect(baseResolution, &QComboBox::currentTextChanged, this, &OBSCanvasSettings::UpdateOutputResolutions);
 
 	scaleType = new QComboBox(videoBox);
 	scaleType->addItem(QTStr("Basic.Settings.Video.DownscaleFilter.Bilinear"), int(OBS_SCALE_BILINEAR));
@@ -118,7 +118,7 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 
 	encoder = new QComboBox(recBox);
 	encoder->addItem(QTStr("Vertical.Settings.EncoderAuto"), QString());
-	for (const auto &item : GetVerticalVideoEncoders()) {
+	for (const auto &item : GetCanvasVideoEncoders()) {
 		encoder->addItem(QString::fromStdString(item.second), QString::fromStdString(item.first));
 	}
 	encoder->setCurrentIndex(std::max(0, encoder->findData(QString::fromStdString(output.encoder))));
@@ -160,7 +160,7 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 	replayForm->addRow(QTStr("Basic.Settings.Output.ReplayBuffer.MegabytesMax"), replaySize);
 
 	QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-	connect(buttons, &QDialogButtonBox::accepted, this, &OBSVerticalSettings::accept);
+	connect(buttons, &QDialogButtonBox::accepted, this, &OBSCanvasSettings::accept);
 	connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
 	QVBoxLayout *layout = new QVBoxLayout(this);
@@ -187,7 +187,7 @@ OBSVerticalSettings::OBSVerticalSettings(VerticalCanvas *vertical_, bool outputs
 	resize(560, sizeHint().height());
 }
 
-void OBSVerticalSettings::UpdateOutputResolutions()
+void OBSCanvasSettings::UpdateOutputResolutions()
 {
 	uint32_t cx, cy;
 	if (!ParseResolution(baseResolution->currentText(), cx, cy)) {
@@ -214,14 +214,14 @@ void OBSVerticalSettings::UpdateOutputResolutions()
 	}
 }
 
-void OBSVerticalSettings::accept()
+void OBSCanvasSettings::accept()
 {
 	if (outputsActive) {
 		QDialog::accept();
 		return;
 	}
 
-	VerticalVideoSettings video;
+	CanvasVideoSettings video;
 	if (!ParseResolution(baseResolution->currentText(), video.baseWidth, video.baseHeight) ||
 	    !ParseResolution(outputResolution->currentText(), video.outputWidth, video.outputHeight)) {
 		OBSMessageBox::warning(this, QTStr("Vertical.Settings.Title"),
@@ -230,7 +230,7 @@ void OBSVerticalSettings::accept()
 	}
 	video.scaleType = obs_scale_type(scaleType->currentData().toInt());
 
-	VerticalOutputSettings output;
+	CanvasOutputSettings output;
 	output.recPath = recPath->text().toStdString();
 	output.recFormat = recFormat->currentData().toString().toStdString();
 	output.encoder = encoder->currentData().toString().toStdString();

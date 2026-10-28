@@ -1,5 +1,5 @@
-#include "VerticalOutput.hpp"
-#include "VerticalCanvas.hpp"
+#include "CanvasOutput.hpp"
+#include "ExtraCanvas.hpp"
 
 #include <OBSApp.hpp>
 #include <utility/audio-encoders.hpp>
@@ -15,9 +15,9 @@
 
 using namespace std;
 
-static const char *Section = VerticalCanvas::ConfigSection;
+static const char *Section = ExtraCanvas::ConfigSection;
 
-VerticalOutputSettings VerticalOutputSettings::Load()
+CanvasOutputSettings CanvasOutputSettings::Load()
 {
 	config_t *config = OBSBasic::Get()->Config();
 
@@ -30,7 +30,7 @@ VerticalOutputSettings VerticalOutputSettings::Load()
 	config_set_default_int(config, Section, "RBTime", 30);
 	config_set_default_int(config, Section, "RBSize", 512);
 
-	VerticalOutputSettings settings;
+	CanvasOutputSettings settings;
 	settings.recPath = config_get_string(config, Section, "RecFilePath");
 	settings.recFormat = config_get_string(config, Section, "RecFormat");
 	settings.encoder = config_get_string(config, Section, "RecEncoder");
@@ -43,7 +43,7 @@ VerticalOutputSettings VerticalOutputSettings::Load()
 	return settings;
 }
 
-void VerticalOutputSettings::Save() const
+void CanvasOutputSettings::Save() const
 {
 	config_t *config = OBSBasic::Get()->Config();
 
@@ -58,7 +58,7 @@ void VerticalOutputSettings::Save() const
 	config_save_safe(config, "tmp", nullptr);
 }
 
-vector<pair<string, string>> GetVerticalVideoEncoders()
+vector<pair<string, string>> GetCanvasVideoEncoders()
 {
 	vector<pair<string, string>> encoders;
 	const char *id;
@@ -85,14 +85,14 @@ vector<pair<string, string>> GetVerticalVideoEncoders()
 	return encoders;
 }
 
-string GetDefaultVerticalVideoEncoder()
+string GetDefaultCanvasVideoEncoder()
 {
 	/* Prefer hardware H.264 so the vertical encode doesn't add CPU load:
 	 * NVIDIA, Intel or AMD on Windows, Apple VideoToolbox on macOS */
 	static const char *preferred[] = {"obs_nvenc_h264_tex", "obs_qsv11_v2", "h264_texture_amf",
 					  "com.apple.videotoolbox.videoencoder.ave.avc", "obs_x264"};
 
-	vector<pair<string, string>> available = GetVerticalVideoEncoders();
+	vector<pair<string, string>> available = GetCanvasVideoEncoders();
 	for (const char *id : preferred) {
 		for (const auto &encoder : available) {
 			if (encoder.first == id) {
@@ -107,28 +107,28 @@ string GetDefaultVerticalVideoEncoder()
 static string ResolveEncoder(const string &selected)
 {
 	if (!selected.empty()) {
-		for (const auto &encoder : GetVerticalVideoEncoders()) {
+		for (const auto &encoder : GetCanvasVideoEncoders()) {
 			if (encoder.first == selected) {
 				return selected;
 			}
 		}
 		blog(LOG_WARNING, "Vertical: encoder '%s' is not available, using the default", selected.c_str());
 	}
-	return GetDefaultVerticalVideoEncoder();
+	return GetDefaultCanvasVideoEncoder();
 }
 
-VerticalOutput::VerticalOutput(VerticalCanvas *canvas_, QObject *parent) : QObject(parent), canvas(canvas_)
+CanvasOutput::CanvasOutput(ExtraCanvas *canvas_, QObject *parent) : QObject(parent), canvas(canvas_)
 {
 	/* Outputs can't keep running once the canvas or its video mix is gone */
-	connect(canvas_, &VerticalCanvas::CanvasClearing, this, [this]() { StopAll(true); });
+	connect(canvas_, &ExtraCanvas::CanvasClearing, this, [this]() { StopAll(true); });
 }
 
-VerticalOutput::~VerticalOutput()
+CanvasOutput::~CanvasOutput()
 {
 	StopAll(true);
 }
 
-bool VerticalOutput::AcquireEncoders(const VerticalOutputSettings &settings, QString &error)
+bool CanvasOutput::AcquireEncoders(const CanvasOutputSettings &settings, QString &error)
 {
 	/* Encoders are shared by the recording and the replay buffer. While
 	 * either is running, its encoders can't be changed. */
@@ -187,7 +187,7 @@ bool VerticalOutput::AcquireEncoders(const VerticalOutputSettings &settings, QSt
 	return true;
 }
 
-void VerticalOutput::ReleaseIdle()
+void CanvasOutput::ReleaseIdle()
 {
 	if (!RecordingActive()) {
 		recordSignals.clear();
@@ -211,7 +211,7 @@ static void AddMuxerSettings(obs_data_t *settings, const string &format)
 	}
 }
 
-bool VerticalOutput::StartRecording(QString &error)
+bool CanvasOutput::StartRecording(QString &error)
 {
 	if (RecordingActive()) {
 		return true;
@@ -219,7 +219,7 @@ bool VerticalOutput::StartRecording(QString &error)
 
 	ReleaseIdle();
 
-	VerticalOutputSettings settings = VerticalOutputSettings::Load();
+	CanvasOutputSettings settings = CanvasOutputSettings::Load();
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
 	bool overwrite = config_get_bool(config, "Output", "OverwriteIfExists");
@@ -277,7 +277,7 @@ bool VerticalOutput::StartRecording(QString &error)
 	return true;
 }
 
-void VerticalOutput::StopRecording(bool force)
+void CanvasOutput::StopRecording(bool force)
 {
 	if (!recordOutput || !obs_output_active(recordOutput)) {
 		return;
@@ -289,12 +289,12 @@ void VerticalOutput::StopRecording(bool force)
 	}
 }
 
-bool VerticalOutput::RecordingActive() const
+bool CanvasOutput::RecordingActive() const
 {
 	return recordOutput && obs_output_active(recordOutput);
 }
 
-uint64_t VerticalOutput::RecordingSeconds() const
+uint64_t CanvasOutput::RecordingSeconds() const
 {
 	if (!RecordingActive() || !recordStartTime) {
 		return 0;
@@ -302,7 +302,7 @@ uint64_t VerticalOutput::RecordingSeconds() const
 	return (os_gettime_ns() - recordStartTime) / 1000000000ULL;
 }
 
-bool VerticalOutput::StartReplayBuffer(QString &error)
+bool CanvasOutput::StartReplayBuffer(QString &error)
 {
 	if (ReplayBufferActive()) {
 		return true;
@@ -310,7 +310,7 @@ bool VerticalOutput::StartReplayBuffer(QString &error)
 
 	ReleaseIdle();
 
-	VerticalOutputSettings settings = VerticalOutputSettings::Load();
+	CanvasOutputSettings settings = CanvasOutputSettings::Load();
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
 	bool noSpace = config_get_bool(config, "AdvOut", "RecFileNameWithoutSpace");
@@ -370,7 +370,7 @@ bool VerticalOutput::StartReplayBuffer(QString &error)
 	return true;
 }
 
-void VerticalOutput::StopReplayBuffer(bool force)
+void CanvasOutput::StopReplayBuffer(bool force)
 {
 	if (!replayOutput || !obs_output_active(replayOutput)) {
 		return;
@@ -382,12 +382,12 @@ void VerticalOutput::StopReplayBuffer(bool force)
 	}
 }
 
-bool VerticalOutput::ReplayBufferActive() const
+bool CanvasOutput::ReplayBufferActive() const
 {
 	return replayOutput && obs_output_active(replayOutput);
 }
 
-void VerticalOutput::SaveReplay()
+void CanvasOutput::SaveReplay()
 {
 	if (!ReplayBufferActive()) {
 		return;
@@ -399,19 +399,19 @@ void VerticalOutput::SaveReplay()
 	calldata_free(&cd);
 }
 
-void VerticalOutput::StopAll(bool force)
+void CanvasOutput::StopAll(bool force)
 {
 	StopRecording(force);
 	StopReplayBuffer(force);
 }
 
-void VerticalOutput::OnRecordingStarted()
+void CanvasOutput::OnRecordingStarted()
 {
 	recordStartTime = os_gettime_ns();
 	emit RecordingStarted();
 }
 
-void VerticalOutput::OnRecordingStopped(int code, const QString &error)
+void CanvasOutput::OnRecordingStopped(int code, const QString &error)
 {
 	recordStartTime = 0;
 	blog(LOG_INFO, "Vertical: recording stopped (code %d)", code);
@@ -419,19 +419,19 @@ void VerticalOutput::OnRecordingStopped(int code, const QString &error)
 	emit RecordingStopped(code, error);
 }
 
-void VerticalOutput::OnReplayBufferStarted()
+void CanvasOutput::OnReplayBufferStarted()
 {
 	emit ReplayBufferStarted();
 }
 
-void VerticalOutput::OnReplayBufferStopped(int code, const QString &error)
+void CanvasOutput::OnReplayBufferStopped(int code, const QString &error)
 {
 	blog(LOG_INFO, "Vertical: replay buffer stopped (code %d)", code);
 	ReleaseIdle();
 	emit ReplayBufferStopped(code, error);
 }
 
-void VerticalOutput::OnReplaySaved()
+void CanvasOutput::OnReplaySaved()
 {
 	if (!replayOutput) {
 		return;
@@ -454,38 +454,38 @@ static QString LastError(calldata_t *params)
 	return error ? QString::fromUtf8(error) : QString();
 }
 
-void VerticalOutput::RecordStart(void *data, calldata_t *)
+void CanvasOutput::RecordStart(void *data, calldata_t *)
 {
-	QMetaObject::invokeMethod(static_cast<VerticalOutput *>(data), &VerticalOutput::OnRecordingStarted,
+	QMetaObject::invokeMethod(static_cast<CanvasOutput *>(data), &CanvasOutput::OnRecordingStarted,
 				  Qt::QueuedConnection);
 }
 
-void VerticalOutput::RecordStop(void *data, calldata_t *params)
+void CanvasOutput::RecordStop(void *data, calldata_t *params)
 {
-	VerticalOutput *self = static_cast<VerticalOutput *>(data);
+	CanvasOutput *self = static_cast<CanvasOutput *>(data);
 	int code = (int)calldata_int(params, "code");
 	QString error = LastError(params);
 	QMetaObject::invokeMethod(
 		self, [self, code, error]() { self->OnRecordingStopped(code, error); }, Qt::QueuedConnection);
 }
 
-void VerticalOutput::ReplayStart(void *data, calldata_t *)
+void CanvasOutput::ReplayStart(void *data, calldata_t *)
 {
-	QMetaObject::invokeMethod(static_cast<VerticalOutput *>(data), &VerticalOutput::OnReplayBufferStarted,
+	QMetaObject::invokeMethod(static_cast<CanvasOutput *>(data), &CanvasOutput::OnReplayBufferStarted,
 				  Qt::QueuedConnection);
 }
 
-void VerticalOutput::ReplayStop(void *data, calldata_t *params)
+void CanvasOutput::ReplayStop(void *data, calldata_t *params)
 {
-	VerticalOutput *self = static_cast<VerticalOutput *>(data);
+	CanvasOutput *self = static_cast<CanvasOutput *>(data);
 	int code = (int)calldata_int(params, "code");
 	QString error = LastError(params);
 	QMetaObject::invokeMethod(
 		self, [self, code, error]() { self->OnReplayBufferStopped(code, error); }, Qt::QueuedConnection);
 }
 
-void VerticalOutput::ReplaySavedSignal(void *data, calldata_t *)
+void CanvasOutput::ReplaySavedSignal(void *data, calldata_t *)
 {
-	QMetaObject::invokeMethod(static_cast<VerticalOutput *>(data), &VerticalOutput::OnReplaySaved,
+	QMetaObject::invokeMethod(static_cast<CanvasOutput *>(data), &CanvasOutput::OnReplaySaved,
 				  Qt::QueuedConnection);
 }

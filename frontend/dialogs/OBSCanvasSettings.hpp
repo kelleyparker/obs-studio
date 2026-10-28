@@ -6,18 +6,18 @@ class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QSpinBox;
-class VerticalCanvas;
+class ExtraCanvas;
 
 /* Settings > Vertical Canvas: video, recording and replay buffer settings of
  * the vertical canvas */
-class OBSVerticalSettings : public QDialog {
+class OBSCanvasSettings : public QDialog {
 	Q_OBJECT
 
 public:
-	OBSVerticalSettings(VerticalCanvas *vertical, bool outputsActive, QWidget *parent);
+	OBSCanvasSettings(ExtraCanvas *vertical, bool outputsActive, QWidget *parent);
 
 private:
-	VerticalCanvas *vertical;
+	ExtraCanvas *vertical;
 	bool outputsActive;
 
 	QCheckBox *enabled;

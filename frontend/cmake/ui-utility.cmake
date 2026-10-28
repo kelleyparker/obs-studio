@@ -6,8 +6,12 @@ target_sources(
     utility/BaseLexer.hpp
     utility/BasicOutputHandler.cpp
     utility/BasicOutputHandler.hpp
+    utility/CanvasOutput.cpp
+    utility/CanvasOutput.hpp
     utility/CrashHandler.cpp
     utility/CrashHandler.hpp
+    utility/ExtraCanvas.cpp
+    utility/ExtraCanvas.hpp
     utility/FFmpegCodec.cpp
     utility/FFmpegCodec.hpp
     utility/FFmpegFormat.cpp
@@ -74,10 +78,6 @@ target_sources(
     utility/ThumbnailView.cpp
     utility/ThumbnailView.hpp
     utility/VCamConfig.hpp
-    utility/VerticalCanvas.cpp
-    utility/VerticalCanvas.hpp
-    utility/VerticalOutput.cpp
-    utility/VerticalOutput.hpp
     utility/ZipArchive.cpp
     utility/ZipArchive.hpp
     utility/audio-encoders.cpp

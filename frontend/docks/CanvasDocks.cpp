@@ -1,8 +1,8 @@
-#include "VerticalDocks.hpp"
+#include "CanvasDocks.hpp"
 
 #include <dialogs/NameDialog.hpp>
-#include <utility/VerticalCanvas.hpp>
-#include <utility/VerticalOutput.hpp>
+#include <utility/ExtraCanvas.hpp>
+#include <utility/CanvasOutput.hpp>
 #include <utility/display-helpers.hpp>
 #include <widgets/OBSBasic.hpp>
 #include <widgets/OBSQTDisplay.hpp>
@@ -35,7 +35,7 @@ static QPushButton *ToolButton(const QString &text, const QString &tooltip, QWid
 /* ------------------------------------------------------------------------- */
 /* Preview */
 
-VerticalPreviewDock::VerticalPreviewDock(VerticalCanvas *vertical_, VerticalOutput *output_, QWidget *parent)
+CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *vertical_, CanvasOutput *output_, QWidget *parent)
 	: QWidget(parent),
 	  vertical(vertical_),
 	  output(output_)
@@ -54,7 +54,7 @@ VerticalPreviewDock::VerticalPreviewDock(VerticalCanvas *vertical_, VerticalOutp
 	status->setWordWrap(true);
 	status->setAlignment(Qt::AlignCenter);
 	QPushButton *enableButton = new QPushButton(QTStr("Vertical.Dock.OpenSettings"), disabledPage);
-	connect(enableButton, &QPushButton::clicked, this, &VerticalPreviewDock::OpenSettings);
+	connect(enableButton, &QPushButton::clicked, this, &CanvasPreviewDock::OpenSettings);
 	QVBoxLayout *disabledLayout = new QVBoxLayout(disabledPage);
 	disabledLayout->addStretch();
 	disabledLayout->addWidget(status);
@@ -70,14 +70,14 @@ VerticalPreviewDock::VerticalPreviewDock(VerticalCanvas *vertical_, VerticalOutp
 	saveReplayButton = new QPushButton(QTStr("Vertical.Dock.SaveReplay"), this);
 	QPushButton *settingsButton = new QPushButton(QTStr("Settings"), this);
 
-	connect(recordButton, &QPushButton::clicked, this, &VerticalPreviewDock::ToggleRecording);
-	connect(replayButton, &QPushButton::clicked, this, &VerticalPreviewDock::ToggleReplayBuffer);
+	connect(recordButton, &QPushButton::clicked, this, &CanvasPreviewDock::ToggleRecording);
+	connect(replayButton, &QPushButton::clicked, this, &CanvasPreviewDock::ToggleReplayBuffer);
 	connect(saveReplayButton, &QPushButton::clicked, this, [this]() {
 		if (output) {
 			output->SaveReplay();
 		}
 	});
-	connect(settingsButton, &QPushButton::clicked, this, &VerticalPreviewDock::OpenSettings);
+	connect(settingsButton, &QPushButton::clicked, this, &CanvasPreviewDock::OpenSettings);
 
 	QHBoxLayout *buttons = new QHBoxLayout();
 	buttons->addWidget(recordButton, 1);
@@ -90,41 +90,41 @@ VerticalPreviewDock::VerticalPreviewDock(VerticalCanvas *vertical_, VerticalOutp
 	layout->addWidget(stack, 1);
 	layout->addLayout(buttons);
 
-	connect(vertical_, &VerticalCanvas::VideoChanged, this, &VerticalPreviewDock::UpdateCanvas);
-	connect(vertical_, &VerticalCanvas::EnabledChanged, this, &VerticalPreviewDock::UpdateCanvas);
-	connect(output_, &VerticalOutput::RecordingStarted, this, &VerticalPreviewDock::UpdateButtons);
-	connect(output_, &VerticalOutput::RecordingStopped, this, [this](int code, const QString &error) {
+	connect(vertical_, &ExtraCanvas::VideoChanged, this, &CanvasPreviewDock::UpdateCanvas);
+	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasPreviewDock::UpdateCanvas);
+	connect(output_, &CanvasOutput::RecordingStarted, this, &CanvasPreviewDock::UpdateButtons);
+	connect(output_, &CanvasOutput::RecordingStopped, this, [this](int code, const QString &error) {
 		UpdateButtons();
 		if (code != OBS_OUTPUT_SUCCESS) {
 			OBSMessageBox::critical(this, QTStr("Vertical.Error.RecordingStopped"),
 						error.isEmpty() ? QTStr("Output.StartFailedGeneric") : error);
 		}
 	});
-	connect(output_, &VerticalOutput::ReplayBufferStarted, this, &VerticalPreviewDock::UpdateButtons);
-	connect(output_, &VerticalOutput::ReplayBufferStopped, this, [this](int code, const QString &error) {
+	connect(output_, &CanvasOutput::ReplayBufferStarted, this, &CanvasPreviewDock::UpdateButtons);
+	connect(output_, &CanvasOutput::ReplayBufferStopped, this, [this](int code, const QString &error) {
 		UpdateButtons();
 		if (code != OBS_OUTPUT_SUCCESS) {
 			OBSMessageBox::critical(this, QTStr("Vertical.Error.ReplayStopped"),
 						error.isEmpty() ? QTStr("Output.StartFailedGeneric") : error);
 		}
 	});
-	connect(output_, &VerticalOutput::ReplaySaved, this, [](const QString &path) {
+	connect(output_, &CanvasOutput::ReplaySaved, this, [](const QString &path) {
 		OBSBasic *main = OBSBasic::Get();
 		main->ShowStatusBarMessage(QTStr("Vertical.ReplaySaved").arg(path));
 	});
 
-	connect(&timer, &QTimer::timeout, this, &VerticalPreviewDock::UpdateButtons);
+	connect(&timer, &QTimer::timeout, this, &CanvasPreviewDock::UpdateButtons);
 	timer.start(1000);
 
 	UpdateCanvas();
 }
 
-VerticalPreviewDock::~VerticalPreviewDock()
+CanvasPreviewDock::~CanvasPreviewDock()
 {
 	DestroyDisplay();
 }
 
-void VerticalPreviewDock::DestroyDisplay()
+void CanvasPreviewDock::DestroyDisplay()
 {
 	if (display->GetDisplay()) {
 		obs_display_remove_draw_callback(display->GetDisplay(), Render, this);
@@ -132,7 +132,7 @@ void VerticalPreviewDock::DestroyDisplay()
 	display->DestroyDisplay();
 }
 
-void VerticalPreviewDock::UpdateCanvas()
+void CanvasPreviewDock::UpdateCanvas()
 {
 	bool hasVideo = vertical && vertical->Enabled() && vertical->HasVideo();
 
@@ -145,7 +145,7 @@ void VerticalPreviewDock::UpdateCanvas()
 	UpdateButtons();
 }
 
-void VerticalPreviewDock::UpdateButtons()
+void CanvasPreviewDock::UpdateButtons()
 {
 	bool hasVideo = vertical && vertical->Enabled() && vertical->HasVideo();
 	bool recording = output && output->RecordingActive();
@@ -166,7 +166,7 @@ void VerticalPreviewDock::UpdateButtons()
 	saveReplayButton->setEnabled(replay);
 }
 
-void VerticalPreviewDock::ToggleRecording()
+void CanvasPreviewDock::ToggleRecording()
 {
 	if (!output) {
 		return;
@@ -183,7 +183,7 @@ void VerticalPreviewDock::ToggleRecording()
 	UpdateButtons();
 }
 
-void VerticalPreviewDock::ToggleReplayBuffer()
+void CanvasPreviewDock::ToggleReplayBuffer()
 {
 	if (!output) {
 		return;
@@ -200,9 +200,9 @@ void VerticalPreviewDock::ToggleReplayBuffer()
 	UpdateButtons();
 }
 
-void VerticalPreviewDock::Render(void *data, uint32_t cx, uint32_t cy)
+void CanvasPreviewDock::Render(void *data, uint32_t cx, uint32_t cy)
 {
-	VerticalPreviewDock *dock = static_cast<VerticalPreviewDock *>(data);
+	CanvasPreviewDock *dock = static_cast<CanvasPreviewDock *>(data);
 
 	OBSCanvas canvas;
 	{
@@ -236,9 +236,7 @@ void VerticalPreviewDock::Render(void *data, uint32_t cx, uint32_t cy)
 /* ------------------------------------------------------------------------- */
 /* Scenes */
 
-VerticalScenesDock::VerticalScenesDock(VerticalCanvas *vertical_, QWidget *parent)
-	: QWidget(parent),
-	  vertical(vertical_)
+CanvasScenesDock::CanvasScenesDock(ExtraCanvas *vertical_, QWidget *parent) : QWidget(parent), vertical(vertical_)
 {
 	list = new QListWidget(this);
 	list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -248,8 +246,8 @@ VerticalScenesDock::VerticalScenesDock(VerticalCanvas *vertical_, QWidget *paren
 	upButton = ToolButton(QString::fromUtf8("▲"), QTStr("Vertical.MoveUp"), this);
 	downButton = ToolButton(QString::fromUtf8("▼"), QTStr("Vertical.MoveDown"), this);
 
-	connect(addButton, &QPushButton::clicked, this, &VerticalScenesDock::AddScene);
-	connect(removeButton, &QPushButton::clicked, this, &VerticalScenesDock::RemoveScene);
+	connect(addButton, &QPushButton::clicked, this, &CanvasScenesDock::AddScene);
+	connect(removeButton, &QPushButton::clicked, this, &CanvasScenesDock::RemoveScene);
 	connect(upButton, &QPushButton::clicked, this, [this]() {
 		if (OBSSource scene = SelectedScene()) {
 			vertical->MoveScene(scene, -1);
@@ -269,8 +267,8 @@ VerticalScenesDock::VerticalScenesDock(VerticalCanvas *vertical_, QWidget *paren
 		}
 		UpdateSelection();
 	});
-	connect(list, &QListWidget::itemDoubleClicked, this, &VerticalScenesDock::RenameScene);
-	connect(list, &QListWidget::customContextMenuRequested, this, &VerticalScenesDock::ShowContextMenu);
+	connect(list, &QListWidget::itemDoubleClicked, this, &CanvasScenesDock::RenameScene);
+	connect(list, &QListWidget::customContextMenuRequested, this, &CanvasScenesDock::ShowContextMenu);
 
 	QHBoxLayout *toolbar = new QHBoxLayout();
 	toolbar->addWidget(addButton);
@@ -284,14 +282,14 @@ VerticalScenesDock::VerticalScenesDock(VerticalCanvas *vertical_, QWidget *paren
 	layout->addWidget(list, 1);
 	layout->addLayout(toolbar);
 
-	connect(vertical_, &VerticalCanvas::ScenesChanged, this, &VerticalScenesDock::Rebuild);
-	connect(vertical_, &VerticalCanvas::CurrentSceneChanged, this, &VerticalScenesDock::Rebuild);
-	connect(vertical_, &VerticalCanvas::EnabledChanged, this, &VerticalScenesDock::Rebuild);
+	connect(vertical_, &ExtraCanvas::ScenesChanged, this, &CanvasScenesDock::Rebuild);
+	connect(vertical_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasScenesDock::Rebuild);
+	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasScenesDock::Rebuild);
 
 	Rebuild();
 }
 
-void VerticalScenesDock::Rebuild()
+void CanvasScenesDock::Rebuild()
 {
 	updating = true;
 	list->clear();
@@ -317,7 +315,7 @@ void VerticalScenesDock::Rebuild()
 	UpdateSelection();
 }
 
-void VerticalScenesDock::UpdateSelection()
+void CanvasScenesDock::UpdateSelection()
 {
 	bool selected = list->currentRow() >= 0;
 	removeButton->setEnabled(selected && list->count() > 1);
@@ -325,7 +323,7 @@ void VerticalScenesDock::UpdateSelection()
 	downButton->setEnabled(selected && list->currentRow() < list->count() - 1);
 }
 
-OBSSource VerticalScenesDock::SelectedScene() const
+OBSSource CanvasScenesDock::SelectedScene() const
 {
 	QListWidgetItem *item = list->currentItem();
 	if (!item || !vertical) {
@@ -341,7 +339,7 @@ OBSSource VerticalScenesDock::SelectedScene() const
 	return nullptr;
 }
 
-bool VerticalScenesDock::AskForSceneName(const QString &title, const QString &initial, QString &name)
+bool CanvasScenesDock::AskForSceneName(const QString &title, const QString &initial, QString &name)
 {
 	string input = initial.toStdString();
 
@@ -364,7 +362,7 @@ bool VerticalScenesDock::AskForSceneName(const QString &title, const QString &in
 	}
 }
 
-void VerticalScenesDock::AddScene()
+void CanvasScenesDock::AddScene()
 {
 	if (!vertical) {
 		return;
@@ -384,7 +382,7 @@ void VerticalScenesDock::AddScene()
 	vertical->SetCurrentScene(scene);
 }
 
-void VerticalScenesDock::RemoveScene()
+void CanvasScenesDock::RemoveScene()
 {
 	OBSSource scene = SelectedScene();
 	if (!scene || list->count() <= 1) {
@@ -399,7 +397,7 @@ void VerticalScenesDock::RemoveScene()
 	vertical->RemoveScene(scene);
 }
 
-void VerticalScenesDock::RenameScene()
+void CanvasScenesDock::RenameScene()
 {
 	OBSSource scene = SelectedScene();
 	if (!scene) {
@@ -416,7 +414,7 @@ void VerticalScenesDock::RenameScene()
 	OBSBasic::Get()->SaveProject();
 }
 
-void VerticalScenesDock::DuplicateScene()
+void CanvasScenesDock::DuplicateScene()
 {
 	OBSSource scene = SelectedScene();
 	if (!scene) {
@@ -439,15 +437,15 @@ void VerticalScenesDock::DuplicateScene()
 	}
 }
 
-void VerticalScenesDock::ShowContextMenu(const QPoint &pos)
+void CanvasScenesDock::ShowContextMenu(const QPoint &pos)
 {
 	QMenu menu(this);
-	menu.addAction(QTStr("Vertical.Scenes.Add"), this, &VerticalScenesDock::AddScene);
+	menu.addAction(QTStr("Vertical.Scenes.Add"), this, &CanvasScenesDock::AddScene);
 
 	if (list->itemAt(pos)) {
-		menu.addAction(QTStr("Duplicate"), this, &VerticalScenesDock::DuplicateScene);
-		menu.addAction(QTStr("Rename"), this, &VerticalScenesDock::RenameScene);
-		QAction *remove = menu.addAction(QTStr("Remove"), this, &VerticalScenesDock::RemoveScene);
+		menu.addAction(QTStr("Duplicate"), this, &CanvasScenesDock::DuplicateScene);
+		menu.addAction(QTStr("Rename"), this, &CanvasScenesDock::RenameScene);
+		QAction *remove = menu.addAction(QTStr("Remove"), this, &CanvasScenesDock::RemoveScene);
 		remove->setEnabled(list->count() > 1);
 		menu.addSeparator();
 		menu.addAction(QTStr("Filters"), this, [this]() {
@@ -463,9 +461,7 @@ void VerticalScenesDock::ShowContextMenu(const QPoint &pos)
 /* ------------------------------------------------------------------------- */
 /* Sources */
 
-VerticalSourcesDock::VerticalSourcesDock(VerticalCanvas *vertical_, QWidget *parent)
-	: QWidget(parent),
-	  vertical(vertical_)
+CanvasSourcesDock::CanvasSourcesDock(ExtraCanvas *vertical_, QWidget *parent) : QWidget(parent), vertical(vertical_)
 {
 	list = new QListWidget(this);
 	list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -476,7 +472,7 @@ VerticalSourcesDock::VerticalSourcesDock(VerticalCanvas *vertical_, QWidget *par
 
 	addButton = ToolButton("+", QTStr("Vertical.Sources.Add"), this);
 	addMenu = new QMenu(this);
-	connect(addMenu, &QMenu::aboutToShow, this, &VerticalSourcesDock::BuildAddMenu);
+	connect(addMenu, &QMenu::aboutToShow, this, &CanvasSourcesDock::BuildAddMenu);
 	addButton->setMenu(addMenu);
 
 	removeButton = ToolButton(QString::fromUtf8("−"), QTStr("Vertical.Sources.Remove"), this);
@@ -487,7 +483,7 @@ VerticalSourcesDock::VerticalSourcesDock(VerticalCanvas *vertical_, QWidget *par
 	transformButton = new QPushButton(QTStr("Vertical.Sources.Transform"), this);
 	transformButton->setMenu(CreateTransformMenu(transformButton));
 
-	connect(removeButton, &QPushButton::clicked, this, &VerticalSourcesDock::RemoveItem);
+	connect(removeButton, &QPushButton::clicked, this, &CanvasSourcesDock::RemoveItem);
 	connect(upButton, &QPushButton::clicked, this, [this]() { MoveItem(OBS_ORDER_MOVE_UP); });
 	connect(downButton, &QPushButton::clicked, this, [this]() { MoveItem(OBS_ORDER_MOVE_DOWN); });
 	connect(propertiesButton, &QPushButton::clicked, this, [this]() {
@@ -500,14 +496,14 @@ VerticalSourcesDock::VerticalSourcesDock(VerticalCanvas *vertical_, QWidget *par
 			OBSBasic::Get()->CreateFiltersWindow(obs_sceneitem_get_source(item));
 		}
 	});
-	connect(list, &QListWidget::currentRowChanged, this, &VerticalSourcesDock::UpdateButtons);
-	connect(list, &QListWidget::itemChanged, this, &VerticalSourcesDock::ItemChanged);
+	connect(list, &QListWidget::currentRowChanged, this, &CanvasSourcesDock::UpdateButtons);
+	connect(list, &QListWidget::itemChanged, this, &CanvasSourcesDock::ItemChanged);
 	connect(list, &QListWidget::itemDoubleClicked, this, [this]() {
 		if (OBSSceneItem item = SelectedItem()) {
 			OBSBasic::Get()->CreatePropertiesWindow(obs_sceneitem_get_source(item));
 		}
 	});
-	connect(list, &QListWidget::customContextMenuRequested, this, &VerticalSourcesDock::ShowContextMenu);
+	connect(list, &QListWidget::customContextMenuRequested, this, &CanvasSourcesDock::ShowContextMenu);
 
 	QHBoxLayout *toolbar = new QHBoxLayout();
 	toolbar->addWidget(addButton);
@@ -525,20 +521,20 @@ VerticalSourcesDock::VerticalSourcesDock(VerticalCanvas *vertical_, QWidget *par
 	layout->addWidget(emptyLabel);
 	layout->addLayout(toolbar);
 
-	connect(vertical_, &VerticalCanvas::CurrentSceneChanged, this, &VerticalSourcesDock::WatchCurrentScene);
-	connect(vertical_, &VerticalCanvas::ScenesChanged, this, &VerticalSourcesDock::WatchCurrentScene);
-	connect(vertical_, &VerticalCanvas::EnabledChanged, this, &VerticalSourcesDock::WatchCurrentScene);
+	connect(vertical_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasSourcesDock::WatchCurrentScene);
+	connect(vertical_, &ExtraCanvas::ScenesChanged, this, &CanvasSourcesDock::WatchCurrentScene);
+	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasSourcesDock::WatchCurrentScene);
 
 	WatchCurrentScene();
 }
 
-obs_scene_t *VerticalSourcesDock::CurrentScene() const
+obs_scene_t *CanvasSourcesDock::CurrentScene() const
 {
 	OBSSource source = OBSGetStrongRef(watchedScene);
 	return source ? obs_scene_from_source(source) : nullptr;
 }
 
-void VerticalSourcesDock::WatchCurrentScene()
+void CanvasSourcesDock::WatchCurrentScene()
 {
 	OBSSource scene = vertical ? vertical->CurrentScene() : OBSSource();
 
@@ -557,13 +553,13 @@ void VerticalSourcesDock::WatchCurrentScene()
 	Rebuild();
 }
 
-void VerticalSourcesDock::SceneChanged(void *data, calldata_t *)
+void CanvasSourcesDock::SceneChanged(void *data, calldata_t *)
 {
-	QMetaObject::invokeMethod(static_cast<VerticalSourcesDock *>(data), &VerticalSourcesDock::Rebuild,
+	QMetaObject::invokeMethod(static_cast<CanvasSourcesDock *>(data), &CanvasSourcesDock::Rebuild,
 				  Qt::QueuedConnection);
 }
 
-void VerticalSourcesDock::Rebuild()
+void CanvasSourcesDock::Rebuild()
 {
 	int64_t selectedId = 0;
 	if (OBSSceneItem selected = SelectedItem()) {
@@ -609,7 +605,7 @@ void VerticalSourcesDock::Rebuild()
 	UpdateButtons();
 }
 
-void VerticalSourcesDock::UpdateButtons()
+void CanvasSourcesDock::UpdateButtons()
 {
 	int row = list->currentRow();
 	bool selected = row >= 0;
@@ -623,7 +619,7 @@ void VerticalSourcesDock::UpdateButtons()
 	addButton->setEnabled(!!CurrentScene());
 }
 
-OBSSceneItem VerticalSourcesDock::SelectedItem() const
+OBSSceneItem CanvasSourcesDock::SelectedItem() const
 {
 	QListWidgetItem *item = list->currentItem();
 	obs_scene_t *scene = CurrentScene();
@@ -633,7 +629,7 @@ OBSSceneItem VerticalSourcesDock::SelectedItem() const
 	return obs_scene_find_sceneitem_by_id(scene, item->data(Qt::UserRole).toLongLong());
 }
 
-void VerticalSourcesDock::BuildAddMenu()
+void CanvasSourcesDock::BuildAddMenu()
 {
 	addMenu->clear();
 
@@ -711,7 +707,7 @@ void VerticalSourcesDock::BuildAddMenu()
 	scenesMenu->setEnabled(!scenes.empty());
 }
 
-void VerticalSourcesDock::AddExisting(obs_source_t *source)
+void CanvasSourcesDock::AddExisting(obs_source_t *source)
 {
 	obs_scene_t *scene = CurrentScene();
 	if (!scene || !source) {
@@ -725,7 +721,7 @@ void VerticalSourcesDock::AddExisting(obs_source_t *source)
 	OBSBasic::Get()->SaveProject();
 }
 
-void VerticalSourcesDock::AddNew(const char *id)
+void CanvasSourcesDock::AddNew(const char *id)
 {
 	obs_scene_t *scene = CurrentScene();
 	if (!scene) {
@@ -775,7 +771,7 @@ void VerticalSourcesDock::AddNew(const char *id)
 	OBSBasic::Get()->CreatePropertiesWindow(source);
 }
 
-void VerticalSourcesDock::RemoveItem()
+void CanvasSourcesDock::RemoveItem()
 {
 	OBSSceneItem item = SelectedItem();
 	if (!item) {
@@ -792,7 +788,7 @@ void VerticalSourcesDock::RemoveItem()
 	OBSBasic::Get()->SaveProject();
 }
 
-void VerticalSourcesDock::MoveItem(obs_order_movement movement)
+void CanvasSourcesDock::MoveItem(obs_order_movement movement)
 {
 	if (OBSSceneItem item = SelectedItem()) {
 		obs_sceneitem_set_order(item, movement);
@@ -800,7 +796,7 @@ void VerticalSourcesDock::MoveItem(obs_order_movement movement)
 	}
 }
 
-void VerticalSourcesDock::ApplyTransform(obs_sceneitem_t *item, Transform transform)
+void CanvasSourcesDock::ApplyTransform(obs_sceneitem_t *item, Transform transform)
 {
 	if (!vertical) {
 		return;
@@ -808,7 +804,7 @@ void VerticalSourcesDock::ApplyTransform(obs_sceneitem_t *item, Transform transf
 
 	obs_video_info ovi;
 	if (!vertical->GetVideoInfo(ovi)) {
-		const VerticalVideoSettings &video = vertical->VideoSettings();
+		const CanvasVideoSettings &video = vertical->VideoSettings();
 		ovi.base_width = video.baseWidth;
 		ovi.base_height = video.baseHeight;
 	}
@@ -860,7 +856,7 @@ void VerticalSourcesDock::ApplyTransform(obs_sceneitem_t *item, Transform transf
 	OBSBasic::Get()->SaveProject();
 }
 
-QMenu *VerticalSourcesDock::CreateTransformMenu(QWidget *parent)
+QMenu *CanvasSourcesDock::CreateTransformMenu(QWidget *parent)
 {
 	QMenu *menu = new QMenu(parent);
 	auto add = [this, menu](const char *text, Transform transform) {
@@ -879,7 +875,7 @@ QMenu *VerticalSourcesDock::CreateTransformMenu(QWidget *parent)
 	return menu;
 }
 
-void VerticalSourcesDock::ItemChanged(QListWidgetItem *listItem)
+void CanvasSourcesDock::ItemChanged(QListWidgetItem *listItem)
 {
 	if (updating || !listItem) {
 		return;
@@ -900,7 +896,7 @@ void VerticalSourcesDock::ItemChanged(QListWidgetItem *listItem)
 	}
 }
 
-void VerticalSourcesDock::ShowContextMenu(const QPoint &pos)
+void CanvasSourcesDock::ShowContextMenu(const QPoint &pos)
 {
 	QMenu menu(this);
 
@@ -919,7 +915,7 @@ void VerticalSourcesDock::ShowContextMenu(const QPoint &pos)
 		transformMenu->setTitle(QTStr("Vertical.Sources.Transform"));
 		menu.addMenu(transformMenu);
 		menu.addSeparator();
-		menu.addAction(QTStr("Remove"), this, &VerticalSourcesDock::RemoveItem);
+		menu.addAction(QTStr("Remove"), this, &CanvasSourcesDock::RemoveItem);
 		menu.addSeparator();
 	}
 

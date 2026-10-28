@@ -114,7 +114,7 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	canvas = new QComboBox(this);
 	canvas->addItem(QTStr("Multistream.Canvas.Main"), false);
 	canvas->addItem(QTStr("Multistream.Canvas.Vertical"), true);
-	VerticalCanvas *vertical = OBSBasic::Get()->GetVerticalCanvas();
+	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
 	bool verticalEnabled = vertical && vertical->Enabled();
 	if (!verticalEnabled && !dest.vertical) {
 		canvas->setEnabled(false);

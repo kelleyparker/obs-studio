@@ -1,4 +1,4 @@
-#include "VerticalCanvas.hpp"
+#include "ExtraCanvas.hpp"
 
 #include <widgets/OBSBasic.hpp>
 
@@ -12,7 +12,7 @@
 
 using namespace std;
 
-static const char *VerticalCanvasName = "Vertical";
+static const char *ExtraCanvasName = "Vertical";
 static const char *VerticalDataKey = "vertical_canvas";
 
 static obs_scale_type ScaleTypeFromString(const char *scaleType)
@@ -51,14 +51,14 @@ static uint32_t ClampSize(uint64_t size, uint32_t fallback)
 	return uint32_t(size) & ~1u;
 }
 
-VerticalCanvas::VerticalCanvas(QObject *parent) : QObject(parent) {}
+ExtraCanvas::ExtraCanvas(QObject *parent) : QObject(parent) {}
 
-VerticalCanvas::~VerticalCanvas()
+ExtraCanvas::~ExtraCanvas()
 {
 	canvasSignals.clear();
 }
 
-void VerticalCanvas::LoadProfile()
+void ExtraCanvas::LoadProfile()
 {
 	config_t *config = OBSBasic::Get()->Config();
 
@@ -96,7 +96,7 @@ void VerticalCanvas::LoadProfile()
 	emit VideoChanged();
 }
 
-void VerticalCanvas::SaveProfile() const
+void ExtraCanvas::SaveProfile() const
 {
 	config_t *config = OBSBasic::Get()->Config();
 
@@ -109,7 +109,7 @@ void VerticalCanvas::SaveProfile() const
 	config_save_safe(config, "tmp", nullptr);
 }
 
-bool VerticalCanvas::SetEnabled(bool enable)
+bool ExtraCanvas::SetEnabled(bool enable)
 {
 	if (enable == enabled) {
 		return true;
@@ -137,7 +137,7 @@ bool VerticalCanvas::SetEnabled(bool enable)
 	return true;
 }
 
-bool VerticalCanvas::SetVideoSettings(const VerticalVideoSettings &settings)
+bool ExtraCanvas::SetVideoSettings(const CanvasVideoSettings &settings)
 {
 	if (VideoActive()) {
 		return false;
@@ -158,7 +158,7 @@ bool VerticalCanvas::SetVideoSettings(const VerticalVideoSettings &settings)
 	return true;
 }
 
-void VerticalCanvas::MainVideoReset()
+void ExtraCanvas::MainVideoReset()
 {
 	/* obs_reset_video() already recreated the mix with the new frame
 	 * rate; this also applies the new color format, space and range. */
@@ -167,7 +167,7 @@ void VerticalCanvas::MainVideoReset()
 	}
 }
 
-bool VerticalCanvas::MakeVideoInfo(obs_video_info &ovi) const
+bool ExtraCanvas::MakeVideoInfo(obs_video_info &ovi) const
 {
 	if (!obs_get_video_info(&ovi)) {
 		return false;
@@ -181,7 +181,7 @@ bool VerticalCanvas::MakeVideoInfo(obs_video_info &ovi) const
 	return true;
 }
 
-bool VerticalCanvas::ApplyVideo()
+bool ExtraCanvas::ApplyVideo()
 {
 	OBSCanvas canvas = GetCanvas();
 	obs_video_info ovi;
@@ -202,7 +202,7 @@ bool VerticalCanvas::ApplyVideo()
 	return true;
 }
 
-OBSCanvas VerticalCanvas::GetCanvas() const
+OBSCanvas ExtraCanvas::GetCanvas() const
 {
 	OBSCanvas canvas = OBSGetStrongRef(weakCanvas);
 	if (canvas && obs_canvas_removed(canvas)) {
@@ -211,31 +211,31 @@ OBSCanvas VerticalCanvas::GetCanvas() const
 	return canvas;
 }
 
-bool VerticalCanvas::HasVideo() const
+bool ExtraCanvas::HasVideo() const
 {
 	OBSCanvas canvas = GetCanvas();
 	return canvas && obs_canvas_has_video(canvas);
 }
 
-video_t *VerticalCanvas::GetVideo() const
+video_t *ExtraCanvas::GetVideo() const
 {
 	OBSCanvas canvas = GetCanvas();
 	return canvas ? obs_canvas_get_video(canvas) : nullptr;
 }
 
-bool VerticalCanvas::GetVideoInfo(obs_video_info &ovi) const
+bool ExtraCanvas::GetVideoInfo(obs_video_info &ovi) const
 {
 	OBSCanvas canvas = GetCanvas();
 	return canvas && obs_canvas_get_video_info(canvas, &ovi);
 }
 
-bool VerticalCanvas::VideoActive() const
+bool ExtraCanvas::VideoActive() const
 {
 	OBSCanvas canvas = GetCanvas();
 	return canvas && obs_canvas_video_active(canvas);
 }
 
-OBSCanvas VerticalCanvas::EnsureCanvas()
+OBSCanvas ExtraCanvas::EnsureCanvas()
 {
 	if (OBSCanvas canvas = GetCanvas()) {
 		return canvas;
@@ -244,12 +244,12 @@ OBSCanvas VerticalCanvas::EnsureCanvas()
 	/* No MIX_AUDIO: a source used in both canvases would otherwise be
 	 * heard twice. Vertical outputs record the same audio mix as the main
 	 * outputs. */
-	const OBS::Canvas &canvas = OBSBasic::Get()->AddCanvas(VerticalCanvasName, nullptr, ACTIVATE | SCENE_REF);
+	const OBS::Canvas &canvas = OBSBasic::Get()->AddCanvas(ExtraCanvasName, nullptr, ACTIVATE | SCENE_REF);
 	AttachCanvas(canvas);
 	return GetCanvas();
 }
 
-void VerticalCanvas::AttachCanvas(obs_canvas_t *canvas)
+void ExtraCanvas::AttachCanvas(obs_canvas_t *canvas)
 {
 	DetachCanvas();
 
@@ -264,7 +264,7 @@ void VerticalCanvas::AttachCanvas(obs_canvas_t *canvas)
 	RefreshScenes();
 }
 
-void VerticalCanvas::DetachCanvas()
+void ExtraCanvas::DetachCanvas()
 {
 	if (!weakCanvas && sceneOrder.empty()) {
 		return;
@@ -279,15 +279,14 @@ void VerticalCanvas::DetachCanvas()
 	emit VideoChanged();
 }
 
-void VerticalCanvas::CanvasSourceChanged(void *data, calldata_t *)
+void ExtraCanvas::CanvasSourceChanged(void *data, calldata_t *)
 {
-	QMetaObject::invokeMethod(static_cast<VerticalCanvas *>(data), &VerticalCanvas::RefreshScenes,
-				  Qt::QueuedConnection);
+	QMetaObject::invokeMethod(static_cast<ExtraCanvas *>(data), &ExtraCanvas::RefreshScenes, Qt::QueuedConnection);
 }
 
-void VerticalCanvas::CanvasRemoved(void *data, calldata_t *)
+void ExtraCanvas::CanvasRemoved(void *data, calldata_t *)
 {
-	VerticalCanvas *self = static_cast<VerticalCanvas *>(data);
+	ExtraCanvas *self = static_cast<ExtraCanvas *>(data);
 	QMetaObject::invokeMethod(
 		self,
 		[self]() {
@@ -298,7 +297,7 @@ void VerticalCanvas::CanvasRemoved(void *data, calldata_t *)
 		Qt::QueuedConnection);
 }
 
-void VerticalCanvas::RefreshScenes()
+void ExtraCanvas::RefreshScenes()
 {
 	OBSCanvas canvas = GetCanvas();
 	vector<OBSSource> present;
@@ -342,7 +341,7 @@ void VerticalCanvas::RefreshScenes()
 	emit ScenesChanged();
 }
 
-vector<OBSSource> VerticalCanvas::Scenes() const
+vector<OBSSource> ExtraCanvas::Scenes() const
 {
 	vector<OBSSource> scenes;
 	for (const OBSWeakSource &weak : sceneOrder) {
@@ -354,7 +353,7 @@ vector<OBSSource> VerticalCanvas::Scenes() const
 	return scenes;
 }
 
-OBSSource VerticalCanvas::CurrentScene() const
+OBSSource ExtraCanvas::CurrentScene() const
 {
 	OBSCanvas canvas = GetCanvas();
 	if (!canvas) {
@@ -364,7 +363,7 @@ OBSSource VerticalCanvas::CurrentScene() const
 	return current.Get();
 }
 
-void VerticalCanvas::SetCurrentScene(obs_source_t *scene)
+void ExtraCanvas::SetCurrentScene(obs_source_t *scene)
 {
 	OBSCanvas canvas = GetCanvas();
 	if (!canvas) {
@@ -381,7 +380,7 @@ void VerticalCanvas::SetCurrentScene(obs_source_t *scene)
 	OBSBasic::Get()->SaveProject();
 }
 
-bool VerticalCanvas::SceneNameInUse(const QString &name) const
+bool ExtraCanvas::SceneNameInUse(const QString &name) const
 {
 	const string utf8 = name.toStdString();
 
@@ -396,7 +395,7 @@ bool VerticalCanvas::SceneNameInUse(const QString &name) const
 	return !!source;
 }
 
-OBSSource VerticalCanvas::AddScene(const QString &name)
+OBSSource ExtraCanvas::AddScene(const QString &name)
 {
 	OBSCanvas canvas = EnsureCanvas();
 	if (!canvas) {
@@ -416,7 +415,7 @@ OBSSource VerticalCanvas::AddScene(const QString &name)
 	return source;
 }
 
-OBSSource VerticalCanvas::DuplicateScene(obs_source_t *scene, const QString &name)
+OBSSource ExtraCanvas::DuplicateScene(obs_source_t *scene, const QString &name)
 {
 	obs_scene_t *original = obs_scene_from_source(scene);
 	if (!original) {
@@ -432,7 +431,7 @@ OBSSource VerticalCanvas::DuplicateScene(obs_source_t *scene, const QString &nam
 	return source;
 }
 
-void VerticalCanvas::RemoveScene(obs_source_t *scene)
+void ExtraCanvas::RemoveScene(obs_source_t *scene)
 {
 	OBSCanvas canvas = GetCanvas();
 	if (!canvas || !scene) {
@@ -456,7 +455,7 @@ void VerticalCanvas::RemoveScene(obs_source_t *scene)
 	OBSBasic::Get()->SaveProject();
 }
 
-void VerticalCanvas::MoveScene(obs_source_t *scene, int offset)
+void ExtraCanvas::MoveScene(obs_source_t *scene, int offset)
 {
 	auto it = find_if(sceneOrder.begin(), sceneOrder.end(),
 			  [&](const OBSWeakSource &weak) { return OBSGetStrongRef(weak) == scene; });
@@ -478,7 +477,7 @@ void VerticalCanvas::MoveScene(obs_source_t *scene, int offset)
 	OBSBasic::Get()->SaveProject();
 }
 
-void VerticalCanvas::EnsureScene()
+void ExtraCanvas::EnsureScene()
 {
 	if (!GetCanvas() || !Scenes().empty()) {
 		return;
@@ -492,7 +491,7 @@ void VerticalCanvas::EnsureScene()
 	AddScene(name);
 }
 
-void VerticalCanvas::SaveCollection(obs_data_t *saveData) const
+void ExtraCanvas::SaveCollection(obs_data_t *saveData) const
 {
 	OBSCanvas canvas = GetCanvas();
 	if (!canvas) {
@@ -516,7 +515,7 @@ void VerticalCanvas::SaveCollection(obs_data_t *saveData) const
 	obs_data_set_obj(saveData, VerticalDataKey, data);
 }
 
-void VerticalCanvas::LoadCollection(obs_data_t *collectionData)
+void ExtraCanvas::LoadCollection(obs_data_t *collectionData)
 {
 	DetachCanvas();
 	collectionLoaded = true;
@@ -570,7 +569,7 @@ void VerticalCanvas::LoadCollection(obs_data_t *collectionData)
 	emit VideoChanged();
 }
 
-void VerticalCanvas::CollectionCleared()
+void ExtraCanvas::CollectionCleared()
 {
 	emit CanvasClearing();
 

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-struct VerticalVideoSettings {
+struct CanvasVideoSettings {
 	uint32_t baseWidth = 1080;
 	uint32_t baseHeight = 1920;
 	uint32_t outputWidth = 1080;
@@ -23,14 +23,14 @@ struct VerticalVideoSettings {
  *
  * While vertical is disabled the canvas (and its scenes) is kept, but it has
  * no video mix, so it costs nothing. */
-class VerticalCanvas : public QObject {
+class ExtraCanvas : public QObject {
 	Q_OBJECT
 
 public:
 	static constexpr const char *ConfigSection = "Vertical";
 
-	explicit VerticalCanvas(QObject *parent = nullptr);
-	~VerticalCanvas();
+	explicit ExtraCanvas(QObject *parent = nullptr);
+	~ExtraCanvas();
 
 	/* Sets the [Vertical] defaults in the active profile and reads the
 	 * profile's settings. Call on startup and after a profile switch. */
@@ -41,10 +41,10 @@ public:
 	 * Fails (returns false) while vertical outputs are active. */
 	bool SetEnabled(bool enable);
 
-	const VerticalVideoSettings &VideoSettings() const { return video; }
+	const CanvasVideoSettings &VideoSettings() const { return video; }
 	/* Saves the settings to the profile and resets the video mix. Fails
 	 * (returns false) while vertical outputs are active. */
-	bool SetVideoSettings(const VerticalVideoSettings &settings);
+	bool SetVideoSettings(const CanvasVideoSettings &settings);
 
 	/* Re-applies the main canvas's frame rate and color settings, e.g.
 	 * after Settings > Video changed them. */
@@ -87,7 +87,7 @@ signals:
 private:
 	bool enabled = false;
 	bool collectionLoaded = false;
-	VerticalVideoSettings video;
+	CanvasVideoSettings video;
 
 	OBSWeakCanvas weakCanvas;
 	std::vector<OBSWeakSource> sceneOrder;

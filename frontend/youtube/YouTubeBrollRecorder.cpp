@@ -1,7 +1,7 @@
 #include "YouTubeBrollRecorder.hpp"
 
 #include <OBSApp.hpp>
-#include <utility/VerticalOutput.hpp>
+#include <utility/CanvasOutput.hpp>
 #include <utility/audio-encoders.hpp>
 #include <widgets/OBSBasic.hpp>
 
@@ -44,9 +44,9 @@ bool YouTubeBrollRecorder::Start(const QString &sourceName, QString &error)
 		error = "The recording folder does not exist.";
 		return false;
 	}
-	QString path = QDir(QString::fromUtf8(recDir))
-			       .filePath(QDateTime::currentDateTime().toString("yyyy-MM-dd hh-mm-ss") +
-					 "_broll_screen.mp4");
+	QString path =
+		QDir(QString::fromUtf8(recDir))
+			.filePath(QDateTime::currentDateTime().toString("yyyy-MM-dd hh-mm-ss") + "_broll_screen.mp4");
 
 	view = obs_view_create();
 	obs_view_set_source(view, 0, source);
@@ -57,7 +57,7 @@ bool YouTubeBrollRecorder::Start(const QString &sourceName, QString &error)
 		return false;
 	}
 
-	std::string encoderId = GetDefaultVerticalVideoEncoder();
+	std::string encoderId = GetDefaultCanvasVideoEncoder();
 	OBSDataAutoRelease videoSettings = obs_data_create();
 	obs_data_set_string(videoSettings, "rate_control", "CBR");
 	obs_data_set_int(videoSettings, "bitrate", 8000);

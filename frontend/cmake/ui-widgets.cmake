@@ -23,6 +23,7 @@ target_sources(
     widgets/OBSBasic_ContextToolbar.cpp
     widgets/OBSBasic_Docks.cpp
     widgets/OBSBasic_Dropfiles.cpp
+    widgets/OBSBasic_ExtraCanvases.cpp
     widgets/OBSBasic_Hotkeys.cpp
     widgets/OBSBasic_Icons.cpp
     widgets/OBSBasic_MainControls.cpp
@@ -43,7 +44,6 @@ target_sources(
     widgets/OBSBasic_SysTray.cpp
     widgets/OBSBasic_Transitions.cpp
     widgets/OBSBasic_Updater.cpp
-    widgets/OBSBasic_Vertical.cpp
     widgets/OBSBasic_VirtualCam.cpp
     widgets/OBSBasic_YouTube.cpp
     widgets/OBSBasicControls.cpp

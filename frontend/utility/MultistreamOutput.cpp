@@ -270,7 +270,7 @@ static video_t *GetDestinationVideo(const MultistreamDestination &dest)
 	if (!dest.vertical) {
 		return obs_get_video();
 	}
-	VerticalCanvas *vertical = OBSBasic::Get()->GetVerticalCanvas();
+	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
 	return vertical && vertical->Enabled() ? vertical->GetVideo() : nullptr;
 }
 
@@ -279,7 +279,7 @@ static bool GetDestinationVideoInfo(const MultistreamDestination &dest, obs_vide
 	if (!dest.vertical) {
 		return obs_get_video_info(&ovi);
 	}
-	VerticalCanvas *vertical = OBSBasic::Get()->GetVerticalCanvas();
+	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
 	return vertical && vertical->Enabled() && vertical->GetVideoInfo(ovi);
 }
 

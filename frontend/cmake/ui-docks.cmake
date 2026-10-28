@@ -1,12 +1,12 @@
 target_sources(
   obs-studio
   PRIVATE
+    docks/CanvasDocks.cpp
+    docks/CanvasDocks.hpp
     docks/MultistreamDock.cpp
     docks/MultistreamDock.hpp
     docks/OBSDock.cpp
     docks/OBSDock.hpp
-    docks/VerticalDocks.cpp
-    docks/VerticalDocks.hpp
     youtube/YouTubeBrollRecorder.cpp
     youtube/YouTubeBrollRecorder.hpp
     youtube/YouTubeBrollReview.cpp

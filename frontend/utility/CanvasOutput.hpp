@@ -10,11 +10,11 @@
 #include <string>
 #include <vector>
 
-class VerticalCanvas;
+class ExtraCanvas;
 
 /* Recording and replay buffer settings of the vertical canvas, stored in the
  * profile's [Vertical] section. */
-struct VerticalOutputSettings {
+struct CanvasOutputSettings {
 	std::string recPath;
 	std::string recFormat = "hybrid_mp4";
 	std::string encoder; /* empty = pick a hardware H.264 encoder automatically */
@@ -25,21 +25,21 @@ struct VerticalOutputSettings {
 	int replayTimeSec = 30;
 	int replaySizeMB = 512;
 
-	static VerticalOutputSettings Load();
+	static CanvasOutputSettings Load();
 	void Save() const;
 };
 
 /* Video encoders that can encode the vertical canvas, as {id, display name} */
-std::vector<std::pair<std::string, std::string>> GetVerticalVideoEncoders();
+std::vector<std::pair<std::string, std::string>> GetCanvasVideoEncoders();
 /* The encoder used when none is selected (or the selected one is missing) */
-std::string GetDefaultVerticalVideoEncoder();
+std::string GetDefaultCanvasVideoEncoder();
 
-class VerticalOutput : public QObject {
+class CanvasOutput : public QObject {
 	Q_OBJECT
 
 public:
-	explicit VerticalOutput(VerticalCanvas *canvas, QObject *parent = nullptr);
-	~VerticalOutput();
+	explicit CanvasOutput(ExtraCanvas *canvas, QObject *parent = nullptr);
+	~CanvasOutput();
 
 	/* On failure, error is empty if the user has already been told why */
 	bool StartRecording(QString &error);
@@ -65,7 +65,7 @@ signals:
 	void ReplaySaved(const QString &path);
 
 private:
-	QPointer<VerticalCanvas> canvas;
+	QPointer<ExtraCanvas> canvas;
 
 	/* Member order matters: signals are disconnected before the outputs are
 	 * released, and the outputs are released before the encoders. */
@@ -79,7 +79,7 @@ private:
 	uint64_t recordStartTime = 0;
 	QString lastRecordingPath;
 
-	bool AcquireEncoders(const VerticalOutputSettings &settings, QString &error);
+	bool AcquireEncoders(const CanvasOutputSettings &settings, QString &error);
 	void ReleaseIdle();
 
 	void OnRecordingStarted();

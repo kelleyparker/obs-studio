@@ -26,8 +26,8 @@
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/MultistreamOutput.hpp>
 #include <utility/StreamInfo.hpp>
-#include <utility/VerticalCanvas.hpp>
-#include <utility/VerticalOutput.hpp>
+#include <utility/ExtraCanvas.hpp>
+#include <utility/CanvasOutput.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
 #include <utility/VCamConfig.hpp>
@@ -711,8 +711,8 @@ private:
 	/* Chat docks of the stream channels */
 	std::unique_ptr<MultistreamChatDocks> chatDocks;
 #endif
-	std::unique_ptr<VerticalCanvas> vertical;
-	std::unique_ptr<VerticalOutput> verticalOutput;
+	std::unique_ptr<ExtraCanvas> vertical;
+	std::unique_ptr<CanvasOutput> verticalOutput;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;
@@ -1185,9 +1185,9 @@ private:
 
 public:
 	const std::vector<OBS::Canvas> &GetCanvases() const noexcept { return canvases; }
-	VerticalCanvas *GetVerticalCanvas() const noexcept { return vertical.get(); }
+	ExtraCanvas *GetExtraCanvas() const noexcept { return vertical.get(); }
 	StreamInfoFetcher *GetStreamInfo() const noexcept { return streamInfo.get(); }
-	VerticalOutput *GetVerticalOutput() const noexcept { return verticalOutput.get(); }
+	CanvasOutput *GetCanvasOutput() const noexcept { return verticalOutput.get(); }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0);
 
@@ -1685,9 +1685,9 @@ private slots:
 	void OpenVirtualCamConfig();
 	void OpenMultistreamSettings();
 	void OpenVerticalSettings();
-	void ShowVerticalDocks();
-	void VerticalOutputStarted();
-	void VerticalOutputStopped();
+	void ShowCanvasDocks();
+	void CanvasOutputStarted();
+	void CanvasOutputStopped();
 
 public:
 	void StartVerticalRecording();

@@ -35,6 +35,8 @@ target_sources(
     dialogs/OBSBasicTransform.hpp
     dialogs/OBSBasicVCamConfig.cpp
     dialogs/OBSBasicVCamConfig.hpp
+    dialogs/OBSCanvasSettings.cpp
+    dialogs/OBSCanvasSettings.hpp
     dialogs/OBSLogViewer.cpp
     dialogs/OBSLogViewer.hpp
     dialogs/OBSMissingFiles.cpp
@@ -47,8 +49,6 @@ target_sources(
     dialogs/OBSRemux.hpp
     dialogs/OBSSettingsBackup.cpp
     dialogs/OBSSettingsBackup.hpp
-    dialogs/OBSVerticalSettings.cpp
-    dialogs/OBSVerticalSettings.hpp
     dialogs/OBSWhatsNew.cpp
     dialogs/OBSWhatsNew.hpp
 )

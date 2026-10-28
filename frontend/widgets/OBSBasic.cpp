@@ -34,9 +34,9 @@
 #include <docks/ChatDocks.hpp>
 #endif
 #include <docks/MultistreamDock.hpp>
-#include <docks/VerticalDocks.hpp>
+#include <docks/CanvasDocks.hpp>
 #include <youtube/YouTubePipelineDock.hpp>
-#include <dialogs/OBSVerticalSettings.hpp>
+#include <dialogs/OBSCanvasSettings.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -1003,9 +1003,9 @@ void OBSBasic::OBSInit()
 	InitPrimitives();
 
 	/* The vertical canvas must exist before the scene collection is loaded */
-	vertical = std::make_unique<VerticalCanvas>();
+	vertical = std::make_unique<ExtraCanvas>();
 	vertical->LoadProfile();
-	verticalOutput = std::make_unique<VerticalOutput>(vertical.get());
+	verticalOutput = std::make_unique<CanvasOutput>(vertical.get());
 
 	sceneDuplicationMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SceneDuplicationMode");
 	swapScenesMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SwapScenesMode");
@@ -1162,25 +1162,25 @@ void OBSBasic::OBSInit()
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
 
 	/* setup the vertical canvas */
-	VerticalPreviewDock *verticalPreview =
-		new VerticalPreviewDock(vertical.get(), verticalOutput.get(), verticalPreviewDock);
+	CanvasPreviewDock *verticalPreview =
+		new CanvasPreviewDock(vertical.get(), verticalOutput.get(), verticalPreviewDock);
 	verticalPreviewDock->setWidget(verticalPreview);
-	connect(verticalPreview, &VerticalPreviewDock::OpenSettings, this, &OBSBasic::OpenVerticalSettings);
-	verticalScenesDock->setWidget(new VerticalScenesDock(vertical.get(), verticalScenesDock));
-	verticalSourcesDock->setWidget(new VerticalSourcesDock(vertical.get(), verticalSourcesDock));
+	connect(verticalPreview, &CanvasPreviewDock::OpenSettings, this, &OBSBasic::OpenVerticalSettings);
+	verticalScenesDock->setWidget(new CanvasScenesDock(vertical.get(), verticalScenesDock));
+	verticalSourcesDock->setWidget(new CanvasSourcesDock(vertical.get(), verticalSourcesDock));
 
 	QAction *verticalAction = new QAction(QTStr("Vertical.MenuAction"), this);
 	verticalAction->setMenuRole(QAction::NoRole);
 	connect(verticalAction, &QAction::triggered, this, &OBSBasic::OpenVerticalSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, verticalAction);
 
-	connect(vertical.get(), &VerticalCanvas::CanvasClearing, multistream.get(),
+	connect(vertical.get(), &ExtraCanvas::CanvasClearing, multistream.get(),
 		[this]() { multistream->StopVertical(true); });
 
-	connect(verticalOutput.get(), &VerticalOutput::RecordingStarted, this, &OBSBasic::VerticalOutputStarted);
-	connect(verticalOutput.get(), &VerticalOutput::ReplayBufferStarted, this, &OBSBasic::VerticalOutputStarted);
-	connect(verticalOutput.get(), &VerticalOutput::RecordingStopped, this, &OBSBasic::VerticalOutputStopped);
-	connect(verticalOutput.get(), &VerticalOutput::ReplayBufferStopped, this, &OBSBasic::VerticalOutputStopped);
+	connect(verticalOutput.get(), &CanvasOutput::RecordingStarted, this, &OBSBasic::CanvasOutputStarted);
+	connect(verticalOutput.get(), &CanvasOutput::ReplayBufferStarted, this, &OBSBasic::CanvasOutputStarted);
+	connect(verticalOutput.get(), &CanvasOutput::RecordingStopped, this, &OBSBasic::CanvasOutputStopped);
+	connect(verticalOutput.get(), &CanvasOutput::ReplayBufferStopped, this, &OBSBasic::CanvasOutputStopped);
 
 	/* settings backup and restore, placed after "Show Profile Folder" */
 	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);
@@ -1959,7 +1959,7 @@ void OBSBasic::closeWindow()
 		program->DestroyDisplay();
 	}
 	if (verticalPreviewDock) {
-		if (auto verticalPreview = qobject_cast<VerticalPreviewDock *>(verticalPreviewDock->widget())) {
+		if (auto verticalPreview = qobject_cast<CanvasPreviewDock *>(verticalPreviewDock->widget())) {
 			verticalPreview->DestroyDisplay();
 		}
 	}

@@ -1,6 +1,6 @@
 #include "OBSBasic.hpp"
 
-#include <dialogs/OBSVerticalSettings.hpp>
+#include <dialogs/OBSCanvasSettings.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -13,18 +13,18 @@ void OBSBasic::OpenVerticalSettings()
 	bool wasEnabled = vertical->Enabled();
 	bool outputsActive = verticalOutput && verticalOutput->Active();
 
-	OBSVerticalSettings dialog(vertical.get(), outputsActive, this);
+	OBSCanvasSettings dialog(vertical.get(), outputsActive, this);
 	if (dialog.exec() != QDialog::Accepted) {
 		return;
 	}
 
 	/* Show the vertical docks the first time vertical is turned on */
 	if (!wasEnabled && vertical->Enabled()) {
-		ShowVerticalDocks();
+		ShowCanvasDocks();
 	}
 }
 
-void OBSBasic::ShowVerticalDocks()
+void OBSBasic::ShowCanvasDocks()
 {
 	for (QDockWidget *dock : {verticalPreviewDock.data(), verticalScenesDock.data(), verticalSourcesDock.data()}) {
 		if (dock && !dock->isVisible()) {
@@ -70,12 +70,12 @@ void OBSBasic::SaveVerticalReplay()
 	}
 }
 
-void OBSBasic::VerticalOutputStarted()
+void OBSBasic::CanvasOutputStarted()
 {
 	OnActivate();
 }
 
-void OBSBasic::VerticalOutputStopped()
+void OBSBasic::CanvasOutputStopped()
 {
 	OnDeactivate();
 }
