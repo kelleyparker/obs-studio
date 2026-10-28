@@ -160,11 +160,12 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QVBoxLayout *logLayout = new QVBoxLayout(logGroup);
 	consoleLog = new QPlainTextEdit(logGroup);
 	consoleLog->setReadOnly(true);
-	consoleLog->setMaximumHeight(110);
+	consoleLog->setMinimumHeight(280);
+	consoleLog->setMaximumBlockCount(5000);
 	consoleLog->setStyleSheet(
 		"QPlainTextEdit { background-color: #140e1c; color: #d8cce8; font-family: Consolas, monospace; font-size: 11px; }");
 	logLayout->addWidget(consoleLog);
-	mainLayout->addWidget(logGroup);
+	mainLayout->addWidget(logGroup, 1);
 
 	// 5. Action Buttons
 	QHBoxLayout *btnLayout = new QHBoxLayout();
@@ -178,7 +179,6 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	btnLayout->addWidget(cancelBtn);
 	mainLayout->addLayout(btnLayout);
 
-	mainLayout->addStretch();
 	scrollArea->setWidget(container);
 	outerLayout->addWidget(scrollArea);
 
