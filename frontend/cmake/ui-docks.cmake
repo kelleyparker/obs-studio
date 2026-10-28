@@ -17,6 +17,8 @@ target_sources(
     youtube/YouTubeSecretVault.hpp
     youtube/YouTubeSettingsWidget.cpp
     youtube/YouTubeSettingsWidget.hpp
+    youtube/YouTubeTerminalWidget.cpp
+    youtube/YouTubeTerminalWidget.hpp
     youtube/YouTubeWorkflowManager.cpp
     youtube/YouTubeWorkflowManager.hpp
 )

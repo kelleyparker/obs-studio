@@ -1,5 +1,6 @@
 #include "YouTubePipelineDock.hpp"
 #include "YouTubeBrollReview.hpp"
+#include "YouTubeTerminalWidget.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QComboBox>
@@ -15,6 +16,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -161,16 +163,28 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 
 	mainLayout->addWidget(metaGroup);
 
-	// 4. Console Log
-	QGroupBox *logGroup = new QGroupBox("Workflow Console Log", container);
+	// 4. Console Log (left) and embedded terminal (right)
+	QGroupBox *logGroup = new QGroupBox("Workflow Console Log  |  Terminal", container);
 	QVBoxLayout *logLayout = new QVBoxLayout(logGroup);
-	consoleLog = new QPlainTextEdit(logGroup);
+	QSplitter *logSplitter = new QSplitter(Qt::Horizontal, logGroup);
+	logSplitter->setChildrenCollapsible(false);
+
+	consoleLog = new QPlainTextEdit(logSplitter);
 	consoleLog->setReadOnly(true);
 	consoleLog->setMinimumHeight(280);
 	consoleLog->setMaximumBlockCount(5000);
 	consoleLog->setStyleSheet(
 		"QPlainTextEdit { background-color: #140e1c; color: #d8cce8; font-family: Consolas, monospace; font-size: 11px; }");
-	logLayout->addWidget(consoleLog);
+
+	terminal = new YouTubeTerminalWidget(logSplitter);
+	terminal->setMinimumSize(160, 280);
+
+	logSplitter->addWidget(consoleLog);
+	logSplitter->addWidget(terminal);
+	logSplitter->setStretchFactor(0, 1);
+	logSplitter->setStretchFactor(1, 1);
+	logSplitter->setSizes({1000, 1000});
+	logLayout->addWidget(logSplitter);
 	mainLayout->addWidget(logGroup, 1);
 
 	// 5. Action Buttons

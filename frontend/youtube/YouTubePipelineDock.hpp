@@ -6,6 +6,7 @@
 
 class QLabel;
 class YouTubeBrollReview;
+class YouTubeTerminalWidget;
 class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
@@ -51,6 +52,7 @@ private:
 	QPushButton *submitBtn = nullptr;
 	QPlainTextEdit *consoleLog = nullptr;
 	YouTubeBrollReview *brollReview = nullptr;
+	YouTubeTerminalWidget *terminal = nullptr;
 
 	QPushButton *openFolderBtn = nullptr;
 	QPushButton *rerunBtn = nullptr;
