@@ -7,6 +7,8 @@
 
 #include <qt-wrappers.hpp>
 
+#include <QFileInfo>
+
 #include <util/config-file.h>
 #include <util/platform.h>
 
@@ -22,7 +24,7 @@ CanvasOutputSettings CanvasOutputSettings::Load(const CanvasSlotId &slot)
 	const char *Section = section.c_str();
 
 	config_set_default_string(config, Section, "RecFilePath", config_get_string(config, "AdvOut", "RecFilePath"));
-	config_set_default_string(config, Section, "RecFormat", "hybrid_mp4");
+	config_set_default_string(config, Section, "RecFormat", "mkv");
 	config_set_default_string(config, Section, "RecEncoder", "");
 	config_set_default_int(config, Section, "VideoBitrate", 8000);
 	config_set_default_int(config, Section, "AudioTrack", 1);
@@ -424,6 +426,13 @@ void CanvasOutput::OnRecordingStopped(int code, const QString &error)
 	recordStartTime = 0;
 	blog(LOG_INFO, "%s: recording stopped (code %d)", slot.CanvasName().c_str(), code);
 	ReleaseIdle();
+
+	/* Like the main recording, even if it stopped with an error: the MKV
+	 * written so far is still usable */
+	if (QFileInfo::exists(lastRecordingPath)) {
+		OBSBasic::Get()->RemuxToMp4(lastRecordingPath);
+	}
+
 	emit RecordingStopped(code, error);
 }
 
@@ -452,6 +461,7 @@ void CanvasOutput::OnReplaySaved()
 	calldata_free(&cd);
 
 	blog(LOG_INFO, "%s: replay saved to '%s'", slot.CanvasName().c_str(), path.toUtf8().constData());
+	OBSBasic::Get()->RemuxToMp4(path);
 	emit ReplaySaved(path);
 }
 

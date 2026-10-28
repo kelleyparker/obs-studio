@@ -124,8 +124,8 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *canvas_, bool outputsActive_, 
 	recForm->addRow(QTStr("Basic.Settings.Output.Simple.SavePath"), pathLayout);
 
 	recFormat = new QComboBox(recBox);
-	recFormat->addItem(QTStr("Basic.Settings.Output.Format.hMP4"), "hybrid_mp4");
 	recFormat->addItem(QTStr("Basic.Settings.Output.Format.MKV"), "mkv");
+	recFormat->addItem(QTStr("Basic.Settings.Output.Format.hMP4"), "hybrid_mp4");
 	recFormat->addItem(QTStr("Basic.Settings.Output.Format.MP4"), "mp4");
 	recFormat->addItem(QTStr("Basic.Settings.Output.Format.fMP4"), "fragmented_mp4");
 	recFormat->addItem(QTStr("Basic.Settings.Output.Format.MOV"), "mov");

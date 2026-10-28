@@ -62,6 +62,7 @@ class OBSBasicSourceSelect;
 class OBSBasicTransform;
 class OBSLogViewer;
 class OBSMissingFiles;
+class OBSRemux;
 class OBSProjector;
 class ScreenshotObj;
 class VolumeControl;
@@ -1719,6 +1720,12 @@ public:
 	void StartCanvasReplayBuffer(ExtraCanvasSlot *slot);
 	void StopCanvasReplayBuffer(ExtraCanvasSlot *slot);
 	void SaveCanvasReplay(ExtraCanvasSlot *slot);
+
+	/* Remuxes a finished MKV (or other non-MP4) recording to MP4 next to it,
+	 * like the main recording is auto-remuxed. force ignores the "auto remux"
+	 * setting. Returns the remux, which reports AutoRemuxFinished(), or
+	 * nullptr if nothing is remuxed. */
+	OBSRemux *RemuxToMp4(const QString &input, bool force = false);
 	void OpenBackupSettings();
 	void OpenRestoreSettings();
 

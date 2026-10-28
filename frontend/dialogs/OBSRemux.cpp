@@ -21,7 +21,6 @@
 #include <utility/RemuxQueueModel.hpp>
 #include <utility/RemuxWorker.hpp>
 #include <widgets/OBSBasic.hpp>
-#include <youtube/YouTubeWorkflowManager.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -301,7 +300,7 @@ void OBSRemux::remuxFinished(bool success)
 
 		OBSBasic *main = OBSBasic::Get();
 		main->ShowStatusBarMessage(QTStr("Basic.StatusBar.AutoRemuxedTo").arg(autoRemuxFile));
-		YouTubeWorkflowManager::Instance()->OnRemuxFinished(autoRemuxFile, success);
+		emit AutoRemuxFinished(autoRemuxFile, success);
 	}
 
 	remuxNextEntry();

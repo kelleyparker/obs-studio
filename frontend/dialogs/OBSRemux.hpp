@@ -69,4 +69,6 @@ public slots:
 
 signals:
 	void remux(const QString &source, const QString &target);
+	/* Sent when the file passed to AutoRemux() has been remuxed */
+	void AutoRemuxFinished(const QString &outFile, bool success);
 };

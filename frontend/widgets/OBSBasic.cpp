@@ -513,11 +513,8 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 
 static const double scaled_vals[] = {1.0, 1.25, (1.0 / 0.75), 1.5, (1.0 / 0.6), 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 0.0};
 
-#ifdef __APPLE__ // macOS
-#define DEFAULT_CONTAINER "hybrid_mov"
-#else // Windows/Linux
+/* MKV on every platform; finished recordings are auto-remuxed to MP4 */
 #define DEFAULT_CONTAINER "mkv"
-#endif
 
 bool OBSBasic::InitBasicConfigDefaults()
 {

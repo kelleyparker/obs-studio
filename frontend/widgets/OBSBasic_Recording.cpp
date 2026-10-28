@@ -120,10 +120,41 @@ void OBSBasic::AutoRemux(QString input, bool no_show)
 	}
 
 	OBSRemux *remux = new OBSRemux(QT_TO_UTF8(path), this, true);
+	if (ytArmed) {
+		connect(remux, &OBSRemux::AutoRemuxFinished, this, [](const QString &mp4Path, bool success) {
+			YouTubeWorkflowManager::Instance()->OnRemuxFinished(mp4Path, success);
+		});
+	}
 	if (!no_show) {
 		remux->show();
 	}
 	remux->AutoRemux(input, output);
+}
+
+OBSRemux *OBSBasic::RemuxToMp4(const QString &input, bool force)
+{
+	if (input.isEmpty() || (!force && !config_get_bool(Config(), "Video", "AutoRemux"))) {
+		return nullptr;
+	}
+
+	/* Only containers that aren't already MP4/MOV; AVI is lossless */
+	QFileInfo fi(input);
+	QString suffix = fi.suffix();
+	for (const char *skip : {"mp4", "mov", "avi"}) {
+		if (suffix.compare(skip, Qt::CaseInsensitive) == 0) {
+			return nullptr;
+		}
+	}
+
+	QString output = input;
+	output.resize(output.size() - suffix.size());
+	output += "mp4";
+
+	/* No dialog: several of these can run at once, and the status bar
+	 * says when each is done */
+	OBSRemux *remux = new OBSRemux(QT_TO_UTF8(fi.path()), this, true);
+	remux->AutoRemux(input, output);
+	return remux;
 }
 
 void OBSBasic::StartRecording()

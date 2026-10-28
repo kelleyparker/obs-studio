@@ -277,7 +277,8 @@ void YouTubeWorkflowManager::OnRecordingStarted()
 	}
 	QString error;
 	if (brollRecorder->Start(config.brollSourceName, error)) {
-		emit LogMessageReceived("info", QString("Recording '%1' as screen B-roll.").arg(config.brollSourceName));
+		emit LogMessageReceived("info",
+					QString("Recording '%1' as screen B-roll.").arg(config.brollSourceName));
 	} else {
 		emit LogMessageReceived("warning", QString("B-roll recording not started: %1").arg(error));
 	}
@@ -315,7 +316,12 @@ void YouTubeWorkflowManager::MarkBrollMoment()
 void YouTubeWorkflowManager::OnBrollRecorderStopped(int code)
 {
 	if (code != OBS_OUTPUT_SUCCESS) {
-		emit LogMessageReceived("warning", QString("B-roll recording ended with an error (code %1).").arg(code));
+		emit LogMessageReceived("warning",
+					QString("B-roll recording ended with an error (code %1).").arg(code));
+	}
+	/* The recorder has remuxed its MKV to MP4 by now */
+	if (!brollSession.screenPath.isEmpty()) {
+		brollSession.screenPath = brollRecorder->LastRecordingPath();
 	}
 	if (!pendingPipelineVideo.isEmpty()) {
 		QString video = pendingPipelineVideo;
@@ -369,8 +375,7 @@ QString YouTubeWorkflowManager::ResolvePipelineScriptPath() const
 	QStringList candidates = {
 		QDir::cleanPath(appDir + "/../../data/obs-studio/scripts/youtube_pipeline.py"),
 		QDir::cleanPath(appDir + "/scripts/youtube_pipeline.py"),
-		QStringLiteral("C:/Users/cliffgoat/git/obs-studio/frontend/scripts/youtube_pipeline.py")
-	};
+		QStringLiteral("C:/Users/cliffgoat/git/obs-studio/frontend/scripts/youtube_pipeline.py")};
 	for (const QString &c : candidates) {
 		if (QFileInfo::exists(c)) {
 			return c;
@@ -477,8 +482,9 @@ bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
 
 	connect(workerProcess, &QProcess::readyReadStandardOutput, this, &YouTubeWorkflowManager::HandleStdoutLines);
 	connect(workerProcess, &QProcess::readyReadStandardError, this, [this]() {
-		if (!workerProcess)
+		if (!workerProcess) {
 			return;
+		}
 		QString errText = QString::fromUtf8(workerProcess->readAllStandardError()).trimmed();
 		if (!errText.isEmpty()) {
 			emit LogMessageReceived("warning", errText);
@@ -608,8 +614,9 @@ void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QStrin
 
 	connect(workerProcess, &QProcess::readyReadStandardOutput, this, &YouTubeWorkflowManager::HandleStdoutLines);
 	connect(workerProcess, &QProcess::readyReadStandardError, this, [this]() {
-		if (!workerProcess)
+		if (!workerProcess) {
 			return;
+		}
 		QString errText = QString::fromUtf8(workerProcess->readAllStandardError()).trimmed();
 		if (!errText.isEmpty()) {
 			emit LogMessageReceived("warning", errText);
@@ -715,13 +722,8 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		for (const auto &v : altArr) {
 			altTitles.append(v.toString());
 		}
-		emit MetadataGenerated(
-			obj.value("title").toString(),
-			altTitles,
-			obj.value("description").toString(),
-			obj.value("thumbnail_hook").toString(),
-			obj.value("provider").toString()
-		);
+		emit MetadataGenerated(obj.value("title").toString(), altTitles, obj.value("description").toString(),
+				       obj.value("thumbnail_hook").toString(), obj.value("provider").toString());
 	} else if (type == "thumbnail_ready") {
 		emit ThumbnailGenerated(obj.value("thumbnail_path").toString(), obj.value("provider").toString());
 	} else if (type == "complete") {
@@ -749,7 +751,8 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		int count = obj.value("insert_count").toInt();
 		emit PipelineStateChanged(
 			QString("👀 Review %1 B-roll suggestion(s) below, then Render & Upload").arg(count), false);
-		emit LogMessageReceived("info", QString("B-roll plan ready: %1").arg(obj.value("plan_path").toString()));
+		emit LogMessageReceived("info",
+					QString("B-roll plan ready: %1").arg(obj.value("plan_path").toString()));
 		emit BrollPlanReady(obj.value("plan_path").toString(), obj.value("state_path").toString());
 	} else if (type == "upload_stats") {
 		emit UploadStatsReady(obj.value("text").toString());
@@ -764,7 +767,8 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		YouTubeSecretVault::WipeString(tokenJson);
 		config.connectedChannelTitle = channelTitle;
 		SaveConfig();
-		emit OAuthStatusUpdated(true, channelTitle, QString("Connected to YouTube channel: %1").arg(channelTitle));
+		emit OAuthStatusUpdated(true, channelTitle,
+					QString("Connected to YouTube channel: %1").arg(channelTitle));
 	} else if (type == "oauth_error") {
 		emit OAuthStatusUpdated(false, QString(), obj.value("message").toString("OAuth failed"));
 	}

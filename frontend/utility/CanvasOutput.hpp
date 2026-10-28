@@ -17,7 +17,7 @@ class ExtraCanvas;
  * slot's profile section. */
 struct CanvasOutputSettings {
 	std::string recPath;
-	std::string recFormat = "hybrid_mp4";
+	std::string recFormat = "mkv";
 	std::string encoder; /* empty = pick a hardware H.264 encoder automatically */
 	int videoBitrate = 8000;
 	int audioBitrate = kFixedAudioBitrateKbps;

@@ -1,6 +1,7 @@
 #include "YouTubeBrollRecorder.hpp"
 
 #include <OBSApp.hpp>
+#include <dialogs/OBSRemux.hpp>
 #include <utility/CanvasOutput.hpp>
 #include <utility/audio-encoders.hpp>
 #include <widgets/OBSBasic.hpp>
@@ -10,6 +11,7 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 
 YouTubeBrollRecorder::YouTubeBrollRecorder(QObject *parent) : QObject(parent) {}
 
@@ -46,7 +48,7 @@ bool YouTubeBrollRecorder::Start(const QString &sourceName, QString &error)
 	}
 	QString path =
 		QDir(QString::fromUtf8(recDir))
-			.filePath(QDateTime::currentDateTime().toString("yyyy-MM-dd hh-mm-ss") + "_broll_screen.mp4");
+			.filePath(QDateTime::currentDateTime().toString("yyyy-MM-dd hh-mm-ss") + "_broll_screen.mkv");
 
 	view = obs_view_create();
 	obs_view_set_source(view, 0, source);
@@ -88,7 +90,7 @@ bool YouTubeBrollRecorder::Start(const QString &sourceName, QString &error)
 
 	OBSDataAutoRelease outputSettings = obs_data_create();
 	obs_data_set_string(outputSettings, "path", path.toUtf8().constData());
-	recordOutput = obs_output_create("mp4_output", "youtube_broll_recording", outputSettings, nullptr);
+	recordOutput = obs_output_create("ffmpeg_muxer", "youtube_broll_recording", outputSettings, nullptr);
 	if (!recordOutput) {
 		error = "Could not create the B-roll recording output.";
 		Release();
@@ -150,7 +152,26 @@ void YouTubeBrollRecorder::OnStopped(int code)
 {
 	blog(LOG_INFO, "YouTube B-roll: recording stopped (code %d)", code);
 	Release();
-	emit Stopped(code);
+
+	/* The pipeline gets the MP4; Stopped() waits for the remux */
+	OBSRemux *remux = QFileInfo::exists(lastRecordingPath) ? OBSBasic::Get()->RemuxToMp4(lastRecordingPath, true)
+							       : nullptr;
+	if (!remux) {
+		emit Stopped(code);
+		return;
+	}
+
+	remuxing = true;
+	connect(remux, &OBSRemux::AutoRemuxFinished, this, [this, code](const QString &mp4Path, bool success) {
+		remuxing = false;
+		if (success) {
+			lastRecordingPath = mp4Path;
+		} else {
+			blog(LOG_WARNING, "YouTube B-roll: remux to MP4 failed, keeping '%s'",
+			     lastRecordingPath.toUtf8().constData());
+		}
+		emit Stopped(code);
+	});
 }
 
 void YouTubeBrollRecorder::RecordStart(void *data, calldata_t *)

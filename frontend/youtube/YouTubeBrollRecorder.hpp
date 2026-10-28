@@ -8,8 +8,8 @@
 #include <vector>
 
 /* Records one OBS source (e.g. a Display Capture that sits in an unused scene)
- * to its own hybrid MP4 next to the main recording, so the YouTube pipeline
- * can cut to it as screen B-roll. The source is rendered through a private
+ * to its own MKV next to the main recording, remuxed to MP4 when it stops, so
+ * the YouTube pipeline can cut to it as screen B-roll. The source is rendered through a private
  * obs_view, so the main canvas is untouched. Mic audio (track 1) is included
  * only so the pipeline can line the two files up. */
 class YouTubeBrollRecorder : public QObject {
@@ -21,9 +21,11 @@ public:
 
 	bool Start(const QString &sourceName, QString &error);
 	void Stop();
-	/* True from Start() until the output has fully stopped */
-	bool Active() const { return recordOutput != nullptr; }
+	/* True from Start() until the output has fully stopped and the MP4 remux
+	 * is done */
+	bool Active() const { return recordOutput != nullptr || remuxing; }
 
+	/* The MP4 once remuxed, else the MKV */
 	QString LastRecordingPath() const { return lastRecordingPath; }
 	/* os_gettime_ns() when the output reported it started, or 0 */
 	uint64_t StartTimeNs() const { return startTimeNs; }
@@ -44,6 +46,7 @@ private:
 
 	uint64_t startTimeNs = 0;
 	QString lastRecordingPath;
+	bool remuxing = false;
 
 	void Release();
 	void OnStarted(uint64_t timeNs);
