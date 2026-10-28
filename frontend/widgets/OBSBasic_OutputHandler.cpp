@@ -53,7 +53,7 @@ bool OBSBasic::Active() const
 	if (multistream && multistream->Active()) {
 		return true;
 	}
-	if (verticalOutput && verticalOutput->Active()) {
+	if (CanvasOutputsActive()) {
 		return true;
 	}
 	if (!outputHandler) {

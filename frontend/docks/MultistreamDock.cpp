@@ -262,8 +262,9 @@ void MultistreamDock::Rebuild()
 	for (const auto &dest : multistream->Destinations()) {
 		Row row;
 		QString displayName = QString::fromStdString(dest.name);
-		if (dest.vertical) {
-			displayName += " " + QTStr("Multistream.Canvas.VerticalTag");
+		CanvasSlotId canvasId;
+		if (CanvasSlotId::FromKey(dest.canvas, canvasId)) {
+			displayName += " " + QTStr("Multistream.Canvas.Tag").arg(canvasId.DisplayName());
 		}
 		row.name = new QLabel(displayName);
 		row.status = new QLabel();

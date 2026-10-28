@@ -1,6 +1,7 @@
 #pragma once
 
 #include <obs.hpp>
+#include <utility/CanvasSlot.hpp>
 #include <utility/audio-encoders.hpp>
 
 #include <QObject>
@@ -12,8 +13,8 @@
 
 class ExtraCanvas;
 
-/* Recording and replay buffer settings of the vertical canvas, stored in the
- * profile's [Vertical] section. */
+/* Recording and replay buffer settings of an extra canvas, stored in the
+ * slot's profile section. */
 struct CanvasOutputSettings {
 	std::string recPath;
 	std::string recFormat = "hybrid_mp4";
@@ -21,15 +22,15 @@ struct CanvasOutputSettings {
 	int videoBitrate = 8000;
 	int audioBitrate = kFixedAudioBitrateKbps;
 	int audioTrack = 1; /* 1-6 */
-	std::string fileSuffix = "Vertical";
+	std::string fileSuffix;
 	int replayTimeSec = 30;
 	int replaySizeMB = 512;
 
-	static CanvasOutputSettings Load();
-	void Save() const;
+	static CanvasOutputSettings Load(const CanvasSlotId &slot);
+	void Save(const CanvasSlotId &slot) const;
 };
 
-/* Video encoders that can encode the vertical canvas, as {id, display name} */
+/* Video encoders that can encode an extra canvas, as {id, display name} */
 std::vector<std::pair<std::string, std::string>> GetCanvasVideoEncoders();
 /* The encoder used when none is selected (or the selected one is missing) */
 std::string GetDefaultCanvasVideoEncoder();
@@ -66,6 +67,7 @@ signals:
 
 private:
 	QPointer<ExtraCanvas> canvas;
+	CanvasSlotId slot;
 
 	/* Member order matters: signals are disconnected before the outputs are
 	 * released, and the outputs are released before the encoders. */

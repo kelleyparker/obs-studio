@@ -901,8 +901,10 @@ void OBSBasic::Save(SceneCollection &collection)
 	OBSDataArrayAutoRelease savedCanvases = OBS::Canvas::SaveCanvases(canvases);
 	obs_data_set_array(saveData, "canvases", savedCanvases);
 
-	if (vertical) {
-		vertical->SaveCollection(saveData);
+	for (const auto &slot : canvasSlots) {
+		if (slot->canvas) {
+			slot->canvas->SaveCollection(saveData);
+		}
 	}
 
 	// Transitions
@@ -1163,8 +1165,10 @@ void OBSBasic::Load(SceneCollection &collection)
 		bool hasFirstRun = config_get_bool(App()->GetUserConfig(), "General", "FirstRun");
 
 		CreateDefaultScene(!hasFirstRun);
-		if (vertical) {
-			vertical->LoadCollection(nullptr);
+		for (const auto &slot : canvasSlots) {
+			if (slot->canvas) {
+				slot->canvas->LoadCollection(nullptr);
+			}
 		}
 		SaveProject();
 		return;
@@ -1474,8 +1478,10 @@ retryScene:
 
 	/* ---------------------- */
 
-	if (vertical) {
-		vertical->LoadCollection(data);
+	for (const auto &slot : canvasSlots) {
+		if (slot->canvas) {
+			slot->canvas->LoadCollection(data);
+		}
 	}
 
 	if (api) {
@@ -1575,10 +1581,12 @@ void OBSBasic::ClearSceneData()
 
 	CloseDialogs();
 
-	/* Stops vertical outputs and releases the vertical scene before the
-	 * canvases are removed */
-	if (vertical) {
-		vertical->CollectionCleared();
+	/* Stops the outputs of the extra canvases and releases their scenes
+	 * before the canvases are removed */
+	for (const auto &slot : canvasSlots) {
+		if (slot->canvas) {
+			slot->canvas->CollectionCleared();
+		}
 	}
 
 	ClearListItems(ui->scenes);

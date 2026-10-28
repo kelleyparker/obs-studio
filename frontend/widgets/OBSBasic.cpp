@@ -281,23 +281,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
 	youtubePipelineDock->setVisible(true);
 
-	verticalPreviewDock = new OBSDock();
-	verticalPreviewDock->setObjectName(QStringLiteral("verticalPreviewDock"));
-	verticalPreviewDock->setWindowTitle(QTStr("Vertical.Dock.Preview"));
-	addDockWidget(Qt::RightDockWidgetArea, verticalPreviewDock);
-	verticalPreviewDock->setVisible(false);
-
-	verticalScenesDock = new OBSDock();
-	verticalScenesDock->setObjectName(QStringLiteral("verticalScenesDock"));
-	verticalScenesDock->setWindowTitle(QTStr("Vertical.Dock.Scenes"));
-	addDockWidget(Qt::RightDockWidgetArea, verticalScenesDock);
-	verticalScenesDock->setVisible(false);
-
-	verticalSourcesDock = new OBSDock();
-	verticalSourcesDock->setObjectName(QStringLiteral("verticalSourcesDock"));
-	verticalSourcesDock->setWindowTitle(QTStr("Vertical.Dock.Sources"));
-	addDockWidget(Qt::RightDockWidgetArea, verticalSourcesDock);
-	verticalSourcesDock->setVisible(false);
+	CreateCanvasSlots();
 
 	copyActionsDynamicProperties();
 
@@ -461,9 +445,11 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(statsDock);
 	SETUP_DOCK(multistreamDock);
 	SETUP_DOCK(youtubePipelineDock);
-	SETUP_DOCK(verticalPreviewDock);
-	SETUP_DOCK(verticalScenesDock);
-	SETUP_DOCK(verticalSourcesDock);
+	for (const auto &slot : canvasSlots) {
+		SETUP_DOCK(slot->previewDock);
+		SETUP_DOCK(slot->scenesDock);
+		SETUP_DOCK(slot->sourcesDock);
+	}
 #undef SETUP_DOCK
 
 	// Register shortcuts for Undo/Redo
@@ -1002,10 +988,12 @@ void OBSBasic::OBSInit()
 
 	InitPrimitives();
 
-	/* The vertical canvas must exist before the scene collection is loaded */
-	vertical = std::make_unique<ExtraCanvas>();
-	vertical->LoadProfile();
-	verticalOutput = std::make_unique<CanvasOutput>(vertical.get());
+	/* The extra canvases must exist before the scene collection is loaded */
+	for (const auto &slot : canvasSlots) {
+		slot->canvas = std::make_unique<ExtraCanvas>(slot->id);
+		slot->canvas->LoadProfile();
+		slot->output = std::make_unique<CanvasOutput>(slot->canvas.get());
+	}
 
 	sceneDuplicationMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SceneDuplicationMode");
 	swapScenesMode = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SwapScenesMode");
@@ -1161,26 +1149,8 @@ void OBSBasic::OBSInit()
 	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
 
-	/* setup the vertical canvas */
-	CanvasPreviewDock *verticalPreview =
-		new CanvasPreviewDock(vertical.get(), verticalOutput.get(), verticalPreviewDock);
-	verticalPreviewDock->setWidget(verticalPreview);
-	connect(verticalPreview, &CanvasPreviewDock::OpenSettings, this, &OBSBasic::OpenVerticalSettings);
-	verticalScenesDock->setWidget(new CanvasScenesDock(vertical.get(), verticalScenesDock));
-	verticalSourcesDock->setWidget(new CanvasSourcesDock(vertical.get(), verticalSourcesDock));
-
-	QAction *verticalAction = new QAction(QTStr("Vertical.MenuAction"), this);
-	verticalAction->setMenuRole(QAction::NoRole);
-	connect(verticalAction, &QAction::triggered, this, &OBSBasic::OpenVerticalSettings);
-	ui->menuTools->insertAction(ui->idianPlayground, verticalAction);
-
-	connect(vertical.get(), &ExtraCanvas::CanvasClearing, multistream.get(),
-		[this]() { multistream->StopVertical(true); });
-
-	connect(verticalOutput.get(), &CanvasOutput::RecordingStarted, this, &OBSBasic::CanvasOutputStarted);
-	connect(verticalOutput.get(), &CanvasOutput::ReplayBufferStarted, this, &OBSBasic::CanvasOutputStarted);
-	connect(verticalOutput.get(), &CanvasOutput::RecordingStopped, this, &OBSBasic::CanvasOutputStopped);
-	connect(verticalOutput.get(), &CanvasOutput::ReplayBufferStopped, this, &OBSBasic::CanvasOutputStopped);
+	/* setup the extra canvases */
+	SetupCanvasSlots();
 
 	/* settings backup and restore, placed after "Show Profile Folder" */
 	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);
@@ -1435,8 +1405,10 @@ void OBSBasic::applicationShutdown() noexcept
 #endif
 	streamInfo.reset();
 	multistream.reset();
-	verticalOutput.reset();
-	vertical.reset();
+	for (const auto &slot : canvasSlots) {
+		slot->output.reset();
+		slot->canvas.reset();
+	}
 	outputHandler.reset();
 
 	delete interaction;
@@ -1561,7 +1533,7 @@ int OBSBasic::ResetVideo()
 	if (outputHandler && outputHandler->Active()) {
 		return OBS_VIDEO_CURRENTLY_ACTIVE;
 	}
-	if (verticalOutput && verticalOutput->Active()) {
+	if (CanvasOutputsActive()) {
 		return OBS_VIDEO_CURRENTLY_ACTIVE;
 	}
 
@@ -1621,8 +1593,10 @@ int OBSBasic::ResetVideo()
 		OBSBasicStats::InitializeValues();
 		OBSProjector::UpdateMultiviewProjectors();
 
-		if (vertical) {
-			vertical->MainVideoReset();
+		for (const auto &slot : canvasSlots) {
+			if (slot->canvas) {
+				slot->canvas->MainVideoReset();
+			}
 		}
 
 		if (!collections.empty()) {
@@ -1912,7 +1886,7 @@ bool OBSBasic::isReadyToClose()
 bool OBSBasic::shouldPromptForClose()
 {
 	bool confirmOnExit = config_get_bool(App()->GetUserConfig(), "General", "ConfirmOnExit");
-	bool active = (outputHandler && outputHandler->Active()) || (verticalOutput && verticalOutput->Active());
+	bool active = (outputHandler && outputHandler->Active()) || CanvasOutputsActive();
 	if (confirmOnExit && active && !clearingFailed) {
 		return true;
 	}
@@ -1958,9 +1932,12 @@ void OBSBasic::closeWindow()
 	if (program) {
 		program->DestroyDisplay();
 	}
-	if (verticalPreviewDock) {
-		if (auto verticalPreview = qobject_cast<CanvasPreviewDock *>(verticalPreviewDock->widget())) {
-			verticalPreview->DestroyDisplay();
+	for (const auto &slot : canvasSlots) {
+		if (!slot->previewDock) {
+			continue;
+		}
+		if (auto preview = qobject_cast<CanvasPreviewDock *>(slot->previewDock->widget())) {
+			preview->DestroyDisplay();
 		}
 	}
 

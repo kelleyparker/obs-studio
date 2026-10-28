@@ -19,12 +19,12 @@ class QStackedWidget;
 class ExtraCanvas;
 class CanvasOutput;
 
-/* Preview of the vertical canvas with recording and replay buffer controls */
+/* Preview of an extra canvas with recording and replay buffer controls */
 class CanvasPreviewDock : public QWidget {
 	Q_OBJECT
 
 public:
-	CanvasPreviewDock(ExtraCanvas *vertical, CanvasOutput *output, QWidget *parent = nullptr);
+	CanvasPreviewDock(ExtraCanvas *canvas, CanvasOutput *output, QWidget *parent = nullptr);
 	~CanvasPreviewDock();
 
 	/* Called when OBS closes, before the docks are deleted */
@@ -34,7 +34,7 @@ signals:
 	void OpenSettings();
 
 private:
-	QPointer<ExtraCanvas> vertical;
+	QPointer<ExtraCanvas> canvas;
 	QPointer<CanvasOutput> output;
 
 	QStackedWidget *stack;
@@ -57,15 +57,15 @@ private:
 	static void Render(void *data, uint32_t cx, uint32_t cy);
 };
 
-/* Scene list of the vertical canvas */
+/* Scene list of an extra canvas */
 class CanvasScenesDock : public QWidget {
 	Q_OBJECT
 
 public:
-	CanvasScenesDock(ExtraCanvas *vertical, QWidget *parent = nullptr);
+	CanvasScenesDock(ExtraCanvas *canvas, QWidget *parent = nullptr);
 
 private:
-	QPointer<ExtraCanvas> vertical;
+	QPointer<ExtraCanvas> canvas;
 	QListWidget *list;
 	QPushButton *removeButton;
 	QPushButton *upButton;
@@ -84,15 +84,15 @@ private:
 	void ShowContextMenu(const QPoint &pos);
 };
 
-/* Sources of the vertical canvas's current scene */
+/* Sources of an extra canvas's current scene */
 class CanvasSourcesDock : public QWidget {
 	Q_OBJECT
 
 public:
-	CanvasSourcesDock(ExtraCanvas *vertical, QWidget *parent = nullptr);
+	CanvasSourcesDock(ExtraCanvas *canvas, QWidget *parent = nullptr);
 
 private:
-	QPointer<ExtraCanvas> vertical;
+	QPointer<ExtraCanvas> canvas;
 	QListWidget *list;
 	QPushButton *addButton;
 	QMenu *addMenu;

@@ -15,18 +15,18 @@
 
 using namespace std;
 
-static const char *Section = ExtraCanvas::ConfigSection;
-
-CanvasOutputSettings CanvasOutputSettings::Load()
+CanvasOutputSettings CanvasOutputSettings::Load(const CanvasSlotId &slot)
 {
 	config_t *config = OBSBasic::Get()->Config();
+	const string section = slot.ConfigSection();
+	const char *Section = section.c_str();
 
 	config_set_default_string(config, Section, "RecFilePath", config_get_string(config, "AdvOut", "RecFilePath"));
 	config_set_default_string(config, Section, "RecFormat", "hybrid_mp4");
 	config_set_default_string(config, Section, "RecEncoder", "");
 	config_set_default_int(config, Section, "VideoBitrate", 8000);
 	config_set_default_int(config, Section, "AudioTrack", 1);
-	config_set_default_string(config, Section, "FileSuffix", "Vertical");
+	config_set_default_string(config, Section, "FileSuffix", slot.DefaultSuffix().c_str());
 	config_set_default_int(config, Section, "RBTime", 30);
 	config_set_default_int(config, Section, "RBSize", 512);
 
@@ -43,9 +43,11 @@ CanvasOutputSettings CanvasOutputSettings::Load()
 	return settings;
 }
 
-void CanvasOutputSettings::Save() const
+void CanvasOutputSettings::Save(const CanvasSlotId &slot) const
 {
 	config_t *config = OBSBasic::Get()->Config();
+	const string section = slot.ConfigSection();
+	const char *Section = section.c_str();
 
 	config_set_string(config, Section, "RecFilePath", recPath.c_str());
 	config_set_string(config, Section, "RecFormat", recFormat.c_str());
@@ -87,7 +89,7 @@ vector<pair<string, string>> GetCanvasVideoEncoders()
 
 string GetDefaultCanvasVideoEncoder()
 {
-	/* Prefer hardware H.264 so the vertical encode doesn't add CPU load:
+	/* Prefer hardware H.264 so extra encodes don't add CPU load:
 	 * NVIDIA, Intel or AMD on Windows, Apple VideoToolbox on macOS */
 	static const char *preferred[] = {"obs_nvenc_h264_tex", "obs_qsv11_v2", "h264_texture_amf",
 					  "com.apple.videotoolbox.videoencoder.ave.avc", "obs_x264"};
@@ -104,7 +106,7 @@ string GetDefaultCanvasVideoEncoder()
 	return available.empty() ? string() : available.front().first;
 }
 
-static string ResolveEncoder(const string &selected)
+static string ResolveEncoder(const CanvasSlotId &slot, const string &selected)
 {
 	if (!selected.empty()) {
 		for (const auto &encoder : GetCanvasVideoEncoders()) {
@@ -112,12 +114,16 @@ static string ResolveEncoder(const string &selected)
 				return selected;
 			}
 		}
-		blog(LOG_WARNING, "Vertical: encoder '%s' is not available, using the default", selected.c_str());
+		blog(LOG_WARNING, "%s: encoder '%s' is not available, using the default", slot.CanvasName().c_str(),
+		     selected.c_str());
 	}
 	return GetDefaultCanvasVideoEncoder();
 }
 
-CanvasOutput::CanvasOutput(ExtraCanvas *canvas_, QObject *parent) : QObject(parent), canvas(canvas_)
+CanvasOutput::CanvasOutput(ExtraCanvas *canvas_, QObject *parent)
+	: QObject(parent),
+	  canvas(canvas_),
+	  slot(canvas_->Slot())
 {
 	/* Outputs can't keep running once the canvas or its video mix is gone */
 	connect(canvas_, &ExtraCanvas::CanvasClearing, this, [this]() { StopAll(true); });
@@ -138,13 +144,13 @@ bool CanvasOutput::AcquireEncoders(const CanvasOutputSettings &settings, QString
 
 	video_t *video = canvas ? canvas->GetVideo() : nullptr;
 	if (!video) {
-		error = QTStr("Vertical.Error.NotEnabled");
+		error = QTStr("Canvas.Error.NotEnabled").arg(slot.DisplayName());
 		return false;
 	}
 
-	string encoderId = ResolveEncoder(settings.encoder);
+	string encoderId = ResolveEncoder(slot, settings.encoder);
 	if (encoderId.empty()) {
-		error = QTStr("Vertical.Error.NoEncoder");
+		error = QTStr("Canvas.Error.NoEncoder");
 		return false;
 	}
 
@@ -156,9 +162,10 @@ bool CanvasOutput::AcquireEncoders(const CanvasOutputSettings &settings, QString
 		obs_data_set_string(videoSettings, "preset", "veryfast");
 	}
 
-	videoEncoder = obs_video_encoder_create(encoderId.c_str(), "vertical_video", videoSettings, nullptr);
+	const string prefix = slot.OutputPrefix();
+	videoEncoder = obs_video_encoder_create(encoderId.c_str(), (prefix + "_video").c_str(), videoSettings, nullptr);
 	if (!videoEncoder) {
-		error = QTStr("Vertical.Error.EncoderFailed").arg(QString::fromStdString(encoderId));
+		error = QTStr("Canvas.Error.EncoderFailed").arg(QString::fromStdString(encoderId));
 		return false;
 	}
 	obs_encoder_set_video(videoEncoder, video);
@@ -167,23 +174,23 @@ bool CanvasOutput::AcquireEncoders(const CanvasOutputSettings &settings, QString
 	const char *audioId = GetSimpleAACEncoderForBitrate(audioBitrate);
 	if (!audioId) {
 		videoEncoder = nullptr;
-		error = QTStr("Vertical.Error.NoEncoder");
+		error = QTStr("Canvas.Error.NoEncoder");
 		return false;
 	}
 
 	OBSDataAutoRelease audioSettings = obs_data_create();
 	obs_data_set_int(audioSettings, "bitrate", audioBitrate);
-	audioEncoder =
-		obs_audio_encoder_create(audioId, "vertical_audio", audioSettings, settings.audioTrack - 1, nullptr);
+	audioEncoder = obs_audio_encoder_create(audioId, (prefix + "_audio").c_str(), audioSettings,
+						settings.audioTrack - 1, nullptr);
 	if (!audioEncoder) {
 		videoEncoder = nullptr;
-		error = QTStr("Vertical.Error.EncoderFailed").arg(QString::fromUtf8(audioId));
+		error = QTStr("Canvas.Error.EncoderFailed").arg(QString::fromUtf8(audioId));
 		return false;
 	}
 	obs_encoder_set_audio(audioEncoder, obs_get_audio());
 
-	blog(LOG_INFO, "Vertical: using video encoder '%s' at %d kbps, audio track %d", encoderId.c_str(),
-	     settings.videoBitrate, settings.audioTrack);
+	blog(LOG_INFO, "%s: using video encoder '%s' at %d kbps, audio track %d", slot.CanvasName().c_str(),
+	     encoderId.c_str(), settings.videoBitrate, settings.audioTrack);
 	return true;
 }
 
@@ -219,7 +226,7 @@ bool CanvasOutput::StartRecording(QString &error)
 
 	ReleaseIdle();
 
-	CanvasOutputSettings settings = CanvasOutputSettings::Load();
+	CanvasOutputSettings settings = CanvasOutputSettings::Load(slot);
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
 	bool overwrite = config_get_bool(config, "Output", "OverwriteIfExists");
@@ -249,7 +256,7 @@ bool CanvasOutput::StartRecording(QString &error)
 	obs_data_set_string(outputSettings, "path", path.c_str());
 	AddMuxerSettings(outputSettings, settings.recFormat);
 
-	recordOutput = obs_output_create(muxer, "vertical_recording", outputSettings, nullptr);
+	recordOutput = obs_output_create(muxer, (slot.OutputPrefix() + "_recording").c_str(), outputSettings, nullptr);
 	if (!recordOutput) {
 		ReleaseIdle();
 		error = QTStr("Output.StartFailedGeneric");
@@ -273,7 +280,7 @@ bool CanvasOutput::StartRecording(QString &error)
 	}
 
 	lastRecordingPath = QString::fromStdString(path);
-	blog(LOG_INFO, "Vertical: recording to '%s'", path.c_str());
+	blog(LOG_INFO, "%s: recording to '%s'", slot.CanvasName().c_str(), path.c_str());
 	return true;
 }
 
@@ -310,7 +317,7 @@ bool CanvasOutput::StartReplayBuffer(QString &error)
 
 	ReleaseIdle();
 
-	CanvasOutputSettings settings = CanvasOutputSettings::Load();
+	CanvasOutputSettings settings = CanvasOutputSettings::Load(slot);
 	config_t *config = OBSBasic::Get()->Config();
 	const char *filenameFormat = config_get_string(config, "Output", "FilenameFormatting");
 	bool noSpace = config_get_bool(config, "AdvOut", "RecFileNameWithoutSpace");
@@ -343,7 +350,8 @@ bool CanvasOutput::StartReplayBuffer(QString &error)
 	obs_data_set_int(outputSettings, "max_size_mb", settings.replaySizeMB);
 	AddMuxerSettings(outputSettings, settings.recFormat);
 
-	replayOutput = obs_output_create("replay_buffer", "vertical_replay_buffer", outputSettings, nullptr);
+	replayOutput = obs_output_create("replay_buffer", (slot.OutputPrefix() + "_replay_buffer").c_str(),
+					 outputSettings, nullptr);
 	if (!replayOutput) {
 		ReleaseIdle();
 		error = QTStr("Output.StartFailedGeneric");
@@ -414,7 +422,7 @@ void CanvasOutput::OnRecordingStarted()
 void CanvasOutput::OnRecordingStopped(int code, const QString &error)
 {
 	recordStartTime = 0;
-	blog(LOG_INFO, "Vertical: recording stopped (code %d)", code);
+	blog(LOG_INFO, "%s: recording stopped (code %d)", slot.CanvasName().c_str(), code);
 	ReleaseIdle();
 	emit RecordingStopped(code, error);
 }
@@ -426,7 +434,7 @@ void CanvasOutput::OnReplayBufferStarted()
 
 void CanvasOutput::OnReplayBufferStopped(int code, const QString &error)
 {
-	blog(LOG_INFO, "Vertical: replay buffer stopped (code %d)", code);
+	blog(LOG_INFO, "%s: replay buffer stopped (code %d)", slot.CanvasName().c_str(), code);
 	ReleaseIdle();
 	emit ReplayBufferStopped(code, error);
 }
@@ -443,7 +451,7 @@ void CanvasOutput::OnReplaySaved()
 	QString path = QString::fromUtf8(calldata_string(&cd, "path"));
 	calldata_free(&cd);
 
-	blog(LOG_INFO, "Vertical: replay saved to '%s'", path.toUtf8().constData());
+	blog(LOG_INFO, "%s: replay saved to '%s'", slot.CanvasName().c_str(), path.toUtf8().constData());
 	emit ReplaySaved(path);
 }
 

@@ -858,8 +858,10 @@ void OBSBasic::ResetProfileData()
 	if (multistream) {
 		multistream->Load(GetCurrentProfile().path);
 	}
-	if (vertical) {
-		vertical->LoadProfile();
+	for (const auto &slot : canvasSlots) {
+		if (slot->canvas) {
+			slot->canvas->LoadProfile();
+		}
 	}
 	ClearHotkeys();
 	CreateHotkeys();

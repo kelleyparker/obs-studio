@@ -265,22 +265,34 @@ static int LargestAacBitrateUpTo(int bitrate)
 }
 
 /* The video of the canvas a destination streams */
+static ExtraCanvas *GetDestinationCanvas(const MultistreamDestination &dest)
+{
+	ExtraCanvasSlot *slot = OBSBasic::Get()->FindCanvasSlot(dest.canvas);
+	return slot && slot->canvas && slot->canvas->Enabled() ? slot->canvas.get() : nullptr;
+}
+
 static video_t *GetDestinationVideo(const MultistreamDestination &dest)
 {
-	if (!dest.vertical) {
+	if (dest.StreamsMainCanvas()) {
 		return obs_get_video();
 	}
-	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
-	return vertical && vertical->Enabled() ? vertical->GetVideo() : nullptr;
+	ExtraCanvas *canvas = GetDestinationCanvas(dest);
+	return canvas ? canvas->GetVideo() : nullptr;
 }
 
 static bool GetDestinationVideoInfo(const MultistreamDestination &dest, obs_video_info &ovi)
 {
-	if (!dest.vertical) {
+	if (dest.StreamsMainCanvas()) {
 		return obs_get_video_info(&ovi);
 	}
-	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
-	return vertical && vertical->Enabled() && vertical->GetVideoInfo(ovi);
+	ExtraCanvas *canvas = GetDestinationCanvas(dest);
+	return canvas && canvas->GetVideoInfo(ovi);
+}
+
+static bool DestinationIsVertical(const MultistreamDestination &dest)
+{
+	CanvasSlotId id;
+	return CanvasSlotId::FromKey(dest.canvas, id) && id.IsVertical();
 }
 
 /* The most audio the platform accepts, from its guide or else OBS's service
@@ -338,8 +350,9 @@ MultistreamQuality ResolveMultistreamQuality(const MultistreamDestination &dest,
 
 	obs_video_info ovi = {};
 	bool hasVideo = GetDestinationVideoInfo(dest, ovi);
-	uint32_t width = hasVideo ? ovi.output_width : (dest.vertical ? 1080 : 1920);
-	uint32_t height = hasVideo ? ovi.output_height : (dest.vertical ? 1920 : 1080);
+	bool vertical = DestinationIsVertical(dest);
+	uint32_t width = hasVideo ? ovi.output_width : (vertical ? 1080 : 1920);
+	uint32_t height = hasVideo ? ovi.output_height : (vertical ? 1920 : 1080);
 	double fps = hasVideo ? (double)ovi.fps_num / (double)ovi.fps_den : 60.0;
 
 	uint32_t maxWidth = qualityPreset ? qualityPreset->width : (limits ? limits->maxWidth : 0);
@@ -534,7 +547,15 @@ void MultistreamOutput::Load(const filesystem::path &profilePath)
 			dest.server = obs_data_get_string(item, "server");
 			dest.key = obs_data_get_string(item, "key");
 			dest.enabled = obs_data_get_bool(item, "enabled");
-			dest.vertical = strcmp(obs_data_get_string(item, "canvas"), "vertical") == 0;
+			/* "main", or "vertical" from before there were several
+			 * extra canvases, or a CanvasSlotId::Key() */
+			string canvas = obs_data_get_string(item, "canvas");
+			CanvasSlotId canvasId;
+			if (canvas == "vertical") {
+				dest.canvas = CanvasSlotId{CanvasKind::Vertical, 1}.Key();
+			} else if (CanvasSlotId::FromKey(canvas, canvasId)) {
+				dest.canvas = canvas;
+			}
 			dest.channel = obs_data_get_string(item, "channel");
 			const char *quality = obs_data_get_string(item, "quality");
 			dest.quality = strcmp(quality, "max") == 0      ? MultistreamQualityMode::Max
@@ -579,7 +600,14 @@ bool MultistreamOutput::Save() const
 		obs_data_set_string(item, "server", dest.server.c_str());
 		obs_data_set_string(item, "key", dest.key.c_str());
 		obs_data_set_bool(item, "enabled", dest.enabled);
-		obs_data_set_string(item, "canvas", dest.vertical ? "vertical" : "main");
+		/* Vertical 1 is still saved as "vertical", which older versions
+		 * read */
+		CanvasSlotId canvasId;
+		string canvas = "main";
+		if (CanvasSlotId::FromKey(dest.canvas, canvasId)) {
+			canvas = canvasId.IsLegacyVertical() ? "vertical" : dest.canvas;
+		}
+		obs_data_set_string(item, "canvas", canvas.c_str());
 		obs_data_set_string(item, "channel", dest.channel.c_str());
 		obs_data_set_string(item, "quality",
 				    dest.quality == MultistreamQualityMode::Max      ? "max"
@@ -669,8 +697,8 @@ void MultistreamOutput::ApplyPrimaryEncoderSettings(obs_data_t *videoSettings) c
 
 	bool hasDestinations = false;
 	for (const auto &dest : destinations) {
-		/* Vertical destinations have their own encoder */
-		hasDestinations = hasDestinations || (dest.enabled && !dest.vertical);
+		/* Destinations of extra canvases have their own encoder */
+		hasDestinations = hasDestinations || (dest.enabled && dest.StreamsMainCanvas());
 	}
 	if (!hasDestinations) {
 		return;
@@ -882,8 +910,8 @@ bool MultistreamOutput::AcquireSeparateEncoders(Running &run, const MultistreamD
 	 * needs its own encoders, as the bitrate is adjusted per connection. */
 	string key = encoderId + "|" + to_string(quality.videoBitrate) + "|" + to_string(quality.width) + "x" +
 		     to_string(quality.height) + "/" + to_string(quality.fpsDivisor) + "|" +
-		     to_string(quality.audioBitrate) + "|" + to_string(mixer) + "|" + dest.platform +
-		     (dest.vertical ? "|vertical" : "|main");
+		     to_string(quality.audioBitrate) + "|" + to_string(mixer) + "|" + dest.platform + "|" +
+		     (dest.StreamsMainCanvas() ? string("main") : dest.canvas);
 	if (dynamicBitrate) {
 		key += "|" + dest.id;
 	}
@@ -935,14 +963,19 @@ bool MultistreamOutput::Start(const string &id)
 
 	bool dynamicBitrate = false; /* the network settings are fixed */
 
-	if (dest->vertical && !GetDestinationVideo(*dest)) {
-		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.VerticalOff"));
+	if (!dest->StreamsMainCanvas() && !GetDestinationVideo(*dest)) {
+		CanvasSlotId canvasId;
+		QString canvasName = CanvasSlotId::FromKey(dest->canvas, canvasId)
+					     ? canvasId.DisplayName()
+					     : QString::fromStdString(dest->canvas);
+		SetState(id, MultistreamState::Error, QTStr("Multistream.Error.CanvasOff").arg(canvasName));
 		return false;
 	}
 
 	obs_encoder_t *primaryVideo = obs_output_get_video_encoder(primary);
 	/* The main stream's encoders encode the main canvas */
-	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo && !dest->vertical;
+	bool useShared = mode == MultistreamMode::Shared && primarySharedEncoders && primaryVideo &&
+			 dest->StreamsMainCanvas();
 	if (useShared && !PlatformSupportsCodec(dest->platform, obs_encoder_get_codec(primaryVideo))) {
 		blog(LOG_INFO, "[Multistream] %s doesn't support the main stream's %s video; using a separate encoder",
 		     dest->platform.c_str(), obs_encoder_get_codec(primaryVideo));
@@ -1059,12 +1092,12 @@ void MultistreamOutput::StopAll(bool force)
 	}
 }
 
-void MultistreamOutput::StopVertical(bool force)
+void MultistreamOutput::StopCanvas(const string &canvasKey, bool force)
 {
 	vector<string> ids;
 	for (const auto &[id, run] : running) {
 		const MultistreamDestination *dest = FindDestination(id);
-		if (dest && dest->vertical) {
+		if (dest && !dest->StreamsMainCanvas() && dest->canvas == canvasKey) {
 			ids.push_back(id);
 		}
 	}

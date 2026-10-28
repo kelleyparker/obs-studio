@@ -112,13 +112,17 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 
 	/* Which canvas the destination streams */
 	canvas = new QComboBox(this);
-	canvas->addItem(QTStr("Multistream.Canvas.Main"), false);
-	canvas->addItem(QTStr("Multistream.Canvas.Vertical"), true);
-	ExtraCanvas *vertical = OBSBasic::Get()->GetExtraCanvas();
-	bool verticalEnabled = vertical && vertical->Enabled();
-	if (!verticalEnabled && !dest.vertical) {
-		canvas->setEnabled(false);
-		canvas->setToolTip(QTStr("Multistream.Canvas.VerticalOff"));
+	canvas->addItem(QTStr("Multistream.Canvas.Main"), QString());
+	for (const auto &slot : OBSBasic::Get()->GetCanvasSlots()) {
+		bool enabled = slot->canvas && slot->canvas->Enabled();
+		const std::string key = slot->id.Key();
+		/* A turned-off canvas is listed only if the destination uses it */
+		if (enabled) {
+			canvas->addItem(slot->id.DisplayName(), QString::fromStdString(key));
+		} else if (dest.canvas == key) {
+			canvas->addItem(QTStr("Multistream.Canvas.Off").arg(slot->id.DisplayName()),
+					QString::fromStdString(key));
+		}
 	}
 
 	QFormLayout *form = new QFormLayout();
@@ -175,13 +179,13 @@ MultistreamDestinationDialog::MultistreamDestinationDialog(const MultistreamDest
 	QLabel *sharedNote = new QLabel(QTStr("Multistream.Quality.SharedNote"), this);
 	sharedNote->setWordWrap(true);
 
-	/* Vertical destinations always have their own encoder */
+	/* Destinations of extra canvases always have their own encoder */
 	auto updateQualityVisibility = [this, mode, quality, sharedNote]() {
-		bool separate = mode == MultistreamMode::Separate || canvas->currentData().toBool();
+		bool separate = mode == MultistreamMode::Separate || !canvas->currentData().toString().isEmpty();
 		quality->setVisible(separate);
 		sharedNote->setVisible(!separate);
 	};
-	canvas->setCurrentIndex(dest.vertical ? 1 : 0);
+	canvas->setCurrentIndex(std::max(0, canvas->findData(QString::fromStdString(dest.canvas))));
 	updateQualityVisibility();
 	connect(canvas, &QComboBox::currentIndexChanged, this, updateQualityVisibility);
 
@@ -540,7 +544,7 @@ void MultistreamDestinationDialog::accept()
 	}
 
 	destination.name = displayName.toStdString();
-	destination.vertical = canvas->currentData().toBool();
+	destination.canvas = canvas->currentData().toString().toStdString();
 	destination.platform = platform->currentData().toString().toStdString();
 	destination.server = serverUrl.toStdString();
 	destination.key = streamKey.toStdString();
@@ -757,8 +761,9 @@ void OBSMultistreamSettings::RefreshTable()
 
 		table->setItem(row, ColumnEnabled, enabledItem);
 		QString displayName = QString::fromStdString(dest.name);
-		if (dest.vertical) {
-			displayName += " " + QTStr("Multistream.Canvas.VerticalTag");
+		CanvasSlotId canvasId;
+		if (CanvasSlotId::FromKey(dest.canvas, canvasId)) {
+			displayName += " " + QTStr("Multistream.Canvas.Tag").arg(canvasId.DisplayName());
 		}
 		table->setItem(row, ColumnName, new QTableWidgetItem(displayName));
 		table->setItem(row, ColumnPlatform, new QTableWidgetItem(PlatformDisplayName(dest.platform)));

@@ -190,6 +190,22 @@ static inline void ClearProcessPriority()
 	} while (false)
 #endif
 
+/* An extra canvas with its outputs, docks and hotkeys */
+struct ExtraCanvasSlot {
+	CanvasSlotId id;
+	std::unique_ptr<ExtraCanvas> canvas;
+	std::unique_ptr<CanvasOutput> output;
+	QPointer<QDockWidget> previewDock;
+	QPointer<QDockWidget> scenesDock;
+	QPointer<QDockWidget> sourcesDock;
+	QPointer<QAction> menuAction;
+	obs_hotkey_pair_id recordHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
+	obs_hotkey_pair_id replayHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
+	obs_hotkey_id saveReplayHotkey = OBS_INVALID_HOTKEY_ID;
+	/* Started by the main recording, so it stops with it */
+	bool startedWithMain = false;
+};
+
 class OBSBasic : public OBSMainWindow {
 	Q_OBJECT
 	Q_PROPERTY(QIcon imageIcon READ GetImageIcon WRITE SetImageIcon DESIGNABLE true)
@@ -451,9 +467,6 @@ private:
 	QPointer<QDockWidget> statsDock;
 	QPointer<QDockWidget> multistreamDock;
 	QPointer<QDockWidget> youtubePipelineDock;
-	QPointer<QDockWidget> verticalPreviewDock;
-	QPointer<QDockWidget> verticalScenesDock;
-	QPointer<QDockWidget> verticalSourcesDock;
 	QByteArray startingDockLayout;
 	QStringList extraDockNames;
 	QList<std::shared_ptr<QDockWidget>> extraDocks;
@@ -510,9 +523,6 @@ private:
 	obs_hotkey_pair_id streamingHotkeys, recordingHotkeys, pauseHotkeys, replayBufHotkeys, vcamHotkeys,
 		togglePreviewHotkeys, contextBarHotkeys;
 	obs_hotkey_id forceStreamingStopHotkey, splitFileHotkey, addChapterHotkey, saveReplayBufferHotkey;
-	obs_hotkey_pair_id verticalRecordingHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
-	obs_hotkey_pair_id verticalReplayHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
-	obs_hotkey_id verticalSaveReplayHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id youtubeBrollMarkHotkey = OBS_INVALID_HOTKEY_ID;
 
 	void InitHotkeys();
@@ -711,8 +721,11 @@ private:
 	/* Chat docks of the stream channels */
 	std::unique_ptr<MultistreamChatDocks> chatDocks;
 #endif
-	std::unique_ptr<ExtraCanvas> vertical;
-	std::unique_ptr<CanvasOutput> verticalOutput;
+	/* Horizontal 2-4 and Vertical 1-4. The entries exist from the start (their
+	 * docks are created with the window); canvas and output are created in
+	 * OBSInit(). */
+	std::vector<std::unique_ptr<ExtraCanvasSlot>> canvasSlots;
+	QPointer<QMenu> canvasMenu;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;
@@ -745,8 +758,7 @@ private:
 
 	inline void OnDeactivate()
 	{
-		bool verticalActive = verticalOutput && verticalOutput->Active();
-		if (!outputHandler->Active() && !verticalActive && !ui->profileMenu->isEnabled()) {
+		if (!outputHandler->Active() && !CanvasOutputsActive() && !ui->profileMenu->isEnabled()) {
 			ui->profileMenu->setEnabled(true);
 			ui->autoConfigure->setEnabled(true);
 			App()->DecrementSleepInhibition();
@@ -1185,9 +1197,13 @@ private:
 
 public:
 	const std::vector<OBS::Canvas> &GetCanvases() const noexcept { return canvases; }
-	ExtraCanvas *GetExtraCanvas() const noexcept { return vertical.get(); }
 	StreamInfoFetcher *GetStreamInfo() const noexcept { return streamInfo.get(); }
-	CanvasOutput *GetCanvasOutput() const noexcept { return verticalOutput.get(); }
+
+	const std::vector<std::unique_ptr<ExtraCanvasSlot>> &GetCanvasSlots() const noexcept { return canvasSlots; }
+	/* The slot with the given CanvasSlotId::Key(), or nullptr */
+	ExtraCanvasSlot *FindCanvasSlot(const std::string &key) const;
+	/* True while any extra canvas is recording or has its replay buffer on */
+	bool CanvasOutputsActive() const;
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0);
 
@@ -1684,17 +1700,25 @@ private slots:
 
 	void OpenVirtualCamConfig();
 	void OpenMultistreamSettings();
-	void OpenVerticalSettings();
-	void ShowCanvasDocks();
 	void CanvasOutputStarted();
 	void CanvasOutputStopped();
 
+private:
+	void CreateCanvasSlots();
+	void SetupCanvasSlots();
+	void OpenCanvasSettings(ExtraCanvasSlot *slot);
+	void ShowCanvasDocks(ExtraCanvasSlot *slot);
+	void UpdateCanvasMenu();
+	/* Called when the main recording starts and stops */
+	void StartCanvasesWithMainRecording();
+	void StopCanvasesWithMainRecording();
+
 public:
-	void StartVerticalRecording();
-	void StopVerticalRecording();
-	void StartVerticalReplayBuffer();
-	void StopVerticalReplayBuffer();
-	void SaveVerticalReplay();
+	void StartCanvasRecording(ExtraCanvasSlot *slot);
+	void StopCanvasRecording(ExtraCanvasSlot *slot);
+	void StartCanvasReplayBuffer(ExtraCanvasSlot *slot);
+	void StopCanvasReplayBuffer(ExtraCanvasSlot *slot);
+	void SaveCanvasReplay(ExtraCanvasSlot *slot);
 	void OpenBackupSettings();
 	void OpenRestoreSettings();
 

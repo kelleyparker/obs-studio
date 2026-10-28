@@ -8,6 +8,8 @@ target_sources(
     utility/BasicOutputHandler.hpp
     utility/CanvasOutput.cpp
     utility/CanvasOutput.hpp
+    utility/CanvasSlot.cpp
+    utility/CanvasSlot.hpp
     utility/CrashHandler.cpp
     utility/CrashHandler.hpp
     utility/ExtraCanvas.cpp

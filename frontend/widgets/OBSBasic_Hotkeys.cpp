@@ -206,7 +206,8 @@ void OBSBasic::CreateHotkeys()
 		[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
 			if (pressed) {
 				QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
-							  &YouTubeWorkflowManager::MarkBrollMoment, Qt::QueuedConnection);
+							  &YouTubeWorkflowManager::MarkBrollMoment,
+							  Qt::QueuedConnection);
 			}
 		},
 		this);
@@ -246,36 +247,61 @@ void OBSBasic::CreateHotkeys()
 				  obs_data_get_json(newData));
 	}
 
-	verticalRecordingHotkeys = obs_hotkey_pair_register_frontend(
-		"OBSBasic.StartVerticalRecording", Str("Vertical.Hotkey.StartRecording"),
-		"OBSBasic.StopVerticalRecording", Str("Vertical.Hotkey.StopRecording"),
-		MAKE_CALLBACK(basic.verticalOutput && !basic.verticalOutput->RecordingActive(),
-			      basic.StartVerticalRecording, "Starting vertical recording"),
-		MAKE_CALLBACK(basic.verticalOutput && basic.verticalOutput->RecordingActive(),
-			      basic.StopVerticalRecording, "Stopping vertical recording"),
-		this, this);
-	LoadHotkeyPair(verticalRecordingHotkeys, "OBSBasic.StartVerticalRecording", "OBSBasic.StopVerticalRecording");
+	/* Extra canvases. The callbacks get the slot, which lives as long as the
+	 * main window. */
+#define MAKE_CANVAS_CALLBACK(pred, method, log_action)                                             \
+	[](void *data, obs_hotkey_pair_id, obs_hotkey_t *, bool pressed) {                         \
+		ExtraCanvasSlot *slot = static_cast<ExtraCanvasSlot *>(data);                      \
+		if (slot->output && (pred) && pressed) {                                           \
+			blog(LOG_INFO, log_action " %s due to hotkey", slot->id.CanvasName().c_str()); \
+			OBSBasic::Get()->method(slot);                                             \
+			return true;                                                               \
+		}                                                                                  \
+		return false;                                                                      \
+	}
 
-	verticalReplayHotkeys = obs_hotkey_pair_register_frontend(
-		"OBSBasic.StartVerticalReplayBuffer", Str("Vertical.Hotkey.StartReplay"),
-		"OBSBasic.StopVerticalReplayBuffer", Str("Vertical.Hotkey.StopReplay"),
-		MAKE_CALLBACK(basic.verticalOutput && !basic.verticalOutput->ReplayBufferActive(),
-			      basic.StartVerticalReplayBuffer, "Starting vertical replay buffer"),
-		MAKE_CALLBACK(basic.verticalOutput && basic.verticalOutput->ReplayBufferActive(),
-			      basic.StopVerticalReplayBuffer, "Stopping vertical replay buffer"),
-		this, this);
-	LoadHotkeyPair(verticalReplayHotkeys, "OBSBasic.StartVerticalReplayBuffer",
-		       "OBSBasic.StopVerticalReplayBuffer");
-
-	auto verticalSaveReplayCallback = [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
-		OBSBasic &basic = *static_cast<OBSBasic *>(data);
+	auto canvasSaveReplayCallback = [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
 		if (pressed) {
-			basic.SaveVerticalReplay();
+			OBSBasic::Get()->SaveCanvasReplay(static_cast<ExtraCanvasSlot *>(data));
 		}
 	};
-	verticalSaveReplayHotkey = obs_hotkey_register_frontend(
-		"OBSBasic.SaveVerticalReplay", Str("Vertical.Hotkey.SaveReplay"), verticalSaveReplayCallback, this);
-	LoadHotkey(verticalSaveReplayHotkey, "OBSBasic.SaveVerticalReplay");
+
+	for (const auto &entry : canvasSlots) {
+		ExtraCanvasSlot *slot = entry.get();
+		const CanvasSlotId &id = slot->id;
+		const QString name = id.DisplayName();
+
+		const std::string startRecording = id.HotkeyName("Start", "Recording");
+		const std::string stopRecording = id.HotkeyName("Stop", "Recording");
+		slot->recordHotkeys = obs_hotkey_pair_register_frontend(
+			startRecording.c_str(), QT_TO_UTF8(QTStr("Canvas.Hotkey.StartRecording").arg(name)),
+			stopRecording.c_str(), QT_TO_UTF8(QTStr("Canvas.Hotkey.StopRecording").arg(name)),
+			MAKE_CANVAS_CALLBACK(!slot->output->RecordingActive(), StartCanvasRecording,
+					     "Starting recording of"),
+			MAKE_CANVAS_CALLBACK(slot->output->RecordingActive(), StopCanvasRecording,
+					     "Stopping recording of"),
+			slot, slot);
+		LoadHotkeyPair(slot->recordHotkeys, startRecording.c_str(), stopRecording.c_str());
+
+		const std::string startReplay = id.HotkeyName("Start", "ReplayBuffer");
+		const std::string stopReplay = id.HotkeyName("Stop", "ReplayBuffer");
+		slot->replayHotkeys = obs_hotkey_pair_register_frontend(
+			startReplay.c_str(), QT_TO_UTF8(QTStr("Canvas.Hotkey.StartReplay").arg(name)),
+			stopReplay.c_str(), QT_TO_UTF8(QTStr("Canvas.Hotkey.StopReplay").arg(name)),
+			MAKE_CANVAS_CALLBACK(!slot->output->ReplayBufferActive(), StartCanvasReplayBuffer,
+					     "Starting replay buffer of"),
+			MAKE_CANVAS_CALLBACK(slot->output->ReplayBufferActive(), StopCanvasReplayBuffer,
+					     "Stopping replay buffer of"),
+			slot, slot);
+		LoadHotkeyPair(slot->replayHotkeys, startReplay.c_str(), stopReplay.c_str());
+
+		const std::string saveReplay = id.HotkeyName("Save", "Replay");
+		slot->saveReplayHotkey = obs_hotkey_register_frontend(
+			saveReplay.c_str(), QT_TO_UTF8(QTStr("Canvas.Hotkey.SaveReplay").arg(name)),
+			canvasSaveReplayCallback, slot);
+		LoadHotkey(slot->saveReplayHotkey, saveReplay.c_str());
+	}
+#undef MAKE_CANVAS_CALLBACK
 
 	if (vcamEnabled) {
 		vcamHotkeys = obs_hotkey_pair_register_frontend(
@@ -367,9 +393,11 @@ void OBSBasic::ClearHotkeys()
 	obs_hotkey_unregister(youtubeBrollMarkHotkey);
 	obs_hotkey_pair_unregister(replayBufHotkeys);
 	obs_hotkey_unregister(saveReplayBufferHotkey);
-	obs_hotkey_pair_unregister(verticalRecordingHotkeys);
-	obs_hotkey_pair_unregister(verticalReplayHotkeys);
-	obs_hotkey_unregister(verticalSaveReplayHotkey);
+	for (const auto &slot : canvasSlots) {
+		obs_hotkey_pair_unregister(slot->recordHotkeys);
+		obs_hotkey_pair_unregister(slot->replayHotkeys);
+		obs_hotkey_unregister(slot->saveReplayHotkey);
+	}
 	obs_hotkey_pair_unregister(vcamHotkeys);
 	obs_hotkey_pair_unregister(togglePreviewHotkeys);
 	obs_hotkey_pair_unregister(contextBarHotkeys);

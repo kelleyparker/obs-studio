@@ -35,9 +35,9 @@ static QPushButton *ToolButton(const QString &text, const QString &tooltip, QWid
 /* ------------------------------------------------------------------------- */
 /* Preview */
 
-CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *vertical_, CanvasOutput *output_, QWidget *parent)
+CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *canvas_, CanvasOutput *output_, QWidget *parent)
 	: QWidget(parent),
-	  vertical(vertical_),
+	  canvas(canvas_),
 	  output(output_)
 {
 	display = new OBSQTDisplay(this);
@@ -50,10 +50,11 @@ CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *vertical_, CanvasOutput *outpu
 	connect(display, &OBSQTDisplay::DisplayCreated, this, addDrawCallback);
 
 	QWidget *disabledPage = new QWidget(this);
-	status = new QLabel(QTStr("Vertical.Dock.Disabled"), disabledPage);
+	const QString name = canvas_->Slot().DisplayName();
+	status = new QLabel(QTStr("Canvas.Dock.Disabled").arg(name), disabledPage);
 	status->setWordWrap(true);
 	status->setAlignment(Qt::AlignCenter);
-	QPushButton *enableButton = new QPushButton(QTStr("Vertical.Dock.OpenSettings"), disabledPage);
+	QPushButton *enableButton = new QPushButton(QTStr("Canvas.Dock.OpenSettings").arg(name), disabledPage);
 	connect(enableButton, &QPushButton::clicked, this, &CanvasPreviewDock::OpenSettings);
 	QVBoxLayout *disabledLayout = new QVBoxLayout(disabledPage);
 	disabledLayout->addStretch();
@@ -67,7 +68,7 @@ CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *vertical_, CanvasOutput *outpu
 
 	recordButton = new QPushButton(this);
 	replayButton = new QPushButton(this);
-	saveReplayButton = new QPushButton(QTStr("Vertical.Dock.SaveReplay"), this);
+	saveReplayButton = new QPushButton(QTStr("Canvas.Dock.SaveReplay"), this);
 	QPushButton *settingsButton = new QPushButton(QTStr("Settings"), this);
 
 	connect(recordButton, &QPushButton::clicked, this, &CanvasPreviewDock::ToggleRecording);
@@ -90,27 +91,27 @@ CanvasPreviewDock::CanvasPreviewDock(ExtraCanvas *vertical_, CanvasOutput *outpu
 	layout->addWidget(stack, 1);
 	layout->addLayout(buttons);
 
-	connect(vertical_, &ExtraCanvas::VideoChanged, this, &CanvasPreviewDock::UpdateCanvas);
-	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasPreviewDock::UpdateCanvas);
+	connect(canvas_, &ExtraCanvas::VideoChanged, this, &CanvasPreviewDock::UpdateCanvas);
+	connect(canvas_, &ExtraCanvas::EnabledChanged, this, &CanvasPreviewDock::UpdateCanvas);
 	connect(output_, &CanvasOutput::RecordingStarted, this, &CanvasPreviewDock::UpdateButtons);
-	connect(output_, &CanvasOutput::RecordingStopped, this, [this](int code, const QString &error) {
+	connect(output_, &CanvasOutput::RecordingStopped, this, [this, name](int code, const QString &error) {
 		UpdateButtons();
 		if (code != OBS_OUTPUT_SUCCESS) {
-			OBSMessageBox::critical(this, QTStr("Vertical.Error.RecordingStopped"),
+			OBSMessageBox::critical(this, QTStr("Canvas.Error.RecordingStopped").arg(name),
 						error.isEmpty() ? QTStr("Output.StartFailedGeneric") : error);
 		}
 	});
 	connect(output_, &CanvasOutput::ReplayBufferStarted, this, &CanvasPreviewDock::UpdateButtons);
-	connect(output_, &CanvasOutput::ReplayBufferStopped, this, [this](int code, const QString &error) {
+	connect(output_, &CanvasOutput::ReplayBufferStopped, this, [this, name](int code, const QString &error) {
 		UpdateButtons();
 		if (code != OBS_OUTPUT_SUCCESS) {
-			OBSMessageBox::critical(this, QTStr("Vertical.Error.ReplayStopped"),
+			OBSMessageBox::critical(this, QTStr("Canvas.Error.ReplayStopped").arg(name),
 						error.isEmpty() ? QTStr("Output.StartFailedGeneric") : error);
 		}
 	});
-	connect(output_, &CanvasOutput::ReplaySaved, this, [](const QString &path) {
+	connect(output_, &CanvasOutput::ReplaySaved, this, [name](const QString &path) {
 		OBSBasic *main = OBSBasic::Get();
-		main->ShowStatusBarMessage(QTStr("Vertical.ReplaySaved").arg(path));
+		main->ShowStatusBarMessage(QTStr("Canvas.ReplaySaved").arg(name, path));
 	});
 
 	connect(&timer, &QTimer::timeout, this, &CanvasPreviewDock::UpdateButtons);
@@ -134,11 +135,11 @@ void CanvasPreviewDock::DestroyDisplay()
 
 void CanvasPreviewDock::UpdateCanvas()
 {
-	bool hasVideo = vertical && vertical->Enabled() && vertical->HasVideo();
+	bool hasVideo = canvas && canvas->Enabled() && canvas->HasVideo();
 
 	{
 		std::lock_guard<std::mutex> lock(canvasMutex);
-		renderCanvas = hasVideo ? OBSGetWeakRef(vertical->GetCanvas()) : OBSWeakCanvas();
+		renderCanvas = hasVideo ? OBSGetWeakRef(canvas->GetCanvas()) : OBSWeakCanvas();
 	}
 
 	stack->setCurrentIndex(hasVideo ? 0 : 1);
@@ -147,7 +148,7 @@ void CanvasPreviewDock::UpdateCanvas()
 
 void CanvasPreviewDock::UpdateButtons()
 {
-	bool hasVideo = vertical && vertical->Enabled() && vertical->HasVideo();
+	bool hasVideo = canvas && canvas->Enabled() && canvas->HasVideo();
 	bool recording = output && output->RecordingActive();
 	bool replay = output && output->ReplayBufferActive();
 
@@ -155,11 +156,11 @@ void CanvasPreviewDock::UpdateButtons()
 		uint64_t seconds = output->RecordingSeconds();
 		QString time = QString::asprintf("%02d:%02d:%02d", int(seconds / 3600), int((seconds / 60) % 60),
 						 int(seconds % 60));
-		recordButton->setText(QTStr("Vertical.Dock.StopRecording").arg(time));
+		recordButton->setText(QTStr("Canvas.Dock.StopRecording").arg(time));
 	} else {
-		recordButton->setText(QTStr("Vertical.Dock.StartRecording"));
+		recordButton->setText(QTStr("Canvas.Dock.StartRecording"));
 	}
-	replayButton->setText(replay ? QTStr("Vertical.Dock.StopReplay") : QTStr("Vertical.Dock.StartReplay"));
+	replayButton->setText(replay ? QTStr("Canvas.Dock.StopReplay") : QTStr("Canvas.Dock.StartReplay"));
 
 	recordButton->setEnabled(hasVideo || recording);
 	replayButton->setEnabled(hasVideo || replay);
@@ -236,26 +237,26 @@ void CanvasPreviewDock::Render(void *data, uint32_t cx, uint32_t cy)
 /* ------------------------------------------------------------------------- */
 /* Scenes */
 
-CanvasScenesDock::CanvasScenesDock(ExtraCanvas *vertical_, QWidget *parent) : QWidget(parent), vertical(vertical_)
+CanvasScenesDock::CanvasScenesDock(ExtraCanvas *canvas_, QWidget *parent) : QWidget(parent), canvas(canvas_)
 {
 	list = new QListWidget(this);
 	list->setContextMenuPolicy(Qt::CustomContextMenu);
 
-	QPushButton *addButton = ToolButton("+", QTStr("Vertical.Scenes.Add"), this);
-	removeButton = ToolButton(QString::fromUtf8("−"), QTStr("Vertical.Scenes.Remove"), this);
-	upButton = ToolButton(QString::fromUtf8("▲"), QTStr("Vertical.MoveUp"), this);
-	downButton = ToolButton(QString::fromUtf8("▼"), QTStr("Vertical.MoveDown"), this);
+	QPushButton *addButton = ToolButton("+", QTStr("Canvas.Scenes.Add"), this);
+	removeButton = ToolButton(QString::fromUtf8("−"), QTStr("Canvas.Scenes.Remove"), this);
+	upButton = ToolButton(QString::fromUtf8("▲"), QTStr("Canvas.MoveUp"), this);
+	downButton = ToolButton(QString::fromUtf8("▼"), QTStr("Canvas.MoveDown"), this);
 
 	connect(addButton, &QPushButton::clicked, this, &CanvasScenesDock::AddScene);
 	connect(removeButton, &QPushButton::clicked, this, &CanvasScenesDock::RemoveScene);
 	connect(upButton, &QPushButton::clicked, this, [this]() {
 		if (OBSSource scene = SelectedScene()) {
-			vertical->MoveScene(scene, -1);
+			canvas->MoveScene(scene, -1);
 		}
 	});
 	connect(downButton, &QPushButton::clicked, this, [this]() {
 		if (OBSSource scene = SelectedScene()) {
-			vertical->MoveScene(scene, 1);
+			canvas->MoveScene(scene, 1);
 		}
 	});
 	connect(list, &QListWidget::currentRowChanged, this, [this]() {
@@ -263,7 +264,7 @@ CanvasScenesDock::CanvasScenesDock(ExtraCanvas *vertical_, QWidget *parent) : QW
 			return;
 		}
 		if (OBSSource scene = SelectedScene()) {
-			vertical->SetCurrentScene(scene);
+			canvas->SetCurrentScene(scene);
 		}
 		UpdateSelection();
 	});
@@ -282,9 +283,9 @@ CanvasScenesDock::CanvasScenesDock(ExtraCanvas *vertical_, QWidget *parent) : QW
 	layout->addWidget(list, 1);
 	layout->addLayout(toolbar);
 
-	connect(vertical_, &ExtraCanvas::ScenesChanged, this, &CanvasScenesDock::Rebuild);
-	connect(vertical_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasScenesDock::Rebuild);
-	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasScenesDock::Rebuild);
+	connect(canvas_, &ExtraCanvas::ScenesChanged, this, &CanvasScenesDock::Rebuild);
+	connect(canvas_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasScenesDock::Rebuild);
+	connect(canvas_, &ExtraCanvas::EnabledChanged, this, &CanvasScenesDock::Rebuild);
 
 	Rebuild();
 }
@@ -294,11 +295,11 @@ void CanvasScenesDock::Rebuild()
 	updating = true;
 	list->clear();
 
-	OBSSource current = vertical ? vertical->CurrentScene() : OBSSource();
+	OBSSource current = canvas ? canvas->CurrentScene() : OBSSource();
 	int currentRow = -1;
 
-	if (vertical) {
-		for (const OBSSource &scene : vertical->Scenes()) {
+	if (canvas) {
+		for (const OBSSource &scene : canvas->Scenes()) {
 			QListWidgetItem *item =
 				new QListWidgetItem(QString::fromUtf8(obs_source_get_name(scene)), list);
 			item->setData(Qt::UserRole, QString::fromUtf8(obs_source_get_uuid(scene)));
@@ -311,7 +312,7 @@ void CanvasScenesDock::Rebuild()
 	list->setCurrentRow(currentRow);
 	updating = false;
 
-	setEnabled(vertical && vertical->Enabled());
+	setEnabled(canvas && canvas->Enabled());
 	UpdateSelection();
 }
 
@@ -326,12 +327,12 @@ void CanvasScenesDock::UpdateSelection()
 OBSSource CanvasScenesDock::SelectedScene() const
 {
 	QListWidgetItem *item = list->currentItem();
-	if (!item || !vertical) {
+	if (!item || !canvas) {
 		return nullptr;
 	}
 
 	QString uuid = item->data(Qt::UserRole).toString();
-	for (const OBSSource &scene : vertical->Scenes()) {
+	for (const OBSSource &scene : canvas->Scenes()) {
 		if (uuid == QString::fromUtf8(obs_source_get_uuid(scene))) {
 			return scene;
 		}
@@ -354,7 +355,7 @@ bool CanvasScenesDock::AskForSceneName(const QString &title, const QString &init
 			OBSMessageBox::warning(this, QTStr("NoNameEntered.Title"), QTStr("NoNameEntered.Text"));
 			continue;
 		}
-		if (name != initial && vertical->SceneNameInUse(name)) {
+		if (name != initial && canvas->SceneNameInUse(name)) {
 			OBSMessageBox::warning(this, QTStr("NameExists.Title"), QTStr("NameExists.Text"));
 			continue;
 		}
@@ -364,13 +365,14 @@ bool CanvasScenesDock::AskForSceneName(const QString &title, const QString &init
 
 void CanvasScenesDock::AddScene()
 {
-	if (!vertical) {
+	if (!canvas) {
 		return;
 	}
 
-	QString name = QTStr("Vertical.DefaultSceneName");
-	for (int i = 2; vertical->SceneNameInUse(name); i++) {
-		name = QTStr("Vertical.DefaultSceneName") + " " + QString::number(i);
+	const QString base = QTStr("Canvas.DefaultSceneName").arg(canvas->Slot().DisplayName());
+	QString name = base;
+	for (int i = 2; canvas->SceneNameInUse(name); i++) {
+		name = base + " " + QString::number(i);
 	}
 
 	QString chosen;
@@ -378,8 +380,8 @@ void CanvasScenesDock::AddScene()
 		return;
 	}
 
-	OBSSource scene = vertical->AddScene(chosen);
-	vertical->SetCurrentScene(scene);
+	OBSSource scene = canvas->AddScene(chosen);
+	canvas->SetCurrentScene(scene);
 }
 
 void CanvasScenesDock::RemoveScene()
@@ -394,7 +396,7 @@ void CanvasScenesDock::RemoveScene()
 		return;
 	}
 
-	vertical->RemoveScene(scene);
+	canvas->RemoveScene(scene);
 }
 
 void CanvasScenesDock::RenameScene()
@@ -422,7 +424,7 @@ void CanvasScenesDock::DuplicateScene()
 	}
 
 	QString name = QString::fromUtf8(obs_source_get_name(scene)) + " 2";
-	for (int i = 3; vertical->SceneNameInUse(name); i++) {
+	for (int i = 3; canvas->SceneNameInUse(name); i++) {
 		name = QString::fromUtf8(obs_source_get_name(scene)) + " " + QString::number(i);
 	}
 
@@ -431,16 +433,16 @@ void CanvasScenesDock::DuplicateScene()
 		return;
 	}
 
-	OBSSource copy = vertical->DuplicateScene(scene, chosen);
+	OBSSource copy = canvas->DuplicateScene(scene, chosen);
 	if (copy) {
-		vertical->SetCurrentScene(copy);
+		canvas->SetCurrentScene(copy);
 	}
 }
 
 void CanvasScenesDock::ShowContextMenu(const QPoint &pos)
 {
 	QMenu menu(this);
-	menu.addAction(QTStr("Vertical.Scenes.Add"), this, &CanvasScenesDock::AddScene);
+	menu.addAction(QTStr("Canvas.Scenes.Add"), this, &CanvasScenesDock::AddScene);
 
 	if (list->itemAt(pos)) {
 		menu.addAction(QTStr("Duplicate"), this, &CanvasScenesDock::DuplicateScene);
@@ -461,26 +463,26 @@ void CanvasScenesDock::ShowContextMenu(const QPoint &pos)
 /* ------------------------------------------------------------------------- */
 /* Sources */
 
-CanvasSourcesDock::CanvasSourcesDock(ExtraCanvas *vertical_, QWidget *parent) : QWidget(parent), vertical(vertical_)
+CanvasSourcesDock::CanvasSourcesDock(ExtraCanvas *canvas_, QWidget *parent) : QWidget(parent), canvas(canvas_)
 {
 	list = new QListWidget(this);
 	list->setContextMenuPolicy(Qt::CustomContextMenu);
 
-	emptyLabel = new QLabel(QTStr("Vertical.Sources.Empty"), this);
+	emptyLabel = new QLabel(QTStr("Canvas.Sources.Empty"), this);
 	emptyLabel->setWordWrap(true);
 	emptyLabel->setAlignment(Qt::AlignCenter);
 
-	addButton = ToolButton("+", QTStr("Vertical.Sources.Add"), this);
+	addButton = ToolButton("+", QTStr("Canvas.Sources.Add"), this);
 	addMenu = new QMenu(this);
 	connect(addMenu, &QMenu::aboutToShow, this, &CanvasSourcesDock::BuildAddMenu);
 	addButton->setMenu(addMenu);
 
-	removeButton = ToolButton(QString::fromUtf8("−"), QTStr("Vertical.Sources.Remove"), this);
-	upButton = ToolButton(QString::fromUtf8("▲"), QTStr("Vertical.MoveUp"), this);
-	downButton = ToolButton(QString::fromUtf8("▼"), QTStr("Vertical.MoveDown"), this);
+	removeButton = ToolButton(QString::fromUtf8("−"), QTStr("Canvas.Sources.Remove"), this);
+	upButton = ToolButton(QString::fromUtf8("▲"), QTStr("Canvas.MoveUp"), this);
+	downButton = ToolButton(QString::fromUtf8("▼"), QTStr("Canvas.MoveDown"), this);
 	propertiesButton = new QPushButton(QTStr("Properties"), this);
 	filtersButton = new QPushButton(QTStr("Filters"), this);
-	transformButton = new QPushButton(QTStr("Vertical.Sources.Transform"), this);
+	transformButton = new QPushButton(QTStr("Canvas.Sources.Transform"), this);
 	transformButton->setMenu(CreateTransformMenu(transformButton));
 
 	connect(removeButton, &QPushButton::clicked, this, &CanvasSourcesDock::RemoveItem);
@@ -521,9 +523,9 @@ CanvasSourcesDock::CanvasSourcesDock(ExtraCanvas *vertical_, QWidget *parent) : 
 	layout->addWidget(emptyLabel);
 	layout->addLayout(toolbar);
 
-	connect(vertical_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasSourcesDock::WatchCurrentScene);
-	connect(vertical_, &ExtraCanvas::ScenesChanged, this, &CanvasSourcesDock::WatchCurrentScene);
-	connect(vertical_, &ExtraCanvas::EnabledChanged, this, &CanvasSourcesDock::WatchCurrentScene);
+	connect(canvas_, &ExtraCanvas::CurrentSceneChanged, this, &CanvasSourcesDock::WatchCurrentScene);
+	connect(canvas_, &ExtraCanvas::ScenesChanged, this, &CanvasSourcesDock::WatchCurrentScene);
+	connect(canvas_, &ExtraCanvas::EnabledChanged, this, &CanvasSourcesDock::WatchCurrentScene);
 
 	WatchCurrentScene();
 }
@@ -536,7 +538,7 @@ obs_scene_t *CanvasSourcesDock::CurrentScene() const
 
 void CanvasSourcesDock::WatchCurrentScene()
 {
-	OBSSource scene = vertical ? vertical->CurrentScene() : OBSSource();
+	OBSSource scene = canvas ? canvas->CurrentScene() : OBSSource();
 
 	if (scene != OBSGetStrongRef(watchedScene)) {
 		sceneSignals.clear();
@@ -587,7 +589,7 @@ void CanvasSourcesDock::Rebuild()
 			item->setData(Qt::UserRole, qlonglong(obs_sceneitem_get_id(*it)));
 			item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
 			item->setCheckState(obs_sceneitem_visible(*it) ? Qt::Checked : Qt::Unchecked);
-			item->setToolTip(QTStr("Vertical.Sources.VisibleTooltip"));
+			item->setToolTip(QTStr("Canvas.Sources.VisibleTooltip"));
 			list->addItem(item);
 
 			if (selectedId && obs_sceneitem_get_id(*it) == selectedId) {
@@ -598,7 +600,7 @@ void CanvasSourcesDock::Rebuild()
 
 	updating = false;
 
-	bool enabled = vertical && vertical->Enabled() && scene;
+	bool enabled = canvas && canvas->Enabled() && scene;
 	setEnabled(enabled);
 	list->setVisible(list->count() > 0);
 	emptyLabel->setVisible(list->count() == 0);
@@ -634,7 +636,7 @@ void CanvasSourcesDock::BuildAddMenu()
 	addMenu->clear();
 
 	/* New source of any type */
-	QMenu *newMenu = addMenu->addMenu(QTStr("Vertical.Sources.AddNew"));
+	QMenu *newMenu = addMenu->addMenu(QTStr("Canvas.Sources.AddNew"));
 	vector<pair<QString, string>> types;
 	const char *id;
 	const char *unversionedId;
@@ -659,7 +661,7 @@ void CanvasSourcesDock::BuildAddMenu()
 	}
 
 	/* Existing sources from the main canvas */
-	QMenu *existingMenu = addMenu->addMenu(QTStr("Vertical.Sources.AddExisting"));
+	QMenu *existingMenu = addMenu->addMenu(QTStr("Canvas.Sources.AddExisting"));
 	vector<OBSSource> sources;
 	auto sourceCb = [](void *param, obs_source_t *source) {
 		if (obs_source_get_type(source) == OBS_SOURCE_TYPE_INPUT) {
@@ -685,7 +687,7 @@ void CanvasSourcesDock::BuildAddMenu()
 	existingMenu->setEnabled(!sources.empty());
 
 	/* Scenes of the main canvas, nested as a source */
-	QMenu *scenesMenu = addMenu->addMenu(QTStr("Vertical.Sources.AddMainScene"));
+	QMenu *scenesMenu = addMenu->addMenu(QTStr("Canvas.Sources.AddMainScene"));
 	vector<OBSSource> scenes;
 	auto sceneCb = [](void *param, obs_source_t *source) {
 		static_cast<vector<OBSSource> *>(param)->emplace_back(source);
@@ -740,8 +742,8 @@ void CanvasSourcesDock::AddNew(const char *id)
 
 	string name = suggestion.toStdString();
 	for (;;) {
-		if (!NameDialog::AskForName(this, QTStr("Vertical.Sources.AddNew"),
-					    QTStr("Vertical.Sources.NamePrompt"), name, QString::fromStdString(name))) {
+		if (!NameDialog::AskForName(this, QTStr("Canvas.Sources.AddNew"), QTStr("Canvas.Sources.NamePrompt"),
+					    name, QString::fromStdString(name))) {
 			return;
 		}
 		QString trimmed = QString::fromStdString(name).trimmed();
@@ -798,13 +800,13 @@ void CanvasSourcesDock::MoveItem(obs_order_movement movement)
 
 void CanvasSourcesDock::ApplyTransform(obs_sceneitem_t *item, Transform transform)
 {
-	if (!vertical) {
+	if (!canvas) {
 		return;
 	}
 
 	obs_video_info ovi;
-	if (!vertical->GetVideoInfo(ovi)) {
-		const CanvasVideoSettings &video = vertical->VideoSettings();
+	if (!canvas->GetVideoInfo(ovi)) {
+		const CanvasVideoSettings &video = canvas->VideoSettings();
 		ovi.base_width = video.baseWidth;
 		ovi.base_height = video.baseHeight;
 	}
@@ -866,12 +868,12 @@ QMenu *CanvasSourcesDock::CreateTransformMenu(QWidget *parent)
 			}
 		});
 	};
-	add("Vertical.Transform.Fit", Transform::Fit);
-	add("Vertical.Transform.Fill", Transform::Fill);
-	add("Vertical.Transform.Stretch", Transform::Stretch);
-	add("Vertical.Transform.Center", Transform::Center);
+	add("Canvas.Transform.Fit", Transform::Fit);
+	add("Canvas.Transform.Fill", Transform::Fill);
+	add("Canvas.Transform.Stretch", Transform::Stretch);
+	add("Canvas.Transform.Center", Transform::Center);
 	menu->addSeparator();
-	add("Vertical.Transform.Reset", Transform::Reset);
+	add("Canvas.Transform.Reset", Transform::Reset);
 	return menu;
 }
 
@@ -912,7 +914,7 @@ void CanvasSourcesDock::ShowContextMenu(const QPoint &pos)
 			}
 		});
 		QMenu *transformMenu = CreateTransformMenu(&menu);
-		transformMenu->setTitle(QTStr("Vertical.Sources.Transform"));
+		transformMenu->setTitle(QTStr("Canvas.Sources.Transform"));
 		menu.addMenu(transformMenu);
 		menu.addSeparator();
 		menu.addAction(QTStr("Remove"), this, &CanvasSourcesDock::RemoveItem);

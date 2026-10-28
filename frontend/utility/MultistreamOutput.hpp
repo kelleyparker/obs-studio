@@ -95,9 +95,12 @@ struct MultistreamDestination {
 	std::string server;
 	std::string key;
 	bool enabled = true;
-	/* Streams the vertical canvas instead of the main canvas. Vertical
-	 * destinations always use their own encoder. */
-	bool vertical = false;
+	/* Key of the extra canvas the destination streams (CanvasSlotId::Key()),
+	 * or empty for the main canvas. Destinations of extra canvases always
+	 * use their own encoder. */
+	std::string canvas;
+
+	bool StreamsMainCanvas() const { return canvas.empty(); }
 	/* Channel on the platform (Twitch/Kick username, YouTube @handle or
 	 * channel ID), used for chat, dashboard links and stream info */
 	std::string channel;
@@ -188,8 +191,8 @@ public:
 	bool Start(const std::string &id);
 	void Stop(const std::string &id, bool force = false);
 	void StopAll(bool force = false);
-	/* Stops the destinations that stream the vertical canvas */
-	void StopVertical(bool force = false);
+	/* Stops the destinations that stream the given extra canvas */
+	void StopCanvas(const std::string &canvasKey, bool force = false);
 
 	bool Active() const;
 	bool IsActive(const std::string &id) const;

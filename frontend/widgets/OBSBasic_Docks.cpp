@@ -101,11 +101,14 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 		youtubePipelineDock->setVisible(true);
 	}
 
-	bool verticalEnabled = vertical && vertical->Enabled();
-	for (QDockWidget *dock : {verticalPreviewDock.data(), verticalScenesDock.data(), verticalSourcesDock.data()}) {
-		dock->setFloating(false);
-		addDockWidget(Qt::RightDockWidgetArea, dock);
-		dock->setVisible(verticalEnabled);
+	for (const auto &slot : canvasSlots) {
+		bool enabled = slot->canvas && slot->canvas->Enabled();
+		for (QDockWidget *dock :
+		     {slot->previewDock.data(), slot->scenesDock.data(), slot->sourcesDock.data()}) {
+			dock->setFloating(false);
+			addDockWidget(Qt::RightDockWidgetArea, dock);
+			dock->setVisible(enabled);
+		}
 	}
 
 #ifdef BROWSER_AVAILABLE
@@ -145,9 +148,11 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	if (youtubePipelineDock) {
 		youtubePipelineDock->setFeatures(features);
 	}
-	verticalPreviewDock->setFeatures(features);
-	verticalScenesDock->setFeatures(features);
-	verticalSourcesDock->setFeatures(features);
+	for (const auto &slot : canvasSlots) {
+		slot->previewDock->setFeatures(features);
+		slot->scenesDock->setFeatures(features);
+		slot->sourcesDock->setFeatures(features);
+	}
 
 	for (int i = extraDocks.size() - 1; i >= 0; i--) {
 		extraDocks[i]->setFeatures(features);
@@ -251,10 +256,10 @@ bool OBSBasic::IsDockObjectNameUsed(const QString &name)
 	     << "controlsDock"
 	     << "statsDock"
 	     << "multistreamDock"
-	     << "youtubePipelineDock"
-	     << "verticalPreviewDock"
-	     << "verticalScenesDock"
-	     << "verticalSourcesDock";
+	     << "youtubePipelineDock";
+	for (const CanvasSlotId &id : CanvasSlotId::All()) {
+		list << id.DockName("Preview") << id.DockName("Scenes") << id.DockName("Sources");
+	}
 	list << extraDockNames;
 	list << extraCustomDockNames;
 

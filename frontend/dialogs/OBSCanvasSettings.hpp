@@ -8,19 +8,20 @@ class QLineEdit;
 class QSpinBox;
 class ExtraCanvas;
 
-/* Settings > Vertical Canvas: video, recording and replay buffer settings of
- * the vertical canvas */
+/* Tools > Canvases > <canvas>: video, recording and replay buffer settings of
+ * one extra canvas */
 class OBSCanvasSettings : public QDialog {
 	Q_OBJECT
 
 public:
-	OBSCanvasSettings(ExtraCanvas *vertical, bool outputsActive, QWidget *parent);
+	OBSCanvasSettings(ExtraCanvas *canvas, bool outputsActive, QWidget *parent);
 
 private:
-	ExtraCanvas *vertical;
+	ExtraCanvas *canvas;
 	bool outputsActive;
 
 	QCheckBox *enabled;
+	QCheckBox *recordWithMain;
 	QComboBox *baseResolution;
 	QComboBox *outputResolution;
 	QComboBox *scaleType;

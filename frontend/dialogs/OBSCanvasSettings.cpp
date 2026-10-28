@@ -41,21 +41,25 @@ static bool ParseResolution(const QString &text, uint32_t &cx, uint32_t &cy)
 	return cx >= 32 && cy >= 32 && cx <= 16384 && cy <= 16384;
 }
 
-OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_, QWidget *parent)
+OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *canvas_, bool outputsActive_, QWidget *parent)
 	: QDialog(parent),
-	  vertical(vertical_),
+	  canvas(canvas_),
 	  outputsActive(outputsActive_)
 {
-	setWindowTitle(QTStr("Vertical.Settings.Title"));
+	const CanvasSlotId &slot = canvas->Slot();
+	const QString name = slot.DisplayName();
+
+	setWindowTitle(QTStr("Canvas.Settings.Title").arg(name));
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-	const CanvasVideoSettings &video = vertical->VideoSettings();
-	CanvasOutputSettings output = CanvasOutputSettings::Load();
+	const CanvasVideoSettings &video = canvas->VideoSettings();
+	CanvasOutputSettings output = CanvasOutputSettings::Load(slot);
 
-	enabled = new QCheckBox(QTStr("Vertical.Settings.Enable"), this);
-	enabled->setChecked(vertical->Enabled());
+	enabled = new QCheckBox(QTStr("Canvas.Settings.Enable").arg(name), this);
+	enabled->setChecked(canvas->Enabled());
 
-	QLabel *help = new QLabel(QTStr("Vertical.Settings.Help"), this);
+	QLabel *help = new QLabel(
+		QTStr(slot.IsVertical() ? "Canvas.Settings.Help.Vertical" : "Canvas.Settings.Help.Horizontal"), this);
 	help->setWordWrap(true);
 
 	/* Video */
@@ -64,8 +68,17 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_
 
 	baseResolution = new QComboBox(videoBox);
 	baseResolution->setEditable(true);
-	for (const char *preset : {"1080x1920", "720x1280", "1440x2560", "2160x3840", "1080x1350", "1080x1080"}) {
-		baseResolution->addItem(preset);
+	static const char *verticalPresets[] = {"1080x1920", "720x1280",  "1440x2560",
+						"2160x3840", "1080x1350", "1080x1080"};
+	static const char *horizontalPresets[] = {"1920x1080", "1280x720", "2560x1440", "3840x2160", "1080x1080"};
+	if (slot.IsVertical()) {
+		for (const char *preset : verticalPresets) {
+			baseResolution->addItem(preset);
+		}
+	} else {
+		for (const char *preset : horizontalPresets) {
+			baseResolution->addItem(preset);
+		}
 	}
 	baseResolution->setCurrentText(ResolutionText(video.baseWidth, video.baseHeight));
 	videoForm->addRow(QTStr("Basic.Settings.Video.BaseResolution"), baseResolution);
@@ -85,13 +98,17 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_
 	scaleType->setCurrentIndex(std::max(0, scaleType->findData(int(video.scaleType))));
 	videoForm->addRow(QTStr("Basic.Settings.Video.DownscaleFilter"), scaleType);
 
-	QLabel *fpsNote = new QLabel(QTStr("Vertical.Settings.FPSNote"), videoBox);
+	QLabel *fpsNote = new QLabel(QTStr("Canvas.Settings.FPSNote"), videoBox);
 	fpsNote->setWordWrap(true);
 	videoForm->addRow(fpsNote);
 
 	/* Recording */
 	QGroupBox *recBox = new QGroupBox(QTStr("Basic.Settings.Output.Adv.Recording"), this);
 	QFormLayout *recForm = new QFormLayout(recBox);
+
+	recordWithMain = new QCheckBox(QTStr("Canvas.Settings.RecordWithMain"), recBox);
+	recordWithMain->setChecked(canvas->RecordWithMain());
+	recForm->addRow(recordWithMain);
 
 	recPath = new QLineEdit(QString::fromStdString(output.recPath), recBox);
 	QPushButton *browse = new QPushButton(QTStr("Browse"), recBox);
@@ -117,7 +134,7 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_
 	recForm->addRow(QTStr("Basic.Settings.Output.Format"), recFormat);
 
 	encoder = new QComboBox(recBox);
-	encoder->addItem(QTStr("Vertical.Settings.EncoderAuto"), QString());
+	encoder->addItem(QTStr("Canvas.Settings.EncoderAuto"), QString());
 	for (const auto &item : GetCanvasVideoEncoders()) {
 		encoder->addItem(QString::fromStdString(item.second), QString::fromStdString(item.first));
 	}
@@ -134,12 +151,12 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_
 	audioTrack = new QSpinBox(recBox);
 	audioTrack->setRange(1, MAX_AUDIO_MIXES);
 	audioTrack->setValue(output.audioTrack);
-	recForm->addRow(QTStr("Vertical.Settings.AudioTrack"), audioTrack);
+	recForm->addRow(QTStr("Canvas.Settings.AudioTrack"), audioTrack);
 
 	fileSuffix = new QLineEdit(QString::fromStdString(output.fileSuffix), recBox);
-	recForm->addRow(QTStr("Vertical.Settings.FileSuffix"), fileSuffix);
+	recForm->addRow(QTStr("Canvas.Settings.FileSuffix"), fileSuffix);
 
-	QLabel *audioNote = new QLabel(QTStr("Vertical.Settings.AudioNote"), recBox);
+	QLabel *audioNote = new QLabel(QTStr("Canvas.Settings.AudioNote"), recBox);
 	audioNote->setWordWrap(true);
 	recForm->addRow(audioNote);
 
@@ -168,7 +185,7 @@ OBSCanvasSettings::OBSCanvasSettings(ExtraCanvas *vertical_, bool outputsActive_
 	layout->addWidget(help);
 
 	if (outputsActive) {
-		QLabel *activeNote = new QLabel(QTStr("Vertical.Settings.ActiveNote"), this);
+		QLabel *activeNote = new QLabel(QTStr("Canvas.Settings.ActiveNote"), this);
 		activeNote->setWordWrap(true);
 		activeNote->setProperty("class", "text-warning");
 		layout->addWidget(activeNote);
@@ -224,8 +241,7 @@ void OBSCanvasSettings::accept()
 	CanvasVideoSettings video;
 	if (!ParseResolution(baseResolution->currentText(), video.baseWidth, video.baseHeight) ||
 	    !ParseResolution(outputResolution->currentText(), video.outputWidth, video.outputHeight)) {
-		OBSMessageBox::warning(this, QTStr("Vertical.Settings.Title"),
-				       QTStr("Vertical.Settings.BadResolution"));
+		OBSMessageBox::warning(this, windowTitle(), QTStr("Canvas.Settings.BadResolution"));
 		return;
 	}
 	video.scaleType = obs_scale_type(scaleType->currentData().toInt());
@@ -239,10 +255,11 @@ void OBSCanvasSettings::accept()
 	output.fileSuffix = fileSuffix->text().trimmed().toStdString();
 	output.replayTimeSec = replayTime->value();
 	output.replaySizeMB = replaySize->value();
-	output.Save();
+	output.Save(canvas->Slot());
 
-	vertical->SetVideoSettings(video);
-	vertical->SetEnabled(enabled->isChecked());
+	canvas->SetRecordWithMain(recordWithMain->isChecked());
+	canvas->SetVideoSettings(video);
+	canvas->SetEnabled(enabled->isChecked());
 
 	QDialog::accept();
 }

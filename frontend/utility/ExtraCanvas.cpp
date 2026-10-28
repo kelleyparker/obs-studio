@@ -12,9 +12,6 @@
 
 using namespace std;
 
-static const char *ExtraCanvasName = "Vertical";
-static const char *VerticalDataKey = "vertical_canvas";
-
 static obs_scale_type ScaleTypeFromString(const char *scaleType)
 {
 	if (astrcmpi(scaleType, "bilinear") == 0) {
@@ -51,30 +48,69 @@ static uint32_t ClampSize(uint64_t size, uint32_t fallback)
 	return uint32_t(size) & ~1u;
 }
 
-ExtraCanvas::ExtraCanvas(QObject *parent) : QObject(parent) {}
+ExtraCanvas::ExtraCanvas(const CanvasSlotId &slot_, QObject *parent)
+	: QObject(parent),
+	  slot(slot_),
+	  section(slot_.ConfigSection())
+{
+	uint32_t baseCX, baseCY, outputCX, outputCY;
+	DefaultVideoSize(baseCX, baseCY, outputCX, outputCY);
+	video.baseWidth = baseCX;
+	video.baseHeight = baseCY;
+	video.outputWidth = outputCX;
+	video.outputHeight = outputCY;
+}
 
 ExtraCanvas::~ExtraCanvas()
 {
 	canvasSignals.clear();
 }
 
+void ExtraCanvas::DefaultVideoSize(uint32_t &baseCX, uint32_t &baseCY, uint32_t &outputCX, uint32_t &outputCY) const
+{
+	if (slot.IsVertical()) {
+		baseCX = outputCX = 1080;
+		baseCY = outputCY = 1920;
+		return;
+	}
+
+	/* Horizontal canvases start out at the main canvas's size */
+	baseCX = outputCX = 1920;
+	baseCY = outputCY = 1080;
+
+	OBSBasic *main = OBSBasic::Get();
+	config_t *config = main ? main->Config() : nullptr;
+	if (config) {
+		baseCX = ClampSize(config_get_uint(config, "Video", "BaseCX"), baseCX);
+		baseCY = ClampSize(config_get_uint(config, "Video", "BaseCY"), baseCY);
+		outputCX = ClampSize(config_get_uint(config, "Video", "OutputCX"), baseCX);
+		outputCY = ClampSize(config_get_uint(config, "Video", "OutputCY"), baseCY);
+	}
+}
+
 void ExtraCanvas::LoadProfile()
 {
 	config_t *config = OBSBasic::Get()->Config();
+	const char *configSection = section.c_str();
 
-	config_set_default_bool(config, ConfigSection, "Enabled", false);
-	config_set_default_uint(config, ConfigSection, "BaseCX", 1080);
-	config_set_default_uint(config, ConfigSection, "BaseCY", 1920);
-	config_set_default_uint(config, ConfigSection, "OutputCX", 1080);
-	config_set_default_uint(config, ConfigSection, "OutputCY", 1920);
-	config_set_default_string(config, ConfigSection, "ScaleType", "bicubic");
+	uint32_t baseCX, baseCY, outputCX, outputCY;
+	DefaultVideoSize(baseCX, baseCY, outputCX, outputCY);
 
-	enabled = config_get_bool(config, ConfigSection, "Enabled");
-	video.baseWidth = ClampSize(config_get_uint(config, ConfigSection, "BaseCX"), 1080);
-	video.baseHeight = ClampSize(config_get_uint(config, ConfigSection, "BaseCY"), 1920);
-	video.outputWidth = ClampSize(config_get_uint(config, ConfigSection, "OutputCX"), video.baseWidth);
-	video.outputHeight = ClampSize(config_get_uint(config, ConfigSection, "OutputCY"), video.baseHeight);
-	video.scaleType = ScaleTypeFromString(config_get_string(config, ConfigSection, "ScaleType"));
+	config_set_default_bool(config, configSection, "Enabled", false);
+	config_set_default_bool(config, configSection, "RecordWithMain", false);
+	config_set_default_uint(config, configSection, "BaseCX", baseCX);
+	config_set_default_uint(config, configSection, "BaseCY", baseCY);
+	config_set_default_uint(config, configSection, "OutputCX", outputCX);
+	config_set_default_uint(config, configSection, "OutputCY", outputCY);
+	config_set_default_string(config, configSection, "ScaleType", "bicubic");
+
+	enabled = config_get_bool(config, configSection, "Enabled");
+	recordWithMain = config_get_bool(config, configSection, "RecordWithMain");
+	video.baseWidth = ClampSize(config_get_uint(config, configSection, "BaseCX"), baseCX);
+	video.baseHeight = ClampSize(config_get_uint(config, configSection, "BaseCY"), baseCY);
+	video.outputWidth = ClampSize(config_get_uint(config, configSection, "OutputCX"), video.baseWidth);
+	video.outputHeight = ClampSize(config_get_uint(config, configSection, "OutputCY"), video.baseHeight);
+	video.scaleType = ScaleTypeFromString(config_get_string(config, configSection, "ScaleType"));
 
 	/* Before the first scene collection is loaded there is no canvas yet;
 	 * LoadCollection() applies the settings then. */
@@ -99,13 +135,15 @@ void ExtraCanvas::LoadProfile()
 void ExtraCanvas::SaveProfile() const
 {
 	config_t *config = OBSBasic::Get()->Config();
+	const char *configSection = section.c_str();
 
-	config_set_bool(config, ConfigSection, "Enabled", enabled);
-	config_set_uint(config, ConfigSection, "BaseCX", video.baseWidth);
-	config_set_uint(config, ConfigSection, "BaseCY", video.baseHeight);
-	config_set_uint(config, ConfigSection, "OutputCX", video.outputWidth);
-	config_set_uint(config, ConfigSection, "OutputCY", video.outputHeight);
-	config_set_string(config, ConfigSection, "ScaleType", ScaleTypeToString(video.scaleType));
+	config_set_bool(config, configSection, "Enabled", enabled);
+	config_set_bool(config, configSection, "RecordWithMain", recordWithMain);
+	config_set_uint(config, configSection, "BaseCX", video.baseWidth);
+	config_set_uint(config, configSection, "BaseCY", video.baseHeight);
+	config_set_uint(config, configSection, "OutputCX", video.outputWidth);
+	config_set_uint(config, configSection, "OutputCY", video.outputHeight);
+	config_set_string(config, configSection, "ScaleType", ScaleTypeToString(video.scaleType));
 	config_save_safe(config, "tmp", nullptr);
 }
 
@@ -130,11 +168,19 @@ bool ExtraCanvas::SetEnabled(bool enable)
 		obs_canvas_clear_video(canvas);
 	}
 
-	blog(LOG_INFO, "Vertical canvas %s", enabled ? "enabled" : "disabled");
+	blog(LOG_INFO, "%s canvas %s", slot.CanvasName().c_str(), enabled ? "enabled" : "disabled");
 
 	emit EnabledChanged(enabled);
 	emit VideoChanged();
 	return true;
+}
+
+void ExtraCanvas::SetRecordWithMain(bool enable)
+{
+	if (enable != recordWithMain) {
+		recordWithMain = enable;
+		SaveProfile();
+	}
 }
 
 bool ExtraCanvas::SetVideoSettings(const CanvasVideoSettings &settings)
@@ -143,9 +189,12 @@ bool ExtraCanvas::SetVideoSettings(const CanvasVideoSettings &settings)
 		return false;
 	}
 
+	uint32_t baseCX, baseCY, outputCX, outputCY;
+	DefaultVideoSize(baseCX, baseCY, outputCX, outputCY);
+
 	video = settings;
-	video.baseWidth = ClampSize(video.baseWidth, 1080);
-	video.baseHeight = ClampSize(video.baseHeight, 1920);
+	video.baseWidth = ClampSize(video.baseWidth, baseCX);
+	video.baseHeight = ClampSize(video.baseHeight, baseCY);
 	video.outputWidth = ClampSize(video.outputWidth, video.baseWidth);
 	video.outputHeight = ClampSize(video.outputHeight, video.baseHeight);
 	SaveProfile();
@@ -191,12 +240,13 @@ bool ExtraCanvas::ApplyVideo()
 	}
 
 	if (!obs_canvas_reset_video(canvas, &ovi)) {
-		blog(LOG_WARNING, "Failed to reset vertical canvas video (%ux%u)", ovi.base_width, ovi.base_height);
+		blog(LOG_WARNING, "Failed to reset %s canvas video (%ux%u)", slot.CanvasName().c_str(), ovi.base_width,
+		     ovi.base_height);
 		return false;
 	}
 
-	blog(LOG_INFO, "Vertical canvas video: base %ux%u, output %ux%u", ovi.base_width, ovi.base_height,
-	     ovi.output_width, ovi.output_height);
+	blog(LOG_INFO, "%s canvas video: base %ux%u, output %ux%u", slot.CanvasName().c_str(), ovi.base_width,
+	     ovi.base_height, ovi.output_width, ovi.output_height);
 
 	emit VideoChanged();
 	return true;
@@ -242,9 +292,9 @@ OBSCanvas ExtraCanvas::EnsureCanvas()
 	}
 
 	/* No MIX_AUDIO: a source used in both canvases would otherwise be
-	 * heard twice. Vertical outputs record the same audio mix as the main
-	 * outputs. */
-	const OBS::Canvas &canvas = OBSBasic::Get()->AddCanvas(ExtraCanvasName, nullptr, ACTIVATE | SCENE_REF);
+	 * heard twice. Outputs of extra canvases record the same audio mix as
+	 * the main outputs. */
+	const OBS::Canvas &canvas = OBSBasic::Get()->AddCanvas(slot.CanvasName(), nullptr, ACTIVATE | SCENE_REF);
 	AttachCanvas(canvas);
 	return GetCanvas();
 }
@@ -483,9 +533,10 @@ void ExtraCanvas::EnsureScene()
 		return;
 	}
 
-	QString name = QTStr("Vertical.DefaultSceneName");
+	const QString base = QTStr("Canvas.DefaultSceneName").arg(slot.DisplayName());
+	QString name = base;
 	for (int i = 2; SceneNameInUse(name); i++) {
-		name = QTStr("Vertical.DefaultSceneName") + " " + QString::number(i);
+		name = base + " " + QString::number(i);
 	}
 
 	AddScene(name);
@@ -512,7 +563,7 @@ void ExtraCanvas::SaveCollection(obs_data_t *saveData) const
 	}
 	obs_data_set_array(data, "scene_order", order);
 
-	obs_data_set_obj(saveData, VerticalDataKey, data);
+	obs_data_set_obj(saveData, slot.CollectionKey().c_str(), data);
 }
 
 void ExtraCanvas::LoadCollection(obs_data_t *collectionData)
@@ -520,7 +571,8 @@ void ExtraCanvas::LoadCollection(obs_data_t *collectionData)
 	DetachCanvas();
 	collectionLoaded = true;
 
-	OBSDataAutoRelease data = collectionData ? obs_data_get_obj(collectionData, VerticalDataKey) : nullptr;
+	OBSDataAutoRelease data = collectionData ? obs_data_get_obj(collectionData, slot.CollectionKey().c_str())
+						 : nullptr;
 
 	if (data) {
 		const char *uuid = obs_data_get_string(data, "canvas_uuid");

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <obs.hpp>
+#include <utility/CanvasSlot.hpp>
 
 #include <QObject>
 #include <QString>
@@ -16,41 +17,47 @@ struct CanvasVideoSettings {
 	obs_scale_type scaleType = OBS_SCALE_BICUBIC;
 };
 
-/* A second, vertical (9:16) video mix with its own scenes, like the Aitum
- * Vertical plugin. The canvas itself is one of OBSBasic's canvases, so its
- * scenes are saved with the scene collection. Whether vertical is enabled and
- * its resolution are profile settings ([Vertical] in basic.ini).
+/* An extra video mix with its own scenes, next to the main canvas: one of
+ * Horizontal 2-4 or Vertical 1-4 (see CanvasSlotId). The canvas itself is one
+ * of OBSBasic's canvases, so its scenes are saved with the scene collection.
+ * Whether it is enabled and its resolution are profile settings (the slot's
+ * section in basic.ini).
  *
- * While vertical is disabled the canvas (and its scenes) is kept, but it has
- * no video mix, so it costs nothing. */
+ * While it is disabled the canvas (and its scenes) is kept, but it has no
+ * video mix, so it costs nothing. */
 class ExtraCanvas : public QObject {
 	Q_OBJECT
 
 public:
-	static constexpr const char *ConfigSection = "Vertical";
-
-	explicit ExtraCanvas(QObject *parent = nullptr);
+	explicit ExtraCanvas(const CanvasSlotId &slot, QObject *parent = nullptr);
 	~ExtraCanvas();
 
-	/* Sets the [Vertical] defaults in the active profile and reads the
+	const CanvasSlotId &Slot() const { return slot; }
+	const char *ConfigSection() const { return section.c_str(); }
+
+	/* Sets the slot's defaults in the active profile and reads the
 	 * profile's settings. Call on startup and after a profile switch. */
 	void LoadProfile();
 
 	bool Enabled() const { return enabled; }
 	/* Saves the setting to the profile and creates or removes the video mix.
-	 * Fails (returns false) while vertical outputs are active. */
+	 * Fails (returns false) while this canvas's outputs are active. */
 	bool SetEnabled(bool enable);
 
 	const CanvasVideoSettings &VideoSettings() const { return video; }
 	/* Saves the settings to the profile and resets the video mix. Fails
-	 * (returns false) while vertical outputs are active. */
+	 * (returns false) while this canvas's outputs are active. */
 	bool SetVideoSettings(const CanvasVideoSettings &settings);
+
+	/* Whether recording starts and stops with the main recording */
+	bool RecordWithMain() const { return recordWithMain; }
+	void SetRecordWithMain(bool enable);
 
 	/* Re-applies the main canvas's frame rate and color settings, e.g.
 	 * after Settings > Video changed them. */
 	void MainVideoReset();
 
-	/* The vertical canvas, or nullptr if the scene collection has none yet */
+	/* The canvas, or nullptr if the scene collection has none yet */
 	OBSCanvas GetCanvas() const;
 	/* True when the canvas exists and has a video mix */
 	bool HasVideo() const;
@@ -85,7 +92,10 @@ signals:
 	void CanvasClearing();
 
 private:
+	CanvasSlotId slot;
+	std::string section;
 	bool enabled = false;
+	bool recordWithMain = false;
 	bool collectionLoaded = false;
 	CanvasVideoSettings video;
 
@@ -93,6 +103,7 @@ private:
 	std::vector<OBSWeakSource> sceneOrder;
 	std::vector<OBSSignal> canvasSignals;
 
+	void DefaultVideoSize(uint32_t &baseCX, uint32_t &baseCY, uint32_t &outputCX, uint32_t &outputCY) const;
 	void SaveProfile() const;
 	bool MakeVideoInfo(obs_video_info &ovi) const;
 	bool ApplyVideo();

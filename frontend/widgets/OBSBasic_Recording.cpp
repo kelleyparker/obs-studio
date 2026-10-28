@@ -171,6 +171,7 @@ void OBSBasic::StopRecording()
 	if (outputHandler->RecordingActive()) {
 		outputHandler->StopRecording(recordingStopping);
 	}
+	StopCanvasesWithMainRecording();
 
 	OnDeactivate();
 }
@@ -195,12 +196,17 @@ void OBSBasic::RecordingStart()
 	YouTubeWorkflowManager::Instance()->OnRecordingStarted();
 
 	blog(LOG_INFO, RECORDING_START);
+
+	StartCanvasesWithMainRecording();
 }
 
 void OBSBasic::RecordingStop(int code, QString last_error)
 {
 	ui->statusbar->RecordingStopped();
 	emit RecordingStopped();
+
+	/* In case the main recording stopped by itself */
+	StopCanvasesWithMainRecording();
 
 	if (sysTrayRecord) {
 		sysTrayRecord->setText(QTStr("Basic.Main.StartRecording"));
