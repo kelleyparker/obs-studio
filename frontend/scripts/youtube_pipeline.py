@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -294,62 +295,136 @@ def _has_stumble_cue(text: str, cues: tuple) -> bool:
     return False
 
 
+RETAKE_CUES = (
+    "wait", "sorry", "oops", "scratch that", "let me try again", "let me try that again",
+    "try that again", "hold on", "take two", "let me restart", "cut that", "let me re-say"
+)
+RETAKE_GAP_SEC = 8.0          # a retake must start within this long of the bad take
+RETAKE_MIN_PREFIX = 3         # shared leading words that mark a restart ("Stage 1.../Stage 2..." share only 1)
+RETAKE_MAX_FALSE_START = 6    # longest complete sentence still treated as a false start
+RETAKE_MAX_IN_SEGMENT = 8     # longest false start repeated inside one Whisper segment
+
+
+def _norm_word(word: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", word.lower())
+
+
+def _shared_prefix_len(a: list[str], b: list[str]) -> int:
+    count = 0
+    for w1, w2 in zip(a, b):
+        if w1 != w2:
+            break
+        count += 1
+    return count
+
+
+def _shares_phrase(a: list[str], b: list[str], n: int = RETAKE_MIN_PREFIX) -> bool:
+    """True when `a` and `b` have an n-word phrase in common (the retake restates the bad take)."""
+    grams = {tuple(a[i:i + n]) for i in range(len(a) - n + 1)}
+    return any(tuple(b[i:i + n]) in grams for i in range(len(b) - n + 1))
+
+
+def _last_cue_span(words: list[dict]) -> tuple[int, int] | None:
+    """(first, last) word index of the last stumble cue in a segment's Whisper words."""
+    toks = [_norm_word(w["word"]) for w in words]
+    best = None
+    for cue in RETAKE_CUES:
+        ct = [_norm_word(t) for t in cue.split()]
+        for i in range(len(toks) - len(ct) + 1):
+            if toks[i:i + len(ct)] == ct and (best is None or i + len(ct) - 1 > best[1]):
+                best = (i, i + len(ct) - 1)
+    return best
+
+
+def _in_segment_restarts(words: list[dict]) -> list[tuple[int, int]]:
+    """
+    (i, j) word-index pairs where words[i:j] is a false start the speaker repeats from words[j],
+    e.g. "transcription runs on transcription runs on Whisper..." in a single Whisper segment.
+    The whole false start must repeat word for word, so parallels like
+    "the more you know, the more you grow" are left alone.
+    """
+    idx = [k for k, w in enumerate(words) if _norm_word(w["word"])]
+    toks = [_norm_word(words[k]["word"]) for k in idx]
+    n = RETAKE_MIN_PREFIX
+    found = []
+    i = 0
+    while i + n <= len(toks):
+        hit = None
+        for j in range(i + n, min(len(toks) - n, i + RETAKE_MAX_IN_SEGMENT) + 1):
+            if toks[i:j] == toks[j:2 * j - i] and len(set(toks[i:j])) > 1:
+                hit = j
+                break
+        if hit is None:
+            i += 1
+            continue
+        found.append((idx[i], idx[hit]))
+        i = hit
+    return found
+
+
 def detect_butchered_retakes(segments: list[dict]) -> list[tuple[float, float, str]]:
     """
     Identifies butchered sentences / aborted takes that are immediately repeated
     on the next attempt. Never cuts complete sentences or parallel phrasing/lists
-    unless an explicit stumble cue ('wait', 'sorry', 'oops', 'scratch that', etc.) is present.
+    unless an explicit stumble cue ('wait', 'sorry', 'oops', 'scratch that', etc.) is present,
+    the sentence is a short restart of the next one, or a phrase is restarted inside one segment.
     """
     cuts = []
     n = len(segments)
-    retake_cues = (
-        "wait", "sorry", "oops", "scratch that", "let me try again",
-        "hold on", "take two", "let me restart", "cut that", "let me re-say"
-    )
 
-    for i in range(n - 1):
+    def take(seg: dict, kept: str, why: str = "butchered take") -> tuple[float, float, str]:
+        return (seg["start"], seg["end"],
+                f"Cut {why} [{seg['start']:.1f}s-{seg['end']:.1f}s]: \"{seg['text']}\" -> Kept retake: \"{kept}\"")
+
+    for i in range(n):
         cur = segments[i]
-        nxt = segments[i + 1]
+        prev = segments[i - 1] if i > 0 and cur["start"] - segments[i - 1]["end"] <= RETAKE_GAP_SEC else None
+        nxt = segments[i + 1] if i + 1 < n and segments[i + 1]["start"] - cur["end"] <= RETAKE_GAP_SEC else None
+        words = cur.get("words") or []
+        raw_cur = cur["text"].strip()
+        cur_words = normalize_for_retake(raw_cur)
 
-        # Must be reasonably close in time (< 8 seconds gap)
-        if (nxt["start"] - cur["end"]) > 8.0:
+        # Check 1: A phrase restarted inside one Whisper segment (needs word timestamps)
+        for a, b in _in_segment_restarts(words):
+            start, end = words[a]["start"], words[b]["start"]
+            false_start = "".join(w["word"] for w in words[a:b]).strip()
+            cuts.append((start, end, f"Cut false start [{start:.1f}s-{end:.1f}s]: \"{false_start}\" -> Kept retake in: \"{raw_cur}\""))
+
+        # Check 2: Explicit verbal stumble or retake cue
+        if _has_stumble_cue(raw_cur.lower(), RETAKE_CUES):
+            span = _last_cue_span(words) if words else None
+            before = normalize_for_retake("".join(w["word"] for w in words[:span[0]])) if span else cur_words
+            after = normalize_for_retake("".join(w["word"] for w in words[span[1] + 1:])) if span else []
+            if len(after) >= RETAKE_MIN_PREFIX:
+                # The retake follows the cue in the same segment: keep it, cut the bad take + cue.
+                end = words[span[1] + 1]["start"]
+                cuts.append((cur["start"], end,
+                             f"Cut stumble [{cur['start']:.1f}s-{end:.1f}s] before retake in: \"{raw_cur}\""))
+                retake = after
+            else:
+                cuts.append(take(cur, nxt["text"] if nxt else "", "stumble cue"))
+                retake = normalize_for_retake(nxt["text"]) if nxt else []
+            # A cue that opens the segment ("Wait, scratch that.") disowns the previous sentence,
+            # but only when the retake restates it, so a stray "sorry" can't eat a good line.
+            if len(before) < 2 and prev and _shares_phrase(normalize_for_retake(prev["text"]), retake):
+                cuts.append(take(prev, " ".join(retake), "take disowned by stumble cue"))
             continue
 
-        raw_cur = cur["text"].strip()
-        raw_nxt = nxt["text"].strip()
-        raw_lower = raw_cur.lower()
-
-        # Check 1: Explicit verbal stumble or retake cue
-        has_retake_cue = _has_stumble_cue(raw_lower, retake_cues)
-
-        cur_words = normalize_for_retake(cur["text"])
+        if not nxt:
+            continue
         nxt_words = normalize_for_retake(nxt["text"])
+        prefix_match_len = _shared_prefix_len(cur_words, nxt_words)
 
-        # Check 2: Aborted short fragment (speaker started speaking, trailed off without ending punctuation)
-        is_complete_sentence = raw_cur.endswith((".", "!", "?")) and len(cur_words) >= 4
+        # Check 3: Short restart ("Transcription runs on." -> "Transcription runs on Whisper...")
+        if len(cur_words) <= RETAKE_MAX_FALSE_START and prefix_match_len >= RETAKE_MIN_PREFIX:
+            cuts.append(take(cur, nxt["text"]))
+            continue
+
+        # Check 4: Aborted short fragment (speaker trailed off without ending punctuation).
+        # Complete parallel sentences ("Super Mario 1 is...", "Super Mario 2 is...") are never cut.
         is_short_fragment = (not raw_cur.endswith((".", "!", "?"))) and len(cur_words) <= 4
-
-        # Prefix similarity check
-        prefix_match_len = 0
-        for w1, w2 in zip(cur_words, nxt_words):
-            if w1 == w2:
-                prefix_match_len += 1
-            else:
-                break
-
-        should_cut = False
-        if has_retake_cue:
-            should_cut = True
-        elif is_short_fragment and prefix_match_len >= 1:
-            should_cut = True
-
-        # Never cut complete parallel sentences (e.g. "Super Mario 1 is...", "Super Mario 2 is...")
-        if is_complete_sentence and not has_retake_cue:
-            should_cut = False
-
-        if should_cut:
-            reason = f"Cut butchered take [{cur['start']:.1f}s-{cur['end']:.1f}s]: \"{cur['text']}\" -> Kept retake: \"{nxt['text']}\""
-            cuts.append((cur["start"], cur["end"], reason))
+        if is_short_fragment and prefix_match_len >= 1:
+            cuts.append(take(cur, nxt["text"]))
 
     return cuts
 
@@ -980,13 +1055,20 @@ def call_openai_json(api_key: str, system_prompt: str, user_text: str, max_token
     return extract_json_object(text)
 
 
+CLAUDE_MODEL = "claude-sonnet-5-5"
+
+
 def call_claude_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
     if not api_key:
         raise ValueError("No Claude API key configured in OBS Vault.")
     url = "https://api.anthropic.com/v1/messages"
     body = {
-        "model": "claude-3-7-sonnet-latest",
-        "max_tokens": max_tokens,
+        "model": CLAUDE_MODEL,
+        # Thinking is always on for this model and shares the token budget with the answer.
+        "max_tokens": max(max_tokens, 16000),
+        "output_config": {"effort": "low"},
+        # On a safety decline, rerun on Anthropic's recommended fallback model server-side.
+        "fallbacks": "default",
         "system": system_prompt,
         "messages": [
             {"role": "user", "content": user_text[:24000]}
@@ -998,17 +1080,55 @@ def call_claude_json(api_key: str, system_prompt: str, user_text: str, max_token
         headers={
             "Content-Type": "application/json",
             "x-api-key": api_key,
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "server-side-fallback-2026-07-01"
         }
     )
-    with urllib.request.urlopen(req, timeout=45) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    text = data["content"][0]["text"]
+    if data.get("stop_reason") == "refusal":
+        raise RuntimeError(f"Claude declined the request ({(data.get('stop_details') or {}).get('category')}).")
+    # The response opens with a thinking block; the JSON is in the text blocks.
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return extract_json_object(text)
 
 
+OLLAMA_URL = "http://127.0.0.1:11434"
+
+
+def ensure_ollama_server(wait_sec: float = 30.0) -> bool:
+    """
+    Make sure something answers on Ollama's local port. The Ollama tray app can stay
+    running after its own server has died, so start 'ollama serve' ourselves if needed.
+    """
+    def answering() -> bool:
+        try:
+            with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2):
+                return True
+        except Exception:
+            return False
+
+    if answering():
+        return True
+    exe = shutil.which("ollama") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
+    if not os.path.isfile(exe):
+        return False
+    log_info("Local Ollama isn't answering; starting 'ollama serve' in the background...")
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, creationflags=flags)
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        time.sleep(1.0)
+        if answering():
+            return True
+    return False
+
+
 def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str) -> dict:
-    url = "http://127.0.0.1:11434/api/generate"
+    if not ensure_ollama_server():
+        raise RuntimeError(f"Local Ollama isn't answering on {OLLAMA_URL} and could not be started.")
+    url = f"{OLLAMA_URL}/api/generate"
     models_to_try = [ollama_model, "gemma4:12b", "llama3.1:8b", "qwen3:14b"]
     seen = set()
     ordered_models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
@@ -1048,7 +1168,7 @@ def llm_provider_labels(ollama_model: str) -> dict:
     return {
         "gemini": "Google Gemini (gemini-2.5-flash)",
         "openai": "ChatGPT / OpenAI (gpt-4o)",
-        "claude": "Anthropic Claude (Sonnet)",
+        "claude": f"Anthropic Claude ({CLAUDE_MODEL})",
         "local": f"Local GPU LLM ({ollama_model})"
     }
 
@@ -1117,10 +1237,24 @@ _CHAPTER_FILLER_RE = re.compile(r"^(?:(?:so|okay|ok|um|uh|well|alright|and|but)\
 _CHAPTER_LINE_RE = re.compile(r"^(\s*\d{1,2}(?::\d{2}){1,2})(\s*[-–—]\s*|\s+)(.*)$")
 
 
+_DANGLING_WORDS = {"a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for",
+                   "with", "you", "your", "is", "that", "this", "so"}
+
+
 def tidy_chapter_title(text: str, max_words: int = 10) -> str:
-    """Cap a chapter title at `max_words` words with no trailing period/ellipsis."""
-    words = (text or "").split()
-    return " ".join(words[:max_words]).rstrip(" .…,;:")
+    """
+    Cap a chapter title at `max_words` words with no trailing period/ellipsis.
+    Only the first sentence is kept, and a longer one is cut at its last clause break, not mid-phrase.
+    """
+    words = re.split(r"(?<=[.!?])\s+", (text or "").strip(), maxsplit=1)[0].split()
+    if len(words) > max_words:
+        words = words[:max_words]
+        breaks = [k for k, w in enumerate(words[:-1]) if w.endswith((",", ";", ":", "—"))]
+        if breaks and breaks[-1] >= 2:
+            words = words[:breaks[-1] + 1]
+        while len(words) > 1 and _norm_word(words[-1]) in _DANGLING_WORDS:
+            words.pop()
+    return " ".join(words).rstrip(" .…,;:—")
 
 
 def normalize_chapter_lines(description: str) -> str:
@@ -1293,6 +1427,9 @@ def generate_heuristic_transcript_metadata(segments: list[dict], transcript_text
     }
 
 
+TEMPLATE_METADATA_BADGE = "Template fallback (no AI provider answered)"
+
+
 def generate_metadata_with_priority(
     priority_list: list[str],
     secrets: dict,
@@ -1340,9 +1477,13 @@ def generate_metadata_with_priority(
         return res, used_badge
 
     # Fallback: intelligent transcript heuristic analysis (never static generic date)
-    log_info("Generating intelligent transcript-derived metadata via Heuristic Engine...")
+    log_warn(
+        "No AI provider answered (see the Priority warnings above), so the title and description "
+        "come from a fill-in template. Add an API key in YouTube settings or start Ollama, and "
+        "review the title before publishing."
+    )
     fallback_meta = generate_heuristic_transcript_metadata(segments, transcript_text)
-    return fallback_meta, "Transcript AI Heuristic Engine"
+    return fallback_meta, TEMPLATE_METADATA_BADGE
 
 
 # ---------------------------------------------------------------------------
@@ -2063,6 +2204,10 @@ def stage_finish(config: dict, ctx: dict) -> int:
             message="Dry-run complete (Upload skipped)."
         )
         return 0
+
+    if llm_provider_used == TEMPLATE_METADATA_BADGE and privacy_status == "public":
+        privacy_status = "unlisted"
+        log_warn("Uploading as UNLISTED instead of public because the title is a template; review it first.")
 
     update_step("upload", 5, f"Connecting to YouTube Data API v3 ({privacy_status.upper()})...")
     try:
