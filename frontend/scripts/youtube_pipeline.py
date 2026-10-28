@@ -373,36 +373,478 @@ def subtract_cuts_from_intervals(
     return [(round(a, 3), round(b, 3)) for a, b in result if (b - a) >= 0.15]
 
 
+# ---------------------------------------------------------------------------
+# 2b. Screen B-roll: sync, planning & guardrails
+# ---------------------------------------------------------------------------
+
+BROLL_HOOK_SEC = 5.0          # never cover the speaker during the opening hook
+BROLL_MIN_SEC = 2.0
+BROLL_MAX_SEC = 12.0
+BROLL_MERGE_GAP_SEC = 1.5
+BROLL_ACCEPT_CONFIDENCE = 0.6
+BROLL_PIP_WIDTH = 0.22        # webcam bubble width as a fraction of the frame
+
+BROLL_CUE_RE = re.compile(
+    r"\b(as you can see|you can see|take a look|look at (?:this|that|the)|let me show|i'?ll show|show you|"
+    r"over here|right here|on (?:the|my) screen|this (?:setting|button|menu|tab|panel|window|file|folder|page|"
+    r"screen|option|code|line|function|command|dialog|dock)|click(?:ing)?|scroll(?:ing)?|"
+    r"select(?:ing)?|drag(?:ging)?|paste|type in)\b",
+    re.IGNORECASE,
+)
+
+BROLL_SYSTEM_PROMPT = """You are a video editor planning screen-recording B-roll for a talking-head tech video.
+The creator recorded their screen at the same time as the webcam, so cutting to the screen at a given second
+shows exactly what was on screen while those words were spoken.
+
+Pick moments where showing the screen helps the viewer: the speaker refers to something visible (UI, settings,
+code, files, websites, terminal output, results), demonstrates steps, or says things like "as you can see",
+"click", "this setting". Do NOT pick opinions, the intro, personal stories or the conclusion; the viewer
+should see the speaker's face then. Lines tagged [MARK] are moments the creator flagged live as needing
+B-roll: strongly prefer covering them. Each insert should be 2 to 12 seconds.
+
+Times in the transcript are seconds. Respond ONLY with valid JSON matching this schema:
+{
+  "inserts": [
+    {"start": 12.4, "end": 19.0, "quote": "exact words spoken", "reason": "short reason", "confidence": 0.8}
+  ]
+}"""
+
+
+def raw_to_edited(t: float, keep_intervals: list[tuple]) -> float:
+    """Map a raw-recording time to the edited video's timeline (times inside a cut snap forward)."""
+    offset = 0.0
+    for a, b in keep_intervals:
+        if t < a:
+            return offset
+        if t <= b:
+            return offset + t - a
+        offset += b - a
+    return offset
+
+
+def edited_to_raw(t: float, keep_intervals: list[tuple]) -> float:
+    offset = 0.0
+    for a, b in keep_intervals:
+        if t <= offset + (b - a):
+            return a + max(0.0, t - offset)
+        offset += b - a
+    return keep_intervals[-1][1] if keep_intervals else t
+
+
+def flatten_words(segments: list[dict]) -> list[tuple[float, float]]:
+    words = []
+    for s in segments:
+        for w in s.get("words") or []:
+            words.append((float(w["start"]), float(w["end"])))
+    return sorted(words)
+
+
+def snap_to_words(t: float, words: list[tuple[float, float]], side: str, reach: float = 1.0) -> float:
+    """Move a cut point to the nearest word boundary so B-roll never starts or ends mid-word."""
+    for ws, we in words:
+        if ws <= t <= we:
+            return ws if side == "start" else we
+    if side == "start":
+        nxt = [ws for ws, _ in words if ws >= t]
+        return nxt[0] if nxt and nxt[0] - t <= reach else t
+    prev = [we for _, we in words if we <= t]
+    return prev[-1] if prev and t - prev[-1] <= reach else t
+
+
+def text_between(segments: list[dict], start: float, end: float) -> str:
+    words = [w["word"] for s in segments for w in (s.get("words") or []) if w["end"] > start and w["start"] < end]
+    if words:
+        return "".join(words).strip()
+    return " ".join(s["text"] for s in segments if s["end"] > start and s["start"] < end).strip()
+
+
+def load_audio_mono(video_path: str, sample_rate: int = 8000, max_sec: float = 60.0):
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-nostdin", "-v", "error",
+        "-t", f"{max_sec}", "-i", video_path,
+        "-f", "f32le", "-ac", "1", "-acodec", "pcm_f32le", "-ar", str(sample_rate), "-"
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+    if res.returncode != 0 or not res.stdout:
+        raise RuntimeError(f"FFmpeg audio decode failed for {os.path.basename(video_path)}")
+    return np.frombuffer(res.stdout, dtype=np.float32).copy()
+
+
+def correlate_offset(main_audio, screen_audio, sample_rate: int, max_lag_sec: float = 10.0) -> tuple[float, float]:
+    """
+    Returns (offset_sec, strength) where screen_time = main_time + offset_sec, found by FFT
+    cross-correlation of the two mic tracks. Strength is the normalized peak (0..1).
+    """
+    import numpy as np
+    a = main_audio - main_audio.mean()
+    b = screen_audio - screen_audio.mean()
+    norm = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if norm <= 0:
+        return 0.0, 0.0
+    n = len(a) + len(b) - 1
+    nfft = 1 << (n - 1).bit_length()
+    corr = np.fft.irfft(np.fft.rfft(a, nfft) * np.conj(np.fft.rfft(b, nfft)), nfft)
+    # corr[k] pairs main[i + k] with screen[i]; negative lags wrap to the end.
+    max_lag = int(max_lag_sec * sample_rate)
+    lags = np.concatenate([np.arange(0, min(max_lag, len(a) - 1) + 1), np.arange(-min(max_lag, len(b) - 1), 0)])
+    values = corr[lags % nfft]
+    best = int(np.argmax(values))
+    lag = int(lags[best])
+    return -lag / sample_rate, float(values[best] / norm)
+
+
+def estimate_broll_offset(main_video: str, screen_video: str, start_delta_sec: float) -> float:
+    """
+    screen_time = main_time + offset. OBS's own start timestamps give the hint
+    (offset = -start_delta); the mic audio in both files refines it.
+    """
+    hint = -float(start_delta_sec or 0.0)
+    try:
+        sr = 8000
+        offset, strength = correlate_offset(load_audio_mono(main_video, sr), load_audio_mono(screen_video, sr), sr)
+        if strength >= 0.3:
+            log_info(f"B-roll sync: audio offset {offset:+.3f}s (match {strength:.2f}, OBS hint {hint:+.3f}s).")
+            return offset
+        log_warn(f"B-roll sync: weak audio match ({strength:.2f}); using OBS start times ({hint:+.3f}s).")
+    except Exception as e:
+        log_warn(f"B-roll sync: audio alignment failed ({e}); using OBS start times ({hint:+.3f}s).")
+    return hint
+
+
+def plan_broll_heuristic(segments: list[dict], markers: list[float]) -> list[dict]:
+    candidates = []
+    for s in segments:
+        if BROLL_CUE_RE.search(s.get("text", "")):
+            candidates.append({
+                "start": s["start"], "end": s["end"], "quote": s["text"],
+                "reason": "Speaker refers to something on screen", "confidence": 0.65
+            })
+    candidates.extend(marker_candidates(segments, markers))
+    return candidates
+
+
+def marker_candidates(segments: list[dict], markers: list[float]) -> list[dict]:
+    return [{
+        "start": m - 1.0, "end": m + 5.0, "quote": text_between(segments, m - 1.0, m + 5.0),
+        "reason": "Marked live with the B-roll hotkey", "confidence": 0.85
+    } for m in markers]
+
+
+def apply_broll_guardrails(
+    candidates: list[dict],
+    keep_intervals: list[tuple],
+    words: list[tuple[float, float]],
+    screen_range: tuple[float, float],
+    max_coverage: float,
+    hook_sec: float = BROLL_HOOK_SEC
+) -> list[dict]:
+    """
+    Turn raw planner output into safe inserts: word-snapped, inside the screen recording,
+    clear of the opening hook, 2-12 s long on the edited timeline, merged when close,
+    and capped at `max_coverage` of the edited video (highest confidence wins).
+    """
+    if not keep_intervals:
+        return []
+    lo, hi = screen_range
+    hook_raw = edited_to_raw(hook_sec, keep_intervals)
+    edited_total = sum(b - a for a, b in keep_intervals)
+
+    cleaned = []
+    for c in candidates:
+        try:
+            s, e = float(c["start"]), float(c["end"])
+            confidence = max(0.0, min(1.0, float(c.get("confidence", 0.5))))
+        except (KeyError, TypeError, ValueError):
+            continue
+        s = max(snap_to_words(s, words, "start"), lo, hook_raw)
+        e = min(snap_to_words(e, words, "end"), hi)
+        es, ee = raw_to_edited(s, keep_intervals), raw_to_edited(e, keep_intervals)
+        if ee - es > BROLL_MAX_SEC:
+            e = edited_to_raw(es + BROLL_MAX_SEC, keep_intervals)
+            ee = es + BROLL_MAX_SEC
+        if ee - es < BROLL_MIN_SEC:
+            continue
+        cleaned.append({
+            "start": s, "end": e, "edited_start": es, "edited_end": ee,
+            "quote": str(c.get("quote", "")).strip(), "reason": str(c.get("reason", "")).strip(),
+            "confidence": confidence
+        })
+
+    merged = []
+    for c in sorted(cleaned, key=lambda x: x["start"]):
+        prev = merged[-1] if merged else None
+        if prev and c["edited_start"] - prev["edited_end"] < BROLL_MERGE_GAP_SEC \
+                and max(prev["edited_end"], c["edited_end"]) - prev["edited_start"] <= BROLL_MAX_SEC:
+            if c["end"] > prev["end"]:
+                prev["end"], prev["edited_end"] = c["end"], c["edited_end"]
+            if c["quote"] and c["quote"] not in prev["quote"]:
+                prev["quote"] = f"{prev['quote']} {c['quote']}".strip()
+            if c["reason"] and c["reason"] not in prev["reason"]:
+                prev["reason"] = f"{prev['reason']}; {c['reason']}".strip("; ")
+            prev["confidence"] = max(prev["confidence"], c["confidence"])
+        elif prev and c["edited_start"] < prev["edited_end"]:
+            # Overlaps but would be too long merged: keep the stronger one
+            if c["confidence"] > prev["confidence"]:
+                merged[-1] = c
+        else:
+            merged.append(c)
+
+    budget = max(0.0, float(max_coverage)) * edited_total
+    chosen, used = [], 0.0
+    for c in sorted(merged, key=lambda x: -x["confidence"]):
+        length = c["edited_end"] - c["edited_start"]
+        if used + length <= budget:
+            chosen.append(c)
+            used += length
+
+    chosen.sort(key=lambda x: x["start"])
+    for idx, c in enumerate(chosen, start=1):
+        c["id"] = f"b{idx:02d}"
+        for k in ("start", "end", "edited_start", "edited_end"):
+            c[k] = round(c[k], 3)
+        c["confidence"] = round(c["confidence"], 2)
+    return chosen
+
+
+def grab_frame(video_path: str, t: float, out_jpg: str, width: int = 320) -> bool:
+    cmd = [
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", video_path,
+        "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "4", out_jpg
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+    return res.returncode == 0 and os.path.exists(out_jpg)
+
+
+def plan_broll(
+    broll_cfg: dict,
+    input_video: str,
+    segments: list[dict],
+    keep_intervals: list[tuple],
+    priority_list: list[str],
+    secrets: dict,
+    ollama_model: str,
+    plan_path: str,
+    thumbs_dir: str
+) -> dict | None:
+    """Builds and saves the B-roll plan for the screen recording, or returns None when there is nothing to plan."""
+    screen_video = broll_cfg.get("screen_video", "")
+    if not screen_video or not os.path.exists(screen_video):
+        log_warn(f"B-roll screen recording not found ({screen_video or 'none'}); skipping B-roll.")
+        return None
+
+    update_step("broll", 10, "Syncing screen recording with the webcam...")
+    offset = estimate_broll_offset(input_video, screen_video, broll_cfg.get("start_delta_sec", 0.0))
+    screen_duration = get_video_duration(screen_video)
+    screen_range = (max(0.0, -offset), max(0.0, screen_duration - offset - 0.1))
+    markers = [float(m) for m in broll_cfg.get("markers", []) if isinstance(m, (int, float))]
+
+    candidates = []
+    provider = "Heuristic cue phrases"
+    if segments:
+        marker_lines = set()
+        for m in markers:
+            for i, s in enumerate(segments):
+                if s["start"] - 1.0 <= m <= s["end"] + 1.0:
+                    marker_lines.add(i)
+        lines = [
+            f"[{s['start']:.1f}-{s['end']:.1f}]{' [MARK]' if i in marker_lines else ''} {s['text']}"
+            for i, s in enumerate(segments)
+        ]
+        user_text = "TRANSCRIPT (seconds):\n" + "\n".join(lines)
+        update_step("broll", 20, "Finding moments to show your screen...")
+        res, badge = run_llm_chain(
+            priority_list, secrets, ollama_model, BROLL_SYSTEM_PROMPT, user_text,
+            step="broll", validate=lambda r: isinstance(r.get("inserts"), list)
+        )
+        if res is not None:
+            candidates = [c for c in res["inserts"] if isinstance(c, dict)]
+            provider = badge
+            # Live markers always count, even if the model skipped them
+            covered = lambda m: any(float(c.get("start", 0)) - 1.0 <= m <= float(c.get("end", 0)) + 1.0 for c in candidates)
+            candidates.extend(marker_candidates(segments, [m for m in markers if not covered(m)]))
+        else:
+            candidates = plan_broll_heuristic(segments, markers)
+    else:
+        candidates = marker_candidates(segments, markers)
+
+    inserts = apply_broll_guardrails(
+        candidates, keep_intervals, flatten_words(segments), screen_range,
+        float(broll_cfg.get("max_coverage", 0.40))
+    )
+
+    os.makedirs(thumbs_dir, exist_ok=True)
+    for ins in inserts:
+        thumb = os.path.join(thumbs_dir, f"insert_{ins['id']}.jpg")
+        mid = (ins["start"] + ins["end"]) / 2.0 + offset
+        ins["thumb"] = thumb if grab_frame(screen_video, mid, thumb) else ""
+        ins["status"] = "proposed"
+
+    plan = {
+        "version": 1,
+        "main_video": os.path.abspath(input_video),
+        "screen_video": os.path.abspath(screen_video),
+        "offset_sec": round(offset, 3),
+        "style": broll_cfg.get("style", "pip") if broll_cfg.get("style") in ("pip", "cutaway") else "pip",
+        "provider": provider,
+        "inserts": inserts
+    }
+    write_json_file(plan_path, plan)
+    covered_sec = sum(i["edited_end"] - i["edited_start"] for i in inserts)
+    update_step("broll", 90, f"{len(inserts)} B-roll moments planned ({covered_sec:.0f}s, {provider}).")
+    return plan
+
+
+def accepted_broll_inserts(plan: dict, screen_duration: float) -> list[tuple[float, float]]:
+    """Raw-timeline (start, end) spans the reviewer accepted, clipped to the screen recording."""
+    offset = float(plan.get("offset_sec", 0.0))
+    lo, hi = max(0.0, -offset), max(0.0, screen_duration - offset - 0.1)
+    spans = []
+    for ins in plan.get("inserts", []):
+        if ins.get("status") != "accepted":
+            continue
+        try:
+            s, e = max(float(ins["start"]), lo), min(float(ins["end"]), hi)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e - s >= 0.5:
+            spans.append((s, e))
+    merged = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def write_json_file(path: str, data: dict):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def read_json_file(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def probe_video_geometry(video_path: str) -> tuple[int, int, str]:
+    """(width, height, frame rate as an FFmpeg rational) of the first video stream."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,avg_frame_rate",
+        "-of", "json", video_path
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    stream = json.loads(res.stdout or "{}").get("streams", [{}])[0]
+    fps = stream.get("avg_frame_rate") or "30/1"
+    if fps.startswith("0"):
+        fps = "30/1"
+    return int(stream.get("width", 1920)), int(stream.get("height", 1080)), fps
+
+
+def split_interval_for_broll(a: float, b: float, spans: list[tuple[float, float]], min_piece: float = 0.1) -> list[tuple[float, float, bool]]:
+    """Splits keep interval [a, b] into (start, end, is_broll) pieces; slivers shorter than `min_piece` are absorbed."""
+    pieces = []
+    cursor = a
+    for s, e in spans:
+        s, e = max(s, a), min(e, b)
+        if e - s < min_piece:
+            continue
+        if s - cursor < min_piece:
+            s = cursor
+        if s > cursor:
+            pieces.append((cursor, s, False))
+        pieces.append((s, e, True))
+        cursor = e
+    if b - cursor >= min_piece:
+        pieces.append((cursor, b, False))
+    elif pieces:
+        start, _, is_broll = pieces[-1]
+        pieces[-1] = (start, b, is_broll)
+    else:
+        pieces.append((a, b, False))
+    return pieces
+
+
+def build_broll_filter(keep_intervals: list[tuple], broll: dict, width: int, height: int, fps: str) -> str:
+    """
+    Video: A-roll and screen pieces concatenated per keep interval (screen scaled/padded to the
+    output size, optional webcam bubble). Audio: one atrim per keep interval from the A-roll,
+    so the soundtrack (and chapter timing) is identical to the non-B-roll edit.
+    """
+    offset = float(broll["offset"])
+    spans = broll["inserts"]
+    pip = broll.get("style", "pip") == "pip"
+    norm = f"fps={fps},setsar=1,format=yuv420p"
+    fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+    bubble_w = int(width * BROLL_PIP_WIDTH) // 2 * 2
+    margin = int(width * 0.025)
+
+    parts, video_labels, audio_labels = [], [], []
+    p = 0
+    for idx, (a, b) in enumerate(keep_intervals):
+        for s, e, is_broll in split_interval_for_broll(a, b, spans):
+            if not is_broll:
+                parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,{norm}[p{p}];")
+            elif pip:
+                parts.append(f"[1:v]trim=start={s + offset:.3f}:end={e + offset:.3f},setpts=PTS-STARTPTS,{fit},{norm}[s{p}];")
+                parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,scale={bubble_w}:-2,{norm}[c{p}];")
+                parts.append(f"[s{p}][c{p}]overlay=x=W-w-{margin}:y=H-h-{margin}:shortest=1[p{p}];")
+            else:
+                parts.append(f"[1:v]trim=start={s + offset:.3f}:end={e + offset:.3f},setpts=PTS-STARTPTS,{fit},{norm}[p{p}];")
+            video_labels.append(f"[p{p}]")
+            p += 1
+        parts.append(f"[0:a]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{idx}];")
+        audio_labels.append(f"[a{idx}]")
+
+    return (
+        "".join(parts)
+        + "".join(video_labels) + f"concat=n={len(video_labels)}:v=1:a=0[outv];"
+        + "".join(audio_labels) + f"concat=n={len(audio_labels)}:v=0:a=1[outa]"
+    )
+
+
 def render_edited_video(
     input_path: str,
     output_path: str,
     keep_intervals: list[tuple[float, float]],
-    total_duration: float
+    total_duration: float,
+    broll: dict | None = None
 ) -> bool:
     """
     Uses FFmpeg filter_complex trim/atrim + concat to cut dead air and retakes
     accurately using NVIDIA NVENC hardware encoding (with x264 fallback).
+    `broll` = {"screen_path", "offset", "inserts": [(raw_start, raw_end)], "style"} adds screen B-roll.
     """
     if not keep_intervals:
         return False
 
+    use_broll = bool(broll and broll.get("inserts") and broll.get("screen_path"))
+
     # If the whole video is kept with negligible trimming (< 0.4s difference), copy directly
     kept_sum = sum(b - a for a, b in keep_intervals)
-    if len(keep_intervals) == 1 and abs(kept_sum - total_duration) < 0.4:
+    if not use_broll and len(keep_intervals) == 1 and abs(kept_sum - total_duration) < 0.4:
         log_info("No significant dead air or retakes found; preserving original stream.")
         if os.path.abspath(input_path) != os.path.abspath(output_path):
             subprocess.run(["ffmpeg", "-y", "-i", input_path, "-c", "copy", output_path], capture_output=True)
         return True
 
-    filter_parts = []
-    concat_inputs = []
-    for idx, (start, end) in enumerate(keep_intervals):
-        filter_parts.append(f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{idx}];")
-        filter_parts.append(f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{idx}];")
-        concat_inputs.append(f"[v{idx}][a{idx}]")
+    inputs = ["-i", input_path]
+    if use_broll:
+        width, height, fps = probe_video_geometry(input_path)
+        filter_Parts_str = build_broll_filter(keep_intervals, broll, width, height, fps)
+        inputs += ["-i", broll["screen_path"]]
+    else:
+        filter_parts = []
+        concat_inputs = []
+        for idx, (start, end) in enumerate(keep_intervals):
+            filter_parts.append(f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{idx}];")
+            filter_parts.append(f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{idx}];")
+            concat_inputs.append(f"[v{idx}][a{idx}]")
 
-    n = len(keep_intervals)
-    filter_Parts_str = "".join(filter_parts) + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
+        n = len(keep_intervals)
+        filter_Parts_str = "".join(filter_parts) + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
 
     # Write filter script to temp file so long filter chains never exceed Windows CLI length limits
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
@@ -416,7 +858,7 @@ def render_edited_video(
         ]:
             cmd = [
                 "ffmpeg", "-y", "-hide_banner",
-                "-i", input_path,
+                *inputs,
                 "-filter_complex_script", filter_script_path,
                 "-map", "[outv]", "-map", "[outa]",
                 *encoder_args,
@@ -427,6 +869,7 @@ def render_edited_video(
             res = subprocess.run(cmd, capture_output=True, text=True)
             if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
                 return True
+        log_warn(f"FFmpeg render failed: {(res.stderr or '').strip()[-600:]}")
     finally:
         try:
             os.remove(filter_script_path)
@@ -493,13 +936,13 @@ def extract_json_object(raw_text: str) -> dict:
     return json.loads(raw_text)
 
 
-def call_gemini_metadata(api_key: str, transcript_text: str) -> dict:
+def call_gemini_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
     if not api_key:
         raise ValueError("No Gemini API key configured in OBS Vault.")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     body = {
         "contents": [{
-            "parts": [{"text": f"{METADATA_SYSTEM_PROMPT}\n\nTRANSCRIPT:\n{transcript_text[:24000]}"}]
+            "parts": [{"text": f"{system_prompt}\n\n{user_text[:24000]}"}]
         }],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
     }
@@ -510,7 +953,7 @@ def call_gemini_metadata(api_key: str, transcript_text: str) -> dict:
     return extract_json_object(text)
 
 
-def call_openai_metadata(api_key: str, transcript_text: str) -> dict:
+def call_openai_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
     if not api_key:
         raise ValueError("No OpenAI API key configured in OBS Vault.")
     url = "https://api.openai.com/v1/chat/completions"
@@ -518,8 +961,8 @@ def call_openai_metadata(api_key: str, transcript_text: str) -> dict:
         "model": "gpt-4o",
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": METADATA_SYSTEM_PROMPT},
-            {"role": "user", "content": f"TRANSCRIPT:\n{transcript_text[:24000]}"}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text[:24000]}
         ],
         "temperature": 0.4
     }
@@ -537,16 +980,16 @@ def call_openai_metadata(api_key: str, transcript_text: str) -> dict:
     return extract_json_object(text)
 
 
-def call_claude_metadata(api_key: str, transcript_text: str) -> dict:
+def call_claude_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
     if not api_key:
         raise ValueError("No Claude API key configured in OBS Vault.")
     url = "https://api.anthropic.com/v1/messages"
     body = {
         "model": "claude-3-7-sonnet-latest",
-        "max_tokens": 1800,
-        "system": METADATA_SYSTEM_PROMPT,
+        "max_tokens": max_tokens,
+        "system": system_prompt,
         "messages": [
-            {"role": "user", "content": f"TRANSCRIPT:\n{transcript_text[:24000]}"}
+            {"role": "user", "content": user_text[:24000]}
         ]
     }
     req = urllib.request.Request(
@@ -564,7 +1007,7 @@ def call_claude_metadata(api_key: str, transcript_text: str) -> dict:
     return extract_json_object(text)
 
 
-def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
+def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str) -> dict:
     url = "http://127.0.0.1:11434/api/generate"
     models_to_try = [ollama_model, "gemma4:12b", "llama3.1:8b", "qwen3:14b"]
     seen = set()
@@ -575,7 +1018,7 @@ def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
         try:
             body = {
                 "model": model,
-                "prompt": f"{METADATA_SYSTEM_PROMPT}\n\nTRANSCRIPT:\n{transcript_text[:16000]}",
+                "prompt": f"{system_prompt}\n\n{user_text[:16000]}",
                 "format": "json",
                 "stream": False,
                 "options": {"temperature": 0.4}
@@ -599,6 +1042,52 @@ def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
             errors.append(f"{model}: {e}")
 
     raise RuntimeError("Local Ollama failed (" + " | ".join(errors) + ")")
+
+
+def llm_provider_labels(ollama_model: str) -> dict:
+    return {
+        "gemini": "Google Gemini (gemini-2.5-flash)",
+        "openai": "ChatGPT / OpenAI (gpt-4o)",
+        "claude": "Anthropic Claude (Sonnet)",
+        "local": f"Local GPU LLM ({ollama_model})"
+    }
+
+
+def run_llm_chain(
+    priority_list: list[str],
+    secrets: dict,
+    ollama_model: str,
+    system_prompt: str,
+    user_text: str,
+    step: str,
+    validate,
+    max_tokens: int = 1800
+) -> tuple[dict | None, str]:
+    """
+    Walks the user's 1-to-4 Priority Ranking list and returns the first JSON
+    result that passes `validate`, with its provider badge; (None, "") if all fail.
+    """
+    labels = llm_provider_labels(ollama_model)
+    for rank_idx, provider in enumerate(priority_list, start=1):
+        p_key = provider.lower().strip()
+        if p_key not in labels:
+            continue
+        label = labels[p_key]
+        update_step(step, 25 + rank_idx * 15, f"Trying Priority #{rank_idx}: {label}...")
+        try:
+            if p_key == "gemini":
+                res = call_gemini_json(secrets.get("gemini_key", ""), system_prompt, user_text, max_tokens)
+            elif p_key == "openai":
+                res = call_openai_json(secrets.get("openai_key", ""), system_prompt, user_text, max_tokens)
+            elif p_key == "claude":
+                res = call_claude_json(secrets.get("claude_key", ""), system_prompt, user_text, max_tokens)
+            else:
+                res = call_local_ollama_json(ollama_model, system_prompt, user_text)
+            if res and validate(res):
+                return res, f"Priority #{rank_idx}: {res.get('_model_used', label)}"
+        except Exception as e:
+            log_warn(f"Priority #{rank_idx} ({label}) skipped/fell back: {e}")
+    return None, ""
 
 
 _ALT_TITLES_SECTION_RE = re.compile(
@@ -825,51 +1314,30 @@ def generate_metadata_with_priority(
     else:
         transcript_text = "[No spoken dialogue detected in recording. Generate engaging gaming/creator showcase metadata.]"
 
-    provider_labels = {
-        "gemini": "Google Gemini (gemini-2.5-flash)",
-        "openai": "ChatGPT / OpenAI (gpt-4o)",
-        "claude": "Anthropic Claude (Sonnet)",
-        "local": f"Local GPU LLM ({ollama_model})"
-    }
-
-    for rank_idx, provider in enumerate(priority_list, start=1):
-        p_key = provider.lower().strip()
-        label = provider_labels.get(p_key, p_key)
-        update_step("llm", 25 + rank_idx * 15, f"Trying Priority #{rank_idx}: {label}...")
-        try:
-            if p_key == "gemini":
-                res = call_gemini_metadata(secrets.get("gemini_key", ""), transcript_text)
-            elif p_key == "openai":
-                res = call_openai_metadata(secrets.get("openai_key", ""), transcript_text)
-            elif p_key == "claude":
-                res = call_claude_metadata(secrets.get("claude_key", ""), transcript_text)
-            elif p_key == "local":
-                res = call_local_ollama_metadata(ollama_model, transcript_text)
-            else:
-                continue
-
-            if res and res.get("title"):
-                res["description"] = normalize_chapter_lines(
-                    strip_alternative_titles_section(res.get("description", ""))
-                )
-                used_badge = f"Priority #{rank_idx}: {res.get('_model_used', label)}"
-                # Ensure alternative_titles exists and has items
-                if not res.get("alternative_titles"):
-                    res["alternative_titles"] = [
-                        f"{res['title']} (Extended Cut)",
-                        f"Why {res['title']} Matters Now",
-                        f"The Secret of {res['title']}",
-                        f"How To Master {res['title']}",
-                        f"Stop Ignoring {res['title']}",
-                        f"{res['title']} - Unfiltered Reaction",
-                        f"The Complete Guide to {res['title']}",
-                        f"Is {res['title']} True?",
-                        f"{res['title']} Explained Simply"
-                    ]
-                log_info(f"Metadata generated successfully via {used_badge}.")
-                return res, used_badge
-        except Exception as e:
-            log_warn(f"Priority #{rank_idx} ({label}) skipped/fell back: {e}")
+    res, used_badge = run_llm_chain(
+        priority_list, secrets, ollama_model,
+        METADATA_SYSTEM_PROMPT, f"TRANSCRIPT:\n{transcript_text}",
+        step="llm", validate=lambda r: bool(r.get("title"))
+    )
+    if res:
+        res["description"] = normalize_chapter_lines(
+            strip_alternative_titles_section(res.get("description", ""))
+        )
+        # Ensure alternative_titles exists and has items
+        if not res.get("alternative_titles"):
+            res["alternative_titles"] = [
+                f"{res['title']} (Extended Cut)",
+                f"Why {res['title']} Matters Now",
+                f"The Secret of {res['title']}",
+                f"How To Master {res['title']}",
+                f"Stop Ignoring {res['title']}",
+                f"{res['title']} - Unfiltered Reaction",
+                f"The Complete Guide to {res['title']}",
+                f"Is {res['title']} True?",
+                f"{res['title']} Explained Simply"
+            ]
+        log_info(f"Metadata generated successfully via {used_badge}.")
+        return res, used_badge
 
     # Fallback: intelligent transcript heuristic analysis (never static generic date)
     log_info("Generating intelligent transcript-derived metadata via Heuristic Engine...")
@@ -1396,32 +1864,35 @@ def emit_upload_stats(video_path: str, original_duration: float):
 # 6. Main Pipeline Orchestrator
 # ---------------------------------------------------------------------------
 
-def run_pipeline(config: dict):
+def pipeline_paths(input_video: str) -> dict:
+    base_dir = os.path.dirname(os.path.abspath(input_video))
+    stem = Path(input_video).stem
+    return {
+        "edited_video": os.path.join(base_dir, f"{stem}_yt_edited.mp4"),
+        "thumbnail_jpg": os.path.join(base_dir, f"{stem}_yt_thumb.jpg"),
+        "transcript_file": os.path.join(base_dir, f"{stem}_yt_transcript.txt"),
+        "titles_file": os.path.join(base_dir, f"{stem}_yt_titles.txt"),
+        "broll_plan": os.path.join(base_dir, f"{stem}_broll_plan.json"),
+        "broll_thumbs": os.path.join(base_dir, f"{stem}_broll"),
+        "state_file": os.path.join(base_dir, f"{stem}_yt_state.json"),
+    }
+
+
+def stage_analyze(config: dict) -> dict | None:
+    """Transcribe, find the cut list and plan B-roll. Returns the context for stage_finish, or None on error."""
     input_video = config.get("input_video", "")
     if not input_video or not os.path.exists(input_video):
         log_error(f"Input video not found: {input_video}")
         emit("error", message=f"Input video not found: {input_video}")
-        return 1
+        return None
 
-    base_dir = os.path.dirname(os.path.abspath(input_video))
-    stem = Path(input_video).stem
-    edited_video = os.path.join(base_dir, f"{stem}_yt_edited.mp4")
-    thumbnail_jpg = os.path.join(base_dir, f"{stem}_yt_thumb.jpg")
-    transcript_file = os.path.join(base_dir, f"{stem}_yt_transcript.txt")
-    titles_file = os.path.join(base_dir, f"{stem}_yt_titles.txt")
-
+    paths = pipeline_paths(input_video)
     silence_db = float(config.get("silence_db", -42.0))
     min_silence_sec = float(config.get("min_silence_sec", 1.20))
     padding_sec = float(config.get("padding_sec", 0.25))
     cut_retakes = bool(config.get("cut_retakes", True))
     whisper_model = config.get("whisper_model", "large-v3-turbo")
-    ollama_model = config.get("ollama_model", "gemma4:12b")
-    priority_list = config.get("priority_list", ["gemini", "openai", "claude", "local"])
-    thumb_style = config.get("thumbnail_style", "ai_graphic")
-    privacy_status = config.get("privacy_status", "unlisted")
-    category_id = config.get("category_id", "28")
-    made_for_kids = bool(config.get("made_for_kids", False))
-    secrets = config.get("secrets", {})
+    broll_cfg = config.get("broll") or {}
 
     total_duration = get_video_duration(input_video)
     log_info(f"Starting YouTube Auto-Edit Pipeline for '{ os.path.basename(input_video) }' ({total_duration:.1f}s)")
@@ -1436,11 +1907,11 @@ def run_pipeline(config: dict):
 
     # Save transcript alongside video
     if segments:
-        with open(transcript_file, "w", encoding="utf-8") as tf:
+        with open(paths["transcript_file"], "w", encoding="utf-8") as tf:
             for s in segments:
                 tf.write(f"[{s['start']:.2f}s - {s['end']:.2f}s] {s['text']}\n")
 
-    # STAGE 2: Dead Air & Butchered Sentence Editing
+    # STAGE 2: Dead Air & Butchered Sentence Detection
     update_step("edit", 15, f"Detecting dead air (threshold: {silence_db} dB, min: {min_silence_sec}s)...")
     keep_intervals = detect_nonsilent_intervals(
         input_video,
@@ -1459,11 +1930,83 @@ def run_pipeline(config: dict):
         if retake_cuts:
             keep_intervals = subtract_cuts_from_intervals(keep_intervals, retake_cuts)
 
+    update_step("edit", 60, f"Cut list ready ({len(keep_intervals)} sections kept).")
+
+    # STAGE 2b: Screen B-roll plan
+    broll_plan_path = ""
+    if broll_cfg.get("enabled"):
+        plan = plan_broll(
+            broll_cfg, input_video, segments, keep_intervals,
+            priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
+            secrets=config.get("secrets", {}),
+            ollama_model=config.get("ollama_model", "gemma4:12b"),
+            plan_path=paths["broll_plan"],
+            thumbs_dir=paths["broll_thumbs"]
+        )
+        if plan and plan["inserts"]:
+            broll_plan_path = paths["broll_plan"]
+        elif plan:
+            update_step("broll", 100, "No B-roll moments found.")
+    else:
+        update_step("broll", 100, "Skipped (B-roll is off).")
+
+    return {
+        "input_video": input_video,
+        "total_duration": total_duration,
+        "segments": segments,
+        "keep_intervals": [list(k) for k in keep_intervals],
+        "broll_plan_path": broll_plan_path,
+    }
+
+
+def stage_finish(config: dict, ctx: dict) -> int:
+    """Render (with accepted B-roll), generate metadata and thumbnail, then upload."""
+    input_video = ctx["input_video"]
+    total_duration = float(ctx["total_duration"])
+    segments = ctx["segments"]
+    keep_intervals = [tuple(k) for k in ctx["keep_intervals"]]
+    paths = pipeline_paths(input_video)
+    edited_video = paths["edited_video"]
+    thumbnail_jpg = paths["thumbnail_jpg"]
+
+    ollama_model = config.get("ollama_model", "gemma4:12b")
+    priority_list = config.get("priority_list", ["gemini", "openai", "claude", "local"])
+    thumb_style = config.get("thumbnail_style", "ai_graphic")
+    privacy_status = config.get("privacy_status", "unlisted")
+    category_id = config.get("category_id", "28")
+    made_for_kids = bool(config.get("made_for_kids", False))
+    secrets = config.get("secrets", {})
+
+    broll = None
+    if ctx.get("broll_plan_path"):
+        try:
+            plan = read_json_file(ctx["broll_plan_path"])
+            screen_video = plan.get("screen_video", "")
+            spans = accepted_broll_inserts(plan, get_video_duration(screen_video)) if os.path.exists(screen_video) else []
+            if spans:
+                broll = {
+                    "screen_path": screen_video,
+                    "offset": float(plan.get("offset_sec", 0.0)),
+                    "inserts": spans,
+                    "style": plan.get("style", "pip"),
+                }
+                update_step("broll", 100, f"{len(spans)} B-roll inserts accepted ({plan.get('style', 'pip')}).")
+            else:
+                update_step("broll", 100, "No B-roll inserts accepted.")
+        except (OSError, ValueError) as e:
+            log_warn(f"Could not read the B-roll plan ({e}); rendering without B-roll.")
+
     kept_duration = sum(b - a for a, b in keep_intervals) if keep_intervals else total_duration
     removed_sec = max(0.0, total_duration - kept_duration)
-    update_step("edit", 65, f"Rendering edited MP4 via NVENC (removed {removed_sec:.1f}s of dead air/retakes)...")
+    with_broll = f" with {len(broll['inserts'])} B-roll inserts" if broll else ""
+    update_step("edit", 65, f"Rendering edited MP4 via NVENC{with_broll} (removed {removed_sec:.1f}s of dead air/retakes)...")
 
-    if render_edited_video(input_video, edited_video, keep_intervals, total_duration):
+    rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, broll)
+    if not rendered and broll:
+        log_warn("B-roll render failed; rendering the plain edit instead.")
+        rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration)
+
+    if rendered:
         final_video_to_upload = edited_video
         # Chapters must use the trimmed video's timeline, not the raw recording's.
         meta_segments = remap_segments_to_edited_timeline(segments, keep_intervals)
@@ -1484,7 +2027,7 @@ def run_pipeline(config: dict):
         segments=meta_segments
     )
     metadata["description"] = append_social_footer(metadata.get("description", ""))
-    write_titles_file(titles_file, metadata.get("title", ""), metadata.get("alternative_titles", []))
+    write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
     emit(
         "metadata_ready",
         title=metadata.get("title", ""),
@@ -1553,6 +2096,51 @@ def run_pipeline(config: dict):
         return 0
 
 
+def run_pipeline(config: dict):
+    ctx = stage_analyze(config)
+    if ctx is None:
+        return 1
+
+    plan_path = ctx["broll_plan_path"]
+    if plan_path:
+        plan = read_json_file(plan_path)
+        if (config.get("broll") or {}).get("review", True):
+            # Pause for review: save everything stage_finish needs (never the secrets)
+            # and let OBS relaunch us in resume_pipeline mode.
+            state_file = pipeline_paths(ctx["input_video"])["state_file"]
+            write_json_file(state_file, {
+                "version": 1,
+                "config": {k: v for k, v in config.items() if k != "secrets"},
+                "ctx": ctx,
+            })
+            update_step("broll", 100, f"Waiting for your review ({len(plan['inserts'])} B-roll moments).")
+            emit("broll_plan_ready", plan_path=plan_path, state_path=state_file, insert_count=len(plan["inserts"]))
+            return 0
+        for ins in plan["inserts"]:
+            ins["status"] = "accepted" if ins.get("confidence", 0) >= BROLL_ACCEPT_CONFIDENCE else "rejected"
+        write_json_file(plan_path, plan)
+
+    return stage_finish(config, ctx)
+
+
+def resume_pipeline(state_path: str, secrets: dict) -> int:
+    """Second half of a paused run, after the B-roll plan was reviewed in OBS."""
+    try:
+        state = read_json_file(state_path)
+    except (OSError, ValueError) as e:
+        log_error(f"Could not read pipeline state: {e}")
+        emit("error", message=f"Could not resume the pipeline: {e}")
+        return 1
+    config = dict(state.get("config", {}))
+    config["secrets"] = secrets or {}
+    ctx = state.get("ctx", {})
+    if not ctx.get("input_video") or not os.path.exists(ctx["input_video"]):
+        emit("error", message=f"Input video not found: {ctx.get('input_video', '')}")
+        return 1
+    log_info(f"Resuming pipeline for '{os.path.basename(ctx['input_video'])}' after B-roll review.")
+    return stage_finish(config, ctx)
+
+
 def main():
     # Strictly ignore global Windows API key environment variables so ONLY keys unlocked by OBS DPAPI Vault are used
     for env_key in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
@@ -1597,6 +2185,8 @@ def main():
                 log_error(f"YouTube update error: {e}")
                 emit("update_error", message=str(e))
                 return 1
+        if cfg.get("mode") == "resume_pipeline":
+            return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}))
         return run_pipeline(cfg)
 
     if args.self_test:
