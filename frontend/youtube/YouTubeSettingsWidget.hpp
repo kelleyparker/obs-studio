@@ -68,5 +68,14 @@ private:
 	QDoubleSpinBox *paddingSecSpin = nullptr;
 	QCheckBox *cutRetakesCheck = nullptr;
 
+	// Section 5: Screen B-roll
+	QCheckBox *brollEnabledCheck = nullptr;
+	QComboBox *brollSourceCombo = nullptr;
+	QComboBox *brollStyleCombo = nullptr;
+	QDoubleSpinBox *brollCoverageSpin = nullptr;
+	QCheckBox *brollReviewCheck = nullptr;
+
+	void RefreshBrollSources(const QString &selected);
+
 	bool internalUpdating = false;
 };

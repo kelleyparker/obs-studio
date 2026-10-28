@@ -2,6 +2,9 @@
 #include "YouTubeSecretVault.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
+#include <obs.h>
+
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -283,6 +286,48 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	editForm->addRow("Retake Trimming:", cutRetakesCheck);
 
 	mainLayout->addWidget(editGroup);
+
+	// =========================================================================
+	// SECTION 5: Screen B-roll
+	// =========================================================================
+	QGroupBox *brollGroup = new QGroupBox("5. Screen B-roll (Record Your Screen & Cut To It)", container);
+	QFormLayout *brollForm = new QFormLayout(brollGroup);
+
+	brollEnabledCheck = new QCheckBox("Record a screen source alongside the webcam and add it as B-roll", brollGroup);
+	brollForm->addRow("B-roll:", brollEnabledCheck);
+
+	brollSourceCombo = new QComboBox(brollGroup);
+	brollSourceCombo->setToolTip(
+		"Any video source, e.g. a Display Capture in a spare scene. It is recorded to its own file; "
+		"the main recording is not changed.");
+	brollForm->addRow("Screen Source:", brollSourceCombo);
+
+	brollStyleCombo = new QComboBox(brollGroup);
+	brollStyleCombo->addItem("Screen with webcam bubble (PiP)", "pip");
+	brollStyleCombo->addItem("Full-screen cutaway", "cutaway");
+	brollForm->addRow("Style:", brollStyleCombo);
+
+	brollCoverageSpin = new QDoubleSpinBox(brollGroup);
+	brollCoverageSpin->setRange(5.0, 80.0);
+	brollCoverageSpin->setSingleStep(5.0);
+	brollCoverageSpin->setDecimals(0);
+	brollCoverageSpin->setSuffix(" % of the video");
+	brollCoverageSpin->setValue(40.0);
+	brollForm->addRow("Maximum B-roll:", brollCoverageSpin);
+
+	brollReviewCheck = new QCheckBox("Let me review the B-roll suggestions before rendering & uploading", brollGroup);
+	brollReviewCheck->setChecked(true);
+	brollForm->addRow("Review:", brollReviewCheck);
+
+	QLabel *brollHint = new QLabel(
+		"Tip: bind \"YouTube: Mark B-roll moment\" in Settings → Hotkeys and press it while recording to flag "
+		"spots that need your screen.",
+		brollGroup);
+	brollHint->setWordWrap(true);
+	brollHint->setStyleSheet("color: #b8a8c8; font-size: 11px;");
+	brollForm->addRow(brollHint);
+
+	mainLayout->addWidget(brollGroup);
 	mainLayout->addStretch();
 
 	scroll->setWidget(container);
@@ -330,6 +375,11 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(minSilenceSecSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
 	connect(paddingSecSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
 	connect(cutRetakesCheck, &QCheckBox::toggled, this, notifyMod);
+	connect(brollEnabledCheck, &QCheckBox::toggled, this, notifyMod);
+	connect(brollSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(brollStyleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(brollCoverageSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
+	connect(brollReviewCheck, &QCheckBox::toggled, this, notifyMod);
 
 	connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::OAuthStatusUpdated, this,
 		[this](bool connected, const QString &channelTitle, const QString &message) {
@@ -541,7 +591,36 @@ void YouTubeSettingsWidget::LoadFromManager()
 		editingPresetCombo->setCurrentIndex(3); // Custom
 	}
 
+	brollEnabledCheck->setChecked(cfg.brollEnabled);
+	RefreshBrollSources(cfg.brollSourceName);
+	int brollStyleIdx = brollStyleCombo->findData(cfg.brollStyle);
+	brollStyleCombo->setCurrentIndex(brollStyleIdx >= 0 ? brollStyleIdx : 0);
+	brollCoverageSpin->setValue(cfg.brollMaxCoverage * 100.0);
+	brollReviewCheck->setChecked(cfg.brollReview);
+
 	internalUpdating = false;
+}
+
+void YouTubeSettingsWidget::RefreshBrollSources(const QString &selected)
+{
+	brollSourceCombo->clear();
+	brollSourceCombo->addItem("— Select a screen source —", QString());
+
+	auto addSource = [](void *param, obs_source_t *source) {
+		if (obs_source_get_output_flags(source) & OBS_SOURCE_VIDEO) {
+			QString name = QString::fromUtf8(obs_source_get_name(source));
+			static_cast<QComboBox *>(param)->addItem(name, name);
+		}
+		return true;
+	};
+	obs_enum_sources(addSource, brollSourceCombo);
+
+	int idx = brollSourceCombo->findData(selected);
+	if (idx < 0 && !selected.isEmpty()) {
+		brollSourceCombo->addItem(QString("%1 (missing)").arg(selected), selected);
+		idx = brollSourceCombo->count() - 1;
+	}
+	brollSourceCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 }
 
 void YouTubeSettingsWidget::SaveToManager()
@@ -561,6 +640,11 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.minSilenceSec = minSilenceSecSpin->value();
 	cfg.paddingSec = paddingSecSpin->value();
 	cfg.cutRetakes = cutRetakesCheck->isChecked();
+	cfg.brollEnabled = brollEnabledCheck->isChecked();
+	cfg.brollSourceName = brollSourceCombo->currentData().toString();
+	cfg.brollStyle = brollStyleCombo->currentData().toString();
+	cfg.brollMaxCoverage = brollCoverageSpin->value() / 100.0;
+	cfg.brollReview = brollReviewCheck->isChecked();
 
 	mgr->SetVaultKey("GeminiKey", geminiKeyEdit->text());
 	mgr->SetVaultKey("OpenAIKey", openaiKeyEdit->text());

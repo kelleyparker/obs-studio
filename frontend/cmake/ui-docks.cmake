@@ -7,6 +7,10 @@ target_sources(
     docks/OBSDock.hpp
     docks/VerticalDocks.cpp
     docks/VerticalDocks.hpp
+    youtube/YouTubeBrollRecorder.cpp
+    youtube/YouTubeBrollRecorder.hpp
+    youtube/YouTubeBrollReview.cpp
+    youtube/YouTubeBrollReview.hpp
     youtube/YouTubePipelineDock.cpp
     youtube/YouTubePipelineDock.hpp
     youtube/YouTubeSecretVault.cpp

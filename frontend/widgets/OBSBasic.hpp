@@ -513,6 +513,7 @@ private:
 	obs_hotkey_pair_id verticalRecordingHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
 	obs_hotkey_pair_id verticalReplayHotkeys = OBS_INVALID_HOTKEY_PAIR_ID;
 	obs_hotkey_id verticalSaveReplayHotkey = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id youtubeBrollMarkHotkey = OBS_INVALID_HOTKEY_ID;
 
 	void InitHotkeys();
 	void CreateHotkeys();

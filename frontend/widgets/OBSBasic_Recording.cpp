@@ -253,6 +253,7 @@ void OBSBasic::RecordingStop(int code, QString last_error)
 	}
 
 	OnEvent(OBS_FRONTEND_EVENT_RECORDING_STOPPED);
+	YouTubeWorkflowManager::Instance()->OnMainRecordingStopped();
 
 	if (diskFullTimer->isActive()) {
 		diskFullTimer->stop();

@@ -1,8 +1,11 @@
 #include "YouTubeWorkflowManager.hpp"
+#include "YouTubeBrollRecorder.hpp"
 #include "YouTubeSecretVault.hpp"
 
 #include <OBSApp.hpp>
+#include <obs-frontend-api.h>
 #include <util/config-file.h>
+#include <util/platform.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -44,6 +47,9 @@ YouTubeWorkflowManager *YouTubeWorkflowManager::Instance()
 YouTubeWorkflowManager::YouTubeWorkflowManager(QObject *parent) : QObject(parent)
 {
 	LoadConfig();
+
+	brollRecorder = new YouTubeBrollRecorder(this);
+	connect(brollRecorder, &YouTubeBrollRecorder::Stopped, this, &YouTubeWorkflowManager::OnBrollRecorderStopped);
 }
 
 YouTubeWorkflowManager::~YouTubeWorkflowManager()
@@ -115,6 +121,22 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "CutRetakes")) {
 		config.cutRetakes = config_get_bool(cfg, "YouTubeWorkflow", "CutRetakes");
 	}
+
+	config.brollEnabled = config_get_bool(cfg, "YouTubeWorkflow", "BrollEnabled");
+	const char *brollSource = config_get_string(cfg, "YouTubeWorkflow", "BrollSource");
+	if (brollSource) {
+		config.brollSourceName = QString::fromUtf8(brollSource);
+	}
+	const char *brollStyle = config_get_string(cfg, "YouTubeWorkflow", "BrollStyle");
+	if (brollStyle && *brollStyle) {
+		config.brollStyle = QString::fromUtf8(brollStyle);
+	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollMaxCoverage")) {
+		config.brollMaxCoverage = config_get_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage");
+	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollReview")) {
+		config.brollReview = config_get_bool(cfg, "YouTubeWorkflow", "BrollReview");
+	}
 }
 
 void YouTubeWorkflowManager::SaveConfig()
@@ -140,6 +162,11 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_double(cfg, "YouTubeWorkflow", "MinSilenceSec", config.minSilenceSec);
 	config_set_double(cfg, "YouTubeWorkflow", "PaddingSec", config.paddingSec);
 	config_set_bool(cfg, "YouTubeWorkflow", "CutRetakes", config.cutRetakes);
+	config_set_bool(cfg, "YouTubeWorkflow", "BrollEnabled", config.brollEnabled);
+	config_set_string(cfg, "YouTubeWorkflow", "BrollSource", config.brollSourceName.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "BrollStyle", config.brollStyle.toUtf8().constData());
+	config_set_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage", config.brollMaxCoverage);
+	config_set_bool(cfg, "YouTubeWorkflow", "BrollReview", config.brollReview);
 
 	config_save_safe(cfg, "tmp", nullptr);
 }
@@ -231,10 +258,69 @@ bool YouTubeWorkflowManager::IsPipelineRunning() const
 
 void YouTubeWorkflowManager::OnRecordingStarted()
 {
-	if (workflowArmed) {
-		emit PipelineStateChanged("🔴 Recording Active — Click 'Stop Recording' (or ⏹ YT) to Edit & Upload",
-					  false);
-		emit LogMessageReceived("info", "YouTube Workflow armed: Recording in progress...");
+	mainRecordingStartNs = os_gettime_ns();
+	if (!workflowArmed) {
+		return;
+	}
+
+	emit PipelineStateChanged("🔴 Recording Active — Click 'Stop Recording' (or ⏹ YT) to Edit & Upload", false);
+	emit LogMessageReceived("info", "YouTube Workflow armed: Recording in progress...");
+
+	LoadConfig();
+	brollSession = BrollSession();
+	if (!config.brollEnabled) {
+		return;
+	}
+	if (config.brollSourceName.isEmpty()) {
+		emit LogMessageReceived("warning", "B-roll is on but no screen source is selected; skipping B-roll.");
+		return;
+	}
+	QString error;
+	if (brollRecorder->Start(config.brollSourceName, error)) {
+		emit LogMessageReceived("info", QString("Recording '%1' as screen B-roll.").arg(config.brollSourceName));
+	} else {
+		emit LogMessageReceived("warning", QString("B-roll recording not started: %1").arg(error));
+	}
+}
+
+void YouTubeWorkflowManager::OnMainRecordingStopped()
+{
+	uint64_t mainStartNs = mainRecordingStartNs;
+	mainRecordingStartNs = 0;
+	if (!brollRecorder->Active()) {
+		return;
+	}
+	/* Seconds the screen recording started after the webcam one; the
+	 * pipeline refines this by matching the mic audio in both files. */
+	brollSession.screenPath = brollRecorder->LastRecordingPath();
+	if (brollRecorder->StartTimeNs() && mainStartNs) {
+		brollSession.startDeltaSec = (double(brollRecorder->StartTimeNs()) - double(mainStartNs)) / 1e9;
+	}
+	brollRecorder->Stop();
+}
+
+void YouTubeWorkflowManager::MarkBrollMoment()
+{
+	if (!mainRecordingStartNs || !obs_frontend_recording_active()) {
+		return;
+	}
+	double t = double(os_gettime_ns() - mainRecordingStartNs) / 1e9;
+	brollSession.markers.push_back(t);
+	obs_frontend_recording_add_chapter("B-roll");
+	emit LogMessageReceived("info", QString("B-roll moment marked at %1:%2")
+						.arg(int(t) / 60, 2, 10, QChar('0'))
+						.arg(int(t) % 60, 2, 10, QChar('0')));
+}
+
+void YouTubeWorkflowManager::OnBrollRecorderStopped(int code)
+{
+	if (code != OBS_OUTPUT_SUCCESS) {
+		emit LogMessageReceived("warning", QString("B-roll recording ended with an error (code %1).").arg(code));
+	}
+	if (!pendingPipelineVideo.isEmpty()) {
+		QString video = pendingPipelineVideo;
+		pendingPipelineVideo.clear();
+		StartPipelineForVideo(video);
 	}
 }
 
@@ -249,7 +335,7 @@ void YouTubeWorkflowManager::OnRecordingStopped(const QString &rawRecordingPath,
 
 	if (willAutoRemux) {
 		waitingForRemux = true;
-		emit PipelineStateChanged("📹 Stage 1/5: Auto-Remuxing MKV to MP4...", true);
+		emit PipelineStateChanged("📹 Auto-Remuxing MKV to MP4...", true);
 		emit StepProgressUpdated("remux", 50, "Remuxing MKV recording to MP4...");
 		emit LogMessageReceived("info", "Recording stopped. Waiting for automatic MP4 remux to complete...");
 	} else {
@@ -299,25 +385,92 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
 		return;
 	}
+	if (brollRecorder->Active()) {
+		pendingPipelineVideo = videoPath;
+		emit LogMessageReceived("info", "Waiting for the B-roll screen recording to finish...");
+		return;
+	}
 
 	LoadConfig();
 	lastVideoPath = videoPath;
 	lastVideoId.clear();
 
-	QString scriptPath = ResolvePipelineScriptPath();
-	if (!QFileInfo::exists(scriptPath)) {
-		emit PipelineStateChanged("❌ Pipeline script missing", false);
-		emit LogMessageReceived("error", QString("Could not find script at: %1").arg(scriptPath));
-		return;
-	}
-
 	emit PipelineStateChanged("⚙️ Running YouTube AI Edit, Thumbnail & Upload Pipeline...", true);
 	emit StepProgressUpdated("remux", 100, "MP4 Ready");
 	emit StepProgressUpdated("transcribe", 0, "Queued...");
 	emit StepProgressUpdated("edit", 0, "Queued...");
+	emit StepProgressUpdated("broll", 0, "Queued...");
 	emit StepProgressUpdated("llm", 0, "Queued...");
 	emit StepProgressUpdated("thumbnail", 0, "Queued...");
 	emit StepProgressUpdated("upload", 0, "Queued...");
+
+	QJsonArray prioArr;
+	for (const QString &p : config.priorityList) {
+		prioArr.append(p);
+	}
+
+	QJsonObject payload;
+	payload["mode"] = "pipeline";
+	payload["input_video"] = videoPath;
+	payload["priority_list"] = prioArr;
+	payload["thumbnail_style"] = config.thumbnailStyle;
+	payload["whisper_model"] = config.whisperModel;
+	payload["ollama_model"] = config.ollamaModel;
+	payload["privacy_status"] = config.privacyStatus;
+	payload["category_id"] = config.categoryId;
+	payload["made_for_kids"] = config.madeForKids;
+	payload["silence_db"] = config.silenceDb;
+	payload["min_silence_sec"] = config.minSilenceSec;
+	payload["padding_sec"] = config.paddingSec;
+	payload["cut_retakes"] = config.cutRetakes;
+
+	if (config.brollEnabled && !brollSession.screenPath.isEmpty() && QFileInfo::exists(brollSession.screenPath)) {
+		QJsonArray markers;
+		for (double m : brollSession.markers) {
+			markers.append(m);
+		}
+		QJsonObject broll;
+		broll["enabled"] = true;
+		broll["screen_video"] = brollSession.screenPath;
+		broll["start_delta_sec"] = brollSession.startDeltaSec;
+		broll["markers"] = markers;
+		broll["style"] = config.brollStyle;
+		broll["max_coverage"] = config.brollMaxCoverage;
+		broll["review"] = config.brollReview;
+		payload["broll"] = broll;
+	}
+
+	LaunchPipelineWorker(payload);
+}
+
+void YouTubeWorkflowManager::ResumePipeline(const QString &statePath)
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	LoadConfig();
+
+	emit PipelineStateChanged("⚙️ Rendering with B-roll, then metadata, thumbnail & upload...", true);
+	emit StepProgressUpdated("edit", 0, "Queued...");
+	emit StepProgressUpdated("llm", 0, "Queued...");
+	emit StepProgressUpdated("thumbnail", 0, "Queued...");
+	emit StepProgressUpdated("upload", 0, "Queued...");
+
+	QJsonObject payload;
+	payload["mode"] = "resume_pipeline";
+	payload["state_path"] = statePath;
+	LaunchPipelineWorker(payload);
+}
+
+bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
+{
+	QString scriptPath = ResolvePipelineScriptPath();
+	if (!QFileInfo::exists(scriptPath)) {
+		emit PipelineStateChanged("❌ Pipeline script missing", false);
+		emit LogMessageReceived("error", QString("Could not find script at: %1").arg(scriptPath));
+		return false;
+	}
 
 	workerProcess = new QProcess(this);
 	stdoutBuffer.clear();
@@ -351,7 +504,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 		emit LogMessageReceived("error", "Failed to start python.exe for YouTube pipeline.");
 		workerProcess->deleteLater();
 		workerProcess = nullptr;
-		return;
+		return false;
 	}
 
 	// Decrypt vault keys strictly in local scope, pipe over private stdin, and wipe immediately
@@ -371,25 +524,6 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	YouTubeSecretVault::WipeString(claudeKey);
 	YouTubeSecretVault::WipeString(ytTokenJson);
 
-	QJsonArray prioArr;
-	for (const QString &p : config.priorityList) {
-		prioArr.append(p);
-	}
-
-	QJsonObject payload;
-	payload["mode"] = "pipeline";
-	payload["input_video"] = videoPath;
-	payload["priority_list"] = prioArr;
-	payload["thumbnail_style"] = config.thumbnailStyle;
-	payload["whisper_model"] = config.whisperModel;
-	payload["ollama_model"] = config.ollamaModel;
-	payload["privacy_status"] = config.privacyStatus;
-	payload["category_id"] = config.categoryId;
-	payload["made_for_kids"] = config.madeForKids;
-	payload["silence_db"] = config.silenceDb;
-	payload["min_silence_sec"] = config.minSilenceSec;
-	payload["padding_sec"] = config.paddingSec;
-	payload["cut_retakes"] = config.cutRetakes;
 	payload["secrets"] = secretsObj;
 
 	QByteArray jsonLine = QJsonDocument(payload).toJson(QJsonDocument::Compact) + "\n";
@@ -399,6 +533,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 #ifdef _WIN32
 	SecureZeroMemory(jsonLine.data(), jsonLine.size());
 #endif
+	return true;
 }
 
 void YouTubeWorkflowManager::StartOAuthLogin()
@@ -610,6 +745,12 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		QString msg = obj.value("message").toString();
 		emit PipelineStateChanged(QString("❌ Error: %1").arg(msg), false);
 		emit LogMessageReceived("error", msg);
+	} else if (type == "broll_plan_ready") {
+		int count = obj.value("insert_count").toInt();
+		emit PipelineStateChanged(
+			QString("👀 Review %1 B-roll suggestion(s) below, then Render & Upload").arg(count), false);
+		emit LogMessageReceived("info", QString("B-roll plan ready: %1").arg(obj.value("plan_path").toString()));
+		emit BrollPlanReady(obj.value("plan_path").toString(), obj.value("state_path").toString());
 	} else if (type == "upload_stats") {
 		emit UploadStatsReady(obj.value("text").toString());
 	} else if (type == "update_success") {

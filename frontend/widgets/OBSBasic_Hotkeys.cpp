@@ -20,6 +20,7 @@
 #include "OBSBasic.hpp"
 
 #include <widgets/OBSBasicStats.hpp>
+#include <youtube/YouTubeWorkflowManager.hpp>
 
 void OBSBasic::InitHotkeys()
 {
@@ -200,6 +201,17 @@ void OBSBasic::CreateHotkeys()
 		this);
 	LoadHotkey(addChapterHotkey, "OBSBasic.AddChapterMarker");
 
+	youtubeBrollMarkHotkey = obs_hotkey_register_frontend(
+		"OBSBasic.YouTubeMarkBroll", "YouTube: Mark B-roll moment",
+		[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed) {
+				QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
+							  &YouTubeWorkflowManager::MarkBrollMoment, Qt::QueuedConnection);
+			}
+		},
+		this);
+	LoadHotkey(youtubeBrollMarkHotkey, "OBSBasic.YouTubeMarkBroll");
+
 	replayBufHotkeys =
 		obs_hotkey_pair_register_frontend("OBSBasic.StartReplayBuffer", Str("Basic.Main.StartReplayBuffer"),
 						  "OBSBasic.StopReplayBuffer", Str("Basic.Main.StopReplayBuffer"),
@@ -352,6 +364,7 @@ void OBSBasic::ClearHotkeys()
 	obs_hotkey_pair_unregister(pauseHotkeys);
 	obs_hotkey_unregister(splitFileHotkey);
 	obs_hotkey_unregister(addChapterHotkey);
+	obs_hotkey_unregister(youtubeBrollMarkHotkey);
 	obs_hotkey_pair_unregister(replayBufHotkeys);
 	obs_hotkey_unregister(saveReplayBufferHotkey);
 	obs_hotkey_pair_unregister(verticalRecordingHotkeys);

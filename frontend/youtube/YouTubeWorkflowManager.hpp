@@ -3,8 +3,13 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcess>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
+
+#include <vector>
+
+class YouTubeBrollRecorder;
 
 struct YouTubeWorkflowConfig {
 	// 1-to-4 Priority Ranking (e.g. {"gemini", "openai", "claude", "local"})
@@ -25,6 +30,13 @@ struct YouTubeWorkflowConfig {
 	double minSilenceSec = 1.20;
 	double paddingSec = 0.25;
 	bool cutRetakes = true;
+
+	// Screen B-roll: record this source alongside the webcam and cut to it
+	bool brollEnabled = false;
+	QString brollSourceName;
+	QString brollStyle = "pip"; // "pip" (webcam bubble over the screen) or "cutaway"
+	double brollMaxCoverage = 0.40;
+	bool brollReview = true;
 };
 
 class YouTubeWorkflowManager : public QObject {
@@ -59,6 +71,8 @@ public:
 	void OnRemuxFinished(const QString &remuxedMp4Path, bool success);
 
 	void StartPipelineForVideo(const QString &videoPath);
+	/* Second half of a run paused for B-roll review (the plan file has been updated) */
+	void ResumePipeline(const QString &statePath);
 	void StartOAuthLogin();
 	void CancelPipeline();
 
@@ -67,6 +81,11 @@ public:
 
 	QString GetLastVideoPath() const { return lastVideoPath; }
 	QString GetLastVideoId() const { return lastVideoId; }
+
+	/* Called by OBSBasic when the main recording output stops */
+	void OnMainRecordingStopped();
+	/* "YouTube: Mark B-roll moment" hotkey */
+	void MarkBrollMoment();
 
 signals:
 	void WorkflowArmedChanged(bool armed);
@@ -79,6 +98,7 @@ signals:
 	void PipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
 			       const QString &message);
 	void UploadStatsReady(const QString &statsText);
+	void BrollPlanReady(const QString &planPath, const QString &statePath);
 	void VideoUpdateFinished(bool ok, const QString &message);
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
@@ -90,6 +110,8 @@ private:
 	QString ResolvePipelineScriptPath() const;
 	void HandleStdoutLines();
 	void ProcessJsonEvent(const QByteArray &line);
+	bool LaunchPipelineWorker(QJsonObject payload);
+	void OnBrollRecorderStopped(int code);
 
 	YouTubeWorkflowConfig config;
 	bool workflowArmed = false;
@@ -98,4 +120,13 @@ private:
 	QString lastVideoId;
 	QByteArray stdoutBuffer;
 	QPointer<QProcess> workerProcess;
+
+	YouTubeBrollRecorder *brollRecorder = nullptr;
+	uint64_t mainRecordingStartNs = 0;
+	QString pendingPipelineVideo; // waiting for the B-roll recording to finish
+	struct BrollSession {
+		QString screenPath;
+		double startDeltaSec = 0.0;
+		std::vector<double> markers;
+	} brollSession;
 };

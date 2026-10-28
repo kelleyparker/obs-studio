@@ -1,4 +1,5 @@
 #include "YouTubePipelineDock.hpp"
+#include "YouTubeBrollReview.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QComboBox>
@@ -53,9 +54,10 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		{"remux", "1. Auto-Remux MKV → MP4"},
 		{"transcribe", "2. Whisper Large-v3-Turbo Transcription"},
 		{"edit", "3. Cut Dead Air & Butchered Retakes"},
-		{"llm", "4. AI Title & SEO Description (Priority 1-4)"},
-		{"thumbnail", "5. Custom 1280x720 AI Thumbnail"},
-		{"upload", "6. YouTube Upload (UNLISTED)"}
+		{"broll", "4. Screen B-roll Plan & Review"},
+		{"llm", "5. AI Title & SEO Description (Priority 1-4)"},
+		{"thumbnail", "6. Custom 1280x720 AI Thumbnail"},
+		{"upload", "7. YouTube Upload (UNLISTED)"}
 	};
 
 	for (const StageDef &def : stageDefs) {
@@ -86,6 +88,10 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		stepRows[def.key] = StepRow{tLabel, dLabel, bar};
 	}
 	mainLayout->addWidget(stagesGroup);
+
+	// 2b. B-roll review (shown while the pipeline waits for it)
+	brollReview = new YouTubeBrollReview(container);
+	mainLayout->addWidget(brollReview);
 
 	// 3. AI Metadata & Custom Thumbnail Card
 	QGroupBox *metaGroup = new QGroupBox("AI Generated Video Details & Custom Thumbnail", container);
@@ -192,6 +198,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	connect(mgr, &YouTubeWorkflowManager::LogMessageReceived, this, &YouTubePipelineDock::OnLogMessageReceived);
 	connect(mgr, &YouTubeWorkflowManager::UploadStatsReady, this, &YouTubePipelineDock::OnUploadStatsReady);
 	connect(mgr, &YouTubeWorkflowManager::VideoUpdateFinished, this, &YouTubePipelineDock::OnVideoUpdateFinished);
+	connect(mgr, &YouTubeWorkflowManager::BrollPlanReady, brollReview, &YouTubeBrollReview::LoadPlan);
 
 	connect(openFolderBtn, &QPushButton::clicked, this, [this]() {
 		QString target = !currentEditedVideoPath.isEmpty()
@@ -220,6 +227,7 @@ void YouTubePipelineDock::OnPipelineStateChanged(const QString &bannerText, bool
 		/* A new run replaces the previous upload, so its stats and Submit target are stale. */
 		submitBtn->setEnabled(false);
 		statsLabel->hide();
+		brollReview->hide();
 	}
 }
 

@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class QLabel;
+class YouTubeBrollReview;
 class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
@@ -49,6 +50,7 @@ private:
 	QLabel *statsLabel = nullptr;
 	QPushButton *submitBtn = nullptr;
 	QPlainTextEdit *consoleLog = nullptr;
+	YouTubeBrollReview *brollReview = nullptr;
 
 	QPushButton *openFolderBtn = nullptr;
 	QPushButton *rerunBtn = nullptr;
