@@ -136,6 +136,23 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	youtubeUrlLabel->setWordWrap(true);
 	metaLayout->addWidget(youtubeUrlLabel);
 
+	statsLabel = new QLabel(metaGroup);
+	statsLabel->setWordWrap(true);
+	statsLabel->setTextFormat(Qt::PlainText);
+	statsLabel->setStyleSheet("color: #bfe3c0; font-size: 11px;");
+	statsLabel->hide();
+	metaLayout->addWidget(statsLabel);
+
+	submitBtn = new QPushButton("✅ Submit to YouTube", metaGroup);
+	submitBtn->setToolTip("Push the title and description above to the uploaded video");
+	submitBtn->setEnabled(false);
+	connect(submitBtn, &QPushButton::clicked, this, [this]() {
+		submitBtn->setEnabled(false);
+		YouTubeWorkflowManager::Instance()->SubmitVideoEdits(titleEdit->text().trimmed(),
+								      descriptionEdit->toPlainText());
+	});
+	metaLayout->addWidget(submitBtn);
+
 	mainLayout->addWidget(metaGroup);
 
 	// 4. Console Log
@@ -173,6 +190,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	connect(mgr, &YouTubeWorkflowManager::ThumbnailGenerated, this, &YouTubePipelineDock::OnThumbnailGenerated);
 	connect(mgr, &YouTubeWorkflowManager::PipelineCompleted, this, &YouTubePipelineDock::OnPipelineCompleted);
 	connect(mgr, &YouTubeWorkflowManager::LogMessageReceived, this, &YouTubePipelineDock::OnLogMessageReceived);
+	connect(mgr, &YouTubeWorkflowManager::UploadStatsReady, this, &YouTubePipelineDock::OnUploadStatsReady);
+	connect(mgr, &YouTubeWorkflowManager::VideoUpdateFinished, this, &YouTubePipelineDock::OnVideoUpdateFinished);
 
 	connect(openFolderBtn, &QPushButton::clicked, this, [this]() {
 		QString target = !currentEditedVideoPath.isEmpty()
@@ -197,6 +216,11 @@ void YouTubePipelineDock::OnPipelineStateChanged(const QString &bannerText, bool
 {
 	statusBanner->setText(bannerText);
 	cancelBtn->setEnabled(running);
+	if (running) {
+		/* A new run replaces the previous upload, so its stats and Submit target are stale. */
+		submitBtn->setEnabled(false);
+		statsLabel->hide();
+	}
 }
 
 void YouTubePipelineDock::OnStepProgressUpdated(const QString &stepName, int percent, const QString &message)
@@ -248,12 +272,30 @@ void YouTubePipelineDock::OnPipelineCompleted(const QString &videoUrl, const QSt
 	if (!thumbnailPath.isEmpty()) {
 		OnThumbnailGenerated(thumbnailPath, "Ready");
 	}
+	submitBtn->setEnabled(!videoUrl.isEmpty());
 	if (!videoUrl.isEmpty()) {
 		youtubeUrlLabel->setText(
 			QString("🔗 <b>Uploaded (Unlisted):</b> <a style='color:#ff6666;' href='%1'>%1</a>").arg(videoUrl));
 	} else {
 		youtubeUrlLabel->setText(QString("📁 <b>Local Output Ready:</b> %1").arg(message));
 	}
+}
+
+void YouTubePipelineDock::OnUploadStatsReady(const QString &statsText)
+{
+	if (statsText.isEmpty()) {
+		return;
+	}
+	statsLabel->setText(QString("📊 Final video stats (file as uploaded)\n%1").arg(statsText));
+	statsLabel->show();
+}
+
+void YouTubePipelineDock::OnVideoUpdateFinished(bool ok, const QString &message)
+{
+	/* Re-enable so a failed submit (e.g. needs Google reconnect) can be retried. */
+	submitBtn->setEnabled(true);
+	OnLogMessageReceived(ok ? "info" : "error", message);
+	statusBanner->setText(ok ? QString("✅ %1").arg(message) : QString("❌ %1").arg(message));
 }
 
 void YouTubePipelineDock::OnLogMessageReceived(const QString &level, const QString &message)

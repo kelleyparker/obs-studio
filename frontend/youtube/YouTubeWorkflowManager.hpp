@@ -62,7 +62,11 @@ public:
 	void StartOAuthLogin();
 	void CancelPipeline();
 
+	/* Pushes an edited title/description to the most recently uploaded video. */
+	void SubmitVideoEdits(const QString &title, const QString &description);
+
 	QString GetLastVideoPath() const { return lastVideoPath; }
+	QString GetLastVideoId() const { return lastVideoId; }
 
 signals:
 	void WorkflowArmedChanged(bool armed);
@@ -74,6 +78,8 @@ signals:
 	void ThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
 	void PipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
 			       const QString &message);
+	void UploadStatsReady(const QString &statsText);
+	void VideoUpdateFinished(bool ok, const QString &message);
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
 
@@ -89,6 +95,7 @@ private:
 	bool workflowArmed = false;
 	bool waitingForRemux = false;
 	QString lastVideoPath;
+	QString lastVideoId;
 	QByteArray stdoutBuffer;
 	QPointer<QProcess> workerProcess;
 };

@@ -277,6 +277,23 @@ def normalize_for_retake(text: str) -> list[str]:
     return [w for w in cleaned.split() if w and w not in fillers]
 
 
+def _has_stumble_cue(text: str, cues: tuple) -> bool:
+    """
+    True when a stumble cue starts or ends a sentence in `text`, or follows a comma/dash.
+    Cues buried mid-sentence are ignored, so "the editor should cut that silence out"
+    is not mistaken for the speaker asking to cut a take.
+    """
+    for sentence in re.split(r"[.!?]+", text.lower()):
+        sentence = sentence.strip(" ,;:-\"'")
+        if not sentence:
+            continue
+        for cue in cues:
+            c = re.escape(cue)
+            if re.match(rf"{c}\b", sentence) or re.search(rf"\b{c}$", sentence) or re.search(rf"[,;:—-]\s*{c}\b", sentence):
+                return True
+    return False
+
+
 def detect_butchered_retakes(segments: list[dict]) -> list[tuple[float, float, str]]:
     """
     Identifies butchered sentences / aborted takes that are immediately repeated
@@ -303,10 +320,7 @@ def detect_butchered_retakes(segments: list[dict]) -> list[tuple[float, float, s
         raw_lower = raw_cur.lower()
 
         # Check 1: Explicit verbal stumble or retake cue
-        has_retake_cue = any(
-            raw_lower.endswith(cue) or f" {cue}" in raw_lower or raw_lower.startswith(cue)
-            for cue in retake_cues
-        )
+        has_retake_cue = _has_stumble_cue(raw_lower, retake_cues)
 
         cur_words = normalize_for_retake(cur["text"])
         nxt_words = normalize_for_retake(nxt["text"])
@@ -441,8 +455,8 @@ Based on the provided video transcript, generate compelling YouTube metadata fol
 3. SEO DESCRIPTION (the "description" field):
    - Executive Summary (Book-Blurb Style): Write a compelling 1-to-2 paragraph executive summary written like a high-converting back-cover book blurb designed to sell the viewer on why they cannot afford to miss this video. Use persuasive, magnetic, polished prose.
    - Key Takeaways: Bulleted list of 3-5 core points or insights.
-   - Timestamped Chapters: Exact YouTube chapters starting at 00:00 (e.g. 00:00 Intro\\n00:05 Super Mario Bros Rankings\\n...).
-   - Prospective Alternative Titles: List the 9 alternative titles at the bottom of the description for reference.
+   - Timestamped Chapters: YouTube chapters formatted "MM:SS Title", starting at 00:00 and at least 10 seconds apart (e.g. 00:00 Intro and project overview\\n00:45 Setting up the local AI pipeline\\n...). Each chapter title is a summary of NO MORE than 10 words, written like a short tech headline, with NO period or other punctuation at the end.
+   - Do NOT list the alternative titles inside the description; they belong only in the "alternative_titles" field.
 
 4. TAGS (the "tags" field): 5 to 10 highly relevant SEO tags.
 
@@ -464,7 +478,7 @@ Respond ONLY with valid JSON matching this exact schema:
     "Catchy Alternative 9",
     "Catchy Alternative 10"
   ],
-  "description": "Full description starting with the book-blurb executive summary, then takeaways, chapters, and alternative titles list",
+  "description": "Full description starting with the book-blurb executive summary, then takeaways and chapters",
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
   "thumbnail_hook": "3 TO 4 WORDS",
   "thumbnail_prompt": "Cinematic visual description for 16:9 background"
@@ -587,6 +601,90 @@ def call_local_ollama_metadata(ollama_model: str, transcript_text: str) -> dict:
     raise RuntimeError("Local Ollama failed (" + " | ".join(errors) + ")")
 
 
+_ALT_TITLES_SECTION_RE = re.compile(
+    r"\n*[^\n]*alternative[^\n]*titles?[^\n]*\n(?:[ \t]*(?:\d+[.)]|[-•*])[^\n]*(?:\n|$))*",
+    re.IGNORECASE,
+)
+
+
+def strip_alternative_titles_section(description: str) -> str:
+    """Drop a trailing 'alternative titles' list a model added despite the prompt."""
+    return _ALT_TITLES_SECTION_RE.sub("\n", description or "").strip()
+
+
+def write_titles_file(path: str, primary_title: str, alternative_titles: list[str]):
+    """Save the title options beside the video so they never have to live in the description."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"1. {primary_title} (current)\n")
+            for idx, alt in enumerate(alternative_titles, start=2):
+                f.write(f"{idx}. {alt}\n")
+        log_info(f"Title options saved: {os.path.basename(path)}")
+    except OSError as e:
+        log_warn(f"Could not save title options file: {e}")
+
+
+_CHAPTER_FILLER_RE = re.compile(r"^(?:(?:so|okay|ok|um|uh|well|alright|and|but)\b[\s,]*)+", re.IGNORECASE)
+_CHAPTER_LINE_RE = re.compile(r"^(\s*\d{1,2}(?::\d{2}){1,2})(\s*[-–—]\s*|\s+)(.*)$")
+
+
+def tidy_chapter_title(text: str, max_words: int = 10) -> str:
+    """Cap a chapter title at `max_words` words with no trailing period/ellipsis."""
+    words = (text or "").split()
+    return " ".join(words[:max_words]).rstrip(" .…,;:")
+
+
+def normalize_chapter_lines(description: str) -> str:
+    """Apply `tidy_chapter_title` to every 'MM:SS title' line of a description."""
+    out = []
+    for line in (description or "").split("\n"):
+        m = _CHAPTER_LINE_RE.match(line)
+        if m:
+            title = tidy_chapter_title(m.group(3))
+            line = f"{m.group(1).strip()}{m.group(2) if title else ''}{title}".rstrip()
+        out.append(line)
+    return "\n".join(out)
+
+
+def remap_segments_to_edited_timeline(segments: list[dict], keep_intervals: list[tuple]) -> list[dict]:
+    """
+    Shift segment times from the raw recording onto the edited video. The edit is the
+    kept intervals concatenated in order, so a time maps to the kept duration before its
+    interval plus its offset inside it. Segments that fall inside a cut are dropped.
+    """
+    remapped = []
+    for seg in segments:
+        mid = (seg["start"] + seg["end"]) / 2.0
+        offset = 0.0
+        for a, b in keep_intervals:
+            if a <= mid <= b:
+                start = offset + max(seg["start"], a) - a
+                end = offset + min(seg["end"], b) - a
+                remapped.append({**seg, "start": start, "end": max(start, end)})
+                break
+            offset += b - a
+    return remapped
+
+
+SOCIAL_LINKS = [
+    ("X", "https://www.x.com/kelleyparker"),
+]
+_SOCIAL_ICONS = {"X": "\U0001D54F"}
+
+
+def append_social_footer(description: str) -> str:
+    """Append the hardcoded social-links block once (YouTube rejects '<' and '>', so plain text only)."""
+    description = (description or "").rstrip()
+    if not SOCIAL_LINKS or "CONNECT WITH ME" in description:
+        return description
+    rule = "━" * 22
+    lines = [rule, "\U0001F517 CONNECT WITH ME", rule]
+    for name, url in SOCIAL_LINKS:
+        icon = _SOCIAL_ICONS.get(name, "▶")
+        lines.append(f"{icon}  Follow me on {name} ➜ {url}")
+    return description + "\n\n" + "\n".join(lines)
+
+
 def generate_heuristic_transcript_metadata(segments: list[dict], transcript_text: str) -> dict:
     """
     Intelligent NLP & transcript-driven metadata engine.
@@ -602,16 +700,19 @@ def generate_heuristic_transcript_metadata(segments: list[dict], transcript_text
     is_mario_zelda = ("mario" in lower or "zelda" in lower or "ocarina" in lower or "video game" in lower)
 
     # Chapters formatted with real timestamps
+    # YouTube ignores chapters spaced closer than 10s; titles are <=10 words, no trailing period.
     chapter_lines = ["00:00 - Introduction"]
+    last_sec = 0
     for s in segments:
         sec = int(s.get("start", 0))
-        m = sec // 60
-        sc = sec % 60
-        txt = s.get("text", "").strip()
-        if len(txt) > 35:
-            txt = txt[:32] + "..."
-        if sec > 0 and (sec >= 4 or len(chapter_lines) == 1):
-            chapter_lines.append(f"{m:02d}:{sc:02d} - {txt}")
+        if sec - last_sec < 10:
+            continue
+        txt = tidy_chapter_title(_CHAPTER_FILLER_RE.sub("", s.get("text", "").strip()))
+        if not txt:
+            continue
+        txt = txt[0].upper() + txt[1:]
+        chapter_lines.append(f"{sec // 60:02d}:{sec % 60:02d} - {txt}")
+        last_sec = sec
 
     chapters_str = "\n".join(chapter_lines[:8])
 
@@ -686,14 +787,10 @@ def generate_heuristic_transcript_metadata(segments: list[dict], transcript_text
         hook = "WATCH THIS FIRST"
         prompt = f"Futuristic high-tech studio scene showcasing {topic_str}, dramatic rim lighting, cinematic 16:9 composition"
 
-    alt_formatted = "\n".join(f"{idx+2}. {title}" for idx, title in enumerate(alt_titles))
-
     description = (
         f"📖 EXECUTIVE SUMMARY:\n{book_blurb}\n\n"
         f"📌 KEY TAKEAWAYS:\n{takeaways}\n\n"
         f"⏱️ CHAPTER TIMESTAMPS:\n{chapters_str}\n\n"
-        f"💡 PROSPECTIVE CATCHY ALTERNATIVE TITLES:\n"
-        f"1. {primary_title} (Current Primary)\n{alt_formatted}\n\n"
         f"Produced with OBS Studio YouTube Automation."
     )
 
@@ -752,6 +849,9 @@ def generate_metadata_with_priority(
                 continue
 
             if res and res.get("title"):
+                res["description"] = normalize_chapter_lines(
+                    strip_alternative_titles_section(res.get("description", ""))
+                )
                 used_badge = f"Priority #{rank_idx}: {res.get('_model_used', label)}"
                 # Ensure alternative_titles exists and has items
                 if not res.get("alternative_titles"):
@@ -1006,8 +1106,42 @@ def generate_thumbnail_with_priority(
 
 YOUTUBE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly"
+    "https://www.googleapis.com/auth/youtube.readonly",
+    # Needed by videos.update (Submit button); upload/readonly cannot edit an existing video.
+    "https://www.googleapis.com/auth/youtube",
 ]
+YOUTUBE_EDIT_SCOPES = (
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+)
+RECONNECT_FOR_EDIT_MESSAGE = (
+    "Your Google connection can upload but not edit videos. Open Settings -> YouTube Automation "
+    "and click 'Connect Google Account' once more to allow editing, then press Submit again."
+)
+
+
+def parse_youtube_token(oauth_token_json: str) -> dict:
+    """Decode the vault's token JSON (plain or wrapped in {"token_json": ...})."""
+    creds_info = json.loads(oauth_token_json)
+    if "token_json" in creds_info:
+        creds_info = json.loads(creds_info["token_json"])
+    return creds_info
+
+
+def load_youtube_credentials(oauth_token_json: str):
+    """Build refreshed Google credentials from the token JSON stored in the OBS vault."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+
+    creds_info = parse_youtube_token(oauth_token_json)
+
+    # Refresh with the scopes the token was actually granted: asking Google for a broader
+    # set at refresh time fails with invalid_scope until the user reconnects.
+    granted = creds_info.get("scopes") or YOUTUBE_SCOPES
+    creds = Credentials.from_authorized_user_info(creds_info, granted)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    return creds
 
 
 def run_interactive_oauth_login(client_id: str, client_secret: str, client_secret_file: str, token_save_path: str):
@@ -1073,19 +1207,10 @@ def upload_to_youtube(
     if not oauth_token_json:
         raise ValueError("YouTube account not connected yet. Open Settings -> YouTube Automation and click 'Connect Google Account'.")
 
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    creds_info = json.loads(oauth_token_json)
-    if "token_json" in creds_info:
-        creds_info = json.loads(creds_info["token_json"])
-
-    creds = Credentials.from_authorized_user_info(creds_info, YOUTUBE_SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-
+    creds = load_youtube_credentials(oauth_token_json)
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {
@@ -1131,6 +1256,142 @@ def upload_to_youtube(
     return video_id, video_url
 
 
+def update_video_details(video_id: str, title: str, description: str, oauth_token_json: str):
+    """Push an edited title/description to an already-uploaded video (Submit button)."""
+    if not oauth_token_json:
+        raise ValueError("YouTube account not connected yet. Open Settings -> YouTube Automation and click 'Connect Google Account'.")
+    if not video_id:
+        raise ValueError("No uploaded video to update yet. Run the pipeline and let the upload finish first.")
+
+    title = (title or "").strip()
+    description = description or ""
+    if not title:
+        raise ValueError("Title cannot be empty.")
+    if len(title) > 100:
+        raise ValueError(f"Title is {len(title)} characters; YouTube allows at most 100.")
+    if len(description.encode("utf-8")) > 5000:
+        raise ValueError("Description is over YouTube's 5000-byte limit.")
+    if any(ch in title + description for ch in "<>"):
+        raise ValueError("YouTube does not allow '<' or '>' in titles or descriptions.")
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+
+    # Check the granted scopes before touching the network or refreshing the token.
+    if not any(scope in YOUTUBE_EDIT_SCOPES for scope in (parse_youtube_token(oauth_token_json).get("scopes") or [])):
+        raise PermissionError(RECONNECT_FOR_EDIT_MESSAGE)
+
+    youtube = build("youtube", "v3", credentials=load_youtube_credentials(oauth_token_json))
+    try:
+        items = youtube.videos().list(part="snippet", id=video_id).execute().get("items", [])
+        if not items:
+            raise ValueError(f"YouTube video {video_id} was not found on the connected channel.")
+        current = items[0]["snippet"]
+        # videos.update replaces the whole snippet, so resend every writable field unchanged.
+        snippet = {
+            "title": title,
+            "description": description,
+            "categoryId": current.get("categoryId", "28"),
+        }
+        for key in ("tags", "defaultLanguage"):
+            if key in current:
+                snippet[key] = current[key]
+        youtube.videos().update(part="snippet", body={"id": video_id, "snippet": snippet}).execute()
+    except HttpError as e:
+        if getattr(e.resp, "status", 0) == 403 and "insufficient" in str(e).lower():
+            raise PermissionError(RECONNECT_FOR_EDIT_MESSAGE) from e
+        raise
+
+
+_CODEC_LABELS = {
+    "h264": "H.264", "hevc": "HEVC (H.265)", "av1": "AV1", "vp9": "VP9",
+    "aac": "AAC", "opus": "Opus", "mp3": "MP3",
+}
+
+
+def _as_int(value) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fmt_clock(seconds: float) -> str:
+    hours, rem = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def probe_video_stats(video_path: str) -> dict:
+    """Read length, resolution, codecs and bitrates of a finished MP4 with one ffprobe call."""
+    try:
+        res = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries",
+            "format=duration,size,bit_rate:stream=codec_type,codec_name,width,height,avg_frame_rate,bit_rate,sample_rate,channels",
+            "-of", "json", video_path
+        ], capture_output=True, text=True, timeout=30)
+        data = json.loads(res.stdout)
+    except Exception:
+        return {}
+
+    fmt = data.get("format", {})
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
+
+    num, _, den = str(video.get("avg_frame_rate", "0/1")).partition("/")
+    try:
+        fps = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        fps = 0.0
+
+    overall_bps = _as_int(fmt.get("bit_rate"))
+    audio_bps = _as_int(audio.get("bit_rate"))
+    return {
+        "duration": float(fmt.get("duration") or 0.0),
+        "size_bytes": _as_int(fmt.get("size")),
+        "overall_bps": overall_bps,
+        "width": _as_int(video.get("width")),
+        "height": _as_int(video.get("height")),
+        "fps": fps,
+        "video_codec": video.get("codec_name", ""),
+        "video_bps": _as_int(video.get("bit_rate")) or max(0, overall_bps - audio_bps),
+        "audio_codec": audio.get("codec_name", ""),
+        "audio_bps": audio_bps,
+        "sample_rate": _as_int(audio.get("sample_rate")),
+        "channels": _as_int(audio.get("channels")),
+    }
+
+
+def format_video_stats(stats: dict, original_duration: float) -> str:
+    if not stats:
+        return ""
+    lines = [f"Length: {_fmt_clock(stats['duration'])} ({stats['duration']:.1f}s)"]
+    if stats["width"]:
+        vcodec = _CODEC_LABELS.get(stats["video_codec"], stats["video_codec"].upper())
+        lines.append(
+            f"Video: {stats['width']}x{stats['height']} ({stats['height']}p) @ {round(stats['fps'], 2):g} fps, "
+            f"{vcodec}, {stats['video_bps'] / 1e6:.1f} Mbps"
+        )
+    if stats["audio_codec"]:
+        acodec = _CODEC_LABELS.get(stats["audio_codec"], stats["audio_codec"].upper())
+        layout = {1: "mono", 2: "stereo"}.get(stats["channels"], f"{stats['channels']} ch")
+        lines.append(f"Audio: {acodec}, {stats['audio_bps'] // 1000} kbps, {stats['sample_rate'] / 1000:g} kHz {layout}")
+    lines.append(f"File size: {stats['size_bytes'] / 1048576:.1f} MB")
+    trimmed = original_duration - stats["duration"]
+    if original_duration > 0 and trimmed >= 0.5:
+        lines.append(f"Trimmed: {trimmed:.1f}s removed from the {original_duration:.1f}s original")
+    return "\n".join(lines)
+
+
+def emit_upload_stats(video_path: str, original_duration: float):
+    stats = probe_video_stats(video_path)
+    text = format_video_stats(stats, original_duration)
+    if text:
+        emit("upload_stats", text=text, stats=stats)
+
+
 # ---------------------------------------------------------------------------
 # 6. Main Pipeline Orchestrator
 # ---------------------------------------------------------------------------
@@ -1147,6 +1408,7 @@ def run_pipeline(config: dict):
     edited_video = os.path.join(base_dir, f"{stem}_yt_edited.mp4")
     thumbnail_jpg = os.path.join(base_dir, f"{stem}_yt_thumb.jpg")
     transcript_file = os.path.join(base_dir, f"{stem}_yt_transcript.txt")
+    titles_file = os.path.join(base_dir, f"{stem}_yt_titles.txt")
 
     silence_db = float(config.get("silence_db", -42.0))
     min_silence_sec = float(config.get("min_silence_sec", 1.20))
@@ -1203,9 +1465,12 @@ def run_pipeline(config: dict):
 
     if render_edited_video(input_video, edited_video, keep_intervals, total_duration):
         final_video_to_upload = edited_video
+        # Chapters must use the trimmed video's timeline, not the raw recording's.
+        meta_segments = remap_segments_to_edited_timeline(segments, keep_intervals)
         log_info(f"Edited video saved: {os.path.basename(edited_video)} ({kept_duration:.1f}s, saved {removed_sec:.1f}s)")
     else:
         final_video_to_upload = input_video
+        meta_segments = segments
         log_warn("Using original remuxed MP4 for upload.")
 
     update_step("edit", 100, f"Video edit complete (-{removed_sec:.1f}s trimmed).")
@@ -1216,8 +1481,10 @@ def run_pipeline(config: dict):
         priority_list=priority_list,
         secrets=secrets,
         ollama_model=ollama_model,
-        segments=segments
+        segments=meta_segments
     )
+    metadata["description"] = append_social_footer(metadata.get("description", ""))
+    write_titles_file(titles_file, metadata.get("title", ""), metadata.get("alternative_titles", []))
     emit(
         "metadata_ready",
         title=metadata.get("title", ""),
@@ -1265,6 +1532,7 @@ def run_pipeline(config: dict):
             made_for_kids=made_for_kids,
             oauth_token_json=secrets.get("youtube_token_json", "")
         )
+        emit_upload_stats(final_video_to_upload, total_duration)
         emit(
             "complete",
             video_id=video_id,
@@ -1314,6 +1582,20 @@ def main():
             except Exception as e:
                 log_error(str(e))
                 emit("oauth_error", message=str(e))
+                return 1
+        if cfg.get("mode") == "update_video":
+            try:
+                update_video_details(
+                    video_id=cfg.get("video_id", ""),
+                    title=cfg.get("title", ""),
+                    description=cfg.get("description", ""),
+                    oauth_token_json=cfg.get("secrets", {}).get("youtube_token_json", "")
+                )
+                emit("update_success", video_id=cfg.get("video_id", ""), title=cfg.get("title", ""))
+                return 0
+            except Exception as e:
+                log_error(f"YouTube update error: {e}")
+                emit("update_error", message=str(e))
                 return 1
         return run_pipeline(cfg)
 

@@ -27,6 +27,8 @@ private slots:
 	void OnPipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
 				 const QString &message);
 	void OnLogMessageReceived(const QString &level, const QString &message);
+	void OnUploadStatsReady(const QString &statsText);
+	void OnVideoUpdateFinished(bool ok, const QString &message);
 
 private:
 	struct StepRow {
@@ -44,6 +46,8 @@ private:
 	QComboBox *alternativeTitlesCombo = nullptr;
 	QPlainTextEdit *descriptionEdit = nullptr;
 	QLabel *youtubeUrlLabel = nullptr;
+	QLabel *statsLabel = nullptr;
+	QPushButton *submitBtn = nullptr;
 	QPlainTextEdit *consoleLog = nullptr;
 
 	QPushButton *openFolderBtn = nullptr;

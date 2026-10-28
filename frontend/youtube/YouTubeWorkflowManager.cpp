@@ -302,6 +302,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 
 	LoadConfig();
 	lastVideoPath = videoPath;
+	lastVideoId.clear();
 
 	QString scriptPath = ResolvePipelineScriptPath();
 	if (!QFileInfo::exists(scriptPath)) {
@@ -450,6 +451,76 @@ void YouTubeWorkflowManager::StartOAuthLogin()
 #endif
 }
 
+void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QString &description)
+{
+	if (IsPipelineRunning()) {
+		emit VideoUpdateFinished(false, "Wait for the current job to finish before submitting.");
+		return;
+	}
+	if (lastVideoId.isEmpty()) {
+		emit VideoUpdateFinished(false, "No uploaded video to update yet.");
+		return;
+	}
+
+	QString scriptPath = ResolvePipelineScriptPath();
+	if (!QFileInfo::exists(scriptPath)) {
+		emit VideoUpdateFinished(false, QString("Could not find script at: %1").arg(scriptPath));
+		return;
+	}
+
+	workerProcess = new QProcess(this);
+	stdoutBuffer.clear();
+
+	connect(workerProcess, &QProcess::readyReadStandardOutput, this, &YouTubeWorkflowManager::HandleStdoutLines);
+	connect(workerProcess, &QProcess::readyReadStandardError, this, [this]() {
+		if (!workerProcess)
+			return;
+		QString errText = QString::fromUtf8(workerProcess->readAllStandardError()).trimmed();
+		if (!errText.isEmpty()) {
+			emit LogMessageReceived("warning", errText);
+		}
+	});
+	connect(workerProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+		[this](int, QProcess::ExitStatus status) {
+			HandleStdoutLines();
+			if (status == QProcess::CrashExit) {
+				emit VideoUpdateFinished(false, "The YouTube update worker crashed.");
+			}
+			if (workerProcess) {
+				workerProcess->deleteLater();
+				workerProcess = nullptr;
+			}
+		});
+
+	SetPythonUtf8Environment(workerProcess);
+	workerProcess->start(QStringLiteral("python"), {scriptPath, QStringLiteral("--stdin-config")});
+	if (!workerProcess->waitForStarted(5000)) {
+		emit VideoUpdateFinished(false, "Failed to start python.exe for the YouTube update.");
+		workerProcess->deleteLater();
+		workerProcess = nullptr;
+		return;
+	}
+
+	QString ytTokenJson = GetVaultKeyDecrypted("YouTubeTokenJson");
+	QJsonObject secretsObj;
+	secretsObj["youtube_token_json"] = ytTokenJson;
+	YouTubeSecretVault::WipeString(ytTokenJson);
+
+	QJsonObject payload;
+	payload["mode"] = "update_video";
+	payload["video_id"] = lastVideoId;
+	payload["title"] = title;
+	payload["description"] = description;
+	payload["secrets"] = secretsObj;
+
+	QByteArray jsonLine = QJsonDocument(payload).toJson(QJsonDocument::Compact) + "\n";
+	workerProcess->write(jsonLine);
+	workerProcess->closeWriteChannel();
+#ifdef _WIN32
+	SecureZeroMemory(jsonLine.data(), jsonLine.size());
+#endif
+}
+
 void YouTubeWorkflowManager::CancelPipeline()
 {
 	waitingForRemux = false;
@@ -520,6 +591,9 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		emit ThumbnailGenerated(obj.value("thumbnail_path").toString(), obj.value("provider").toString());
 	} else if (type == "complete") {
 		QString url = obj.value("url").toString();
+		if (!url.isEmpty()) {
+			lastVideoId = obj.value("video_id").toString();
+		}
 		QString editedVideo = obj.value("edited_video").toString();
 		QString thumbPath = obj.value("thumbnail_path").toString();
 		QString msg = obj.value("message").toString();
@@ -536,6 +610,12 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		QString msg = obj.value("message").toString();
 		emit PipelineStateChanged(QString("❌ Error: %1").arg(msg), false);
 		emit LogMessageReceived("error", msg);
+	} else if (type == "upload_stats") {
+		emit UploadStatsReady(obj.value("text").toString());
+	} else if (type == "update_success") {
+		emit VideoUpdateFinished(true, QString("Updated on YouTube: %1").arg(obj.value("title").toString()));
+	} else if (type == "update_error") {
+		emit VideoUpdateFinished(false, obj.value("message").toString("YouTube update failed"));
 	} else if (type == "oauth_success") {
 		QString channelTitle = obj.value("channel_title").toString("Connected Channel");
 		QString tokenJson = obj.value("token_json").toString();
