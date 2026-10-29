@@ -12,12 +12,24 @@
 #include <QFontDialog>
 #include <QLabel>
 #include <QHBoxLayout>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QStandardPaths>
+#include <QTextCursor>
 #include <QVBoxLayout>
 
-NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
+/* Fixed to the local machine: generated text never goes to a cloud service */
+#define OLLAMA_URL "http://127.0.0.1:11434"
+#define DEFAULT_OLLAMA_MODEL "gemma4:12b"
+
+NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent), network(new QNetworkAccessManager(this))
 {
 	config_t *config = App()->GetUserConfig();
 	config_set_default_bool(config, "Notepad", "WordWrap", true);
@@ -26,6 +38,7 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 	 * buttons to icon width, which cuts text labels down to "..." */
 	QHBoxLayout *buttons = new QHBoxLayout();
 	buttons->setContentsMargins(4, 4, 4, 4);
+	buttons->setSpacing(6);
 
 	auto makeButton = [&](const char *text, const QKeySequence &key, auto slot) {
 		QPushButton *button = new QPushButton(QTStr(text), this);
@@ -56,6 +69,11 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 	wrapButton->setFocusPolicy(Qt::NoFocus);
 	connect(wrapButton, &QPushButton::toggled, this, &NotepadDock::SetWordWrap);
 	buttons->addWidget(wrapButton);
+
+	generateButton = new QPushButton(QTStr("Notepad.Generate"), this);
+	generateButton->setFocusPolicy(Qt::NoFocus);
+	connect(generateButton, &QPushButton::clicked, this, &NotepadDock::ToggleGenerate);
+	buttons->addWidget(generateButton);
 	buttons->addStretch();
 
 	edit = new QPlainTextEdit(this);
@@ -111,6 +129,10 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 
 NotepadDock::~NotepadDock()
 {
+	generating = false;
+	if (reply) {
+		reply->abort();
+	}
 	SaveScratch();
 }
 
@@ -285,6 +307,12 @@ void NotepadDock::SaveScratch()
 
 void NotepadDock::UpdateStatus()
 {
+	if (generating) {
+		status->setText(generateStatus);
+		status->setToolTip(QString());
+		return;
+	}
+
 	if (currentPath.isEmpty()) {
 		status->setText(QTStr("Notepad.Untitled"));
 		status->setToolTip(QString());
@@ -297,4 +325,219 @@ void NotepadDock::UpdateStatus()
 	}
 	status->setText(name);
 	status->setToolTip(currentPath);
+}
+
+void NotepadDock::ToggleGenerate()
+{
+	if (generating) {
+		FinishGenerate(QString());
+	} else {
+		StartGenerate();
+	}
+}
+
+void NotepadDock::StartGenerate()
+{
+	const char *model = config_get_string(App()->GetUserConfig(), "YouTubeWorkflow", "OllamaModel");
+	generateModel = (model && *model) ? QT_UTF8(model) : QStringLiteral(DEFAULT_OLLAMA_MODEL);
+
+	/* Ollama runs "-cloud" models on its own servers, not this PC */
+	if (generateModel.endsWith("-cloud") || generateModel.endsWith(":cloud")) {
+		OBSMessageBox::warning(this, QTStr("Notepad.Generate"),
+				       QTStr("Notepad.Generate.CloudModel").arg(generateModel));
+		return;
+	}
+
+	if (!MaybeSave()) {
+		return;
+	}
+
+	bool ok = false;
+	QString topic = QInputDialog::getText(this, QTStr("Notepad.Generate.TopicTitle"),
+					      QTStr("Notepad.Generate.TopicText"), QLineEdit::Normal, QString(), &ok)
+				.trimmed();
+	if (!ok) {
+		return;
+	}
+
+	if (topic.isEmpty()) {
+		topic = "a specific, interesting topic of your choice from anywhere in the world: history, "
+			"science, places, food, technology or culture. Pick something different each time";
+	}
+	generatePrompt = "Write a spoken YouTube video script of about 300 to 500 words about: " + topic +
+			 ".\n\nWrite only the words the host says to the camera: plain text paragraphs, no "
+			 "title, no headings, no markdown, no stage directions or [brackets].";
+
+	SetDocument(QString(), QString());
+
+	generateId++;
+	generating = true;
+	ollamaStarted = false;
+	pendingLine.clear();
+	generateError.clear();
+	generateStatus = QTStr("Notepad.Generate.Working").arg(generateModel);
+	edit->setReadOnly(true);
+	generateButton->setText(QTStr("Notepad.Generate.Stop"));
+	UpdateStatus();
+
+	CheckOllama(30);
+}
+
+void NotepadDock::CheckOllama(int triesLeft)
+{
+	QNetworkRequest request(QUrl(OLLAMA_URL "/api/tags"));
+	request.setTransferTimeout(2000);
+	reply = network->get(request);
+
+	int id = generateId;
+	QNetworkReply *r = reply;
+	connect(r, &QNetworkReply::finished, this, [this, r, id, triesLeft]() {
+		r->deleteLater();
+		if (!generating || id != generateId) {
+			return;
+		}
+		if (r->error() == QNetworkReply::NoError) {
+			SendGenerate();
+			return;
+		}
+
+		/* Like the YouTube pipeline: the Ollama tray app can stay open
+		 * after its server has died, so start the server ourselves */
+		if (!ollamaStarted) {
+			ollamaStarted = true;
+			if (!StartOllama()) {
+				FinishGenerate(QTStr("Notepad.Generate.NoOllama"));
+				return;
+			}
+			generateStatus = QTStr("Notepad.Generate.Starting");
+			UpdateStatus();
+		}
+
+		if (triesLeft <= 0) {
+			FinishGenerate(QTStr("Notepad.Generate.NoOllama"));
+			return;
+		}
+		QTimer::singleShot(1000, this, [this, id, triesLeft]() {
+			if (generating && id == generateId) {
+				CheckOllama(triesLeft - 1);
+			}
+		});
+	});
+}
+
+bool NotepadDock::StartOllama()
+{
+	QString exe = QStandardPaths::findExecutable("ollama");
+	if (exe.isEmpty()) {
+		exe = qEnvironmentVariable("LOCALAPPDATA") + "/Programs/Ollama/ollama.exe";
+	}
+	if (!QFileInfo::exists(exe)) {
+		return false;
+	}
+
+	QProcess process;
+	process.setProgram(exe);
+	process.setArguments({"serve"});
+	process.setStandardInputFile(QProcess::nullDevice());
+	process.setStandardOutputFile(QProcess::nullDevice());
+	process.setStandardErrorFile(QProcess::nullDevice());
+#ifdef _WIN32
+	process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+		args->flags |= 0x08000000; /* CREATE_NO_WINDOW */
+	});
+#endif
+	return process.startDetached();
+}
+
+void NotepadDock::SendGenerate()
+{
+	generateStatus = QTStr("Notepad.Generate.Working").arg(generateModel);
+	UpdateStatus();
+
+	QJsonObject options;
+	options["temperature"] = 0.9;
+
+	QJsonObject body;
+	body["model"] = generateModel;
+	body["prompt"] = generatePrompt;
+	body["stream"] = true;
+	/* Keeps the reasoning of thinking models (qwen3) out of the note */
+	body["think"] = false;
+	body["options"] = options;
+
+	QNetworkRequest request(QUrl(OLLAMA_URL "/api/generate"));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+	reply = network->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+
+	int id = generateId;
+	QNetworkReply *r = reply;
+	connect(r, &QNetworkReply::readyRead, this, [this, id]() {
+		if (generating && id == generateId) {
+			ReadGenerated(false);
+		}
+	});
+	connect(r, &QNetworkReply::finished, this, [this, r, id]() {
+		r->deleteLater();
+		if (!generating || id != generateId) {
+			return;
+		}
+		ReadGenerated(true);
+
+		QString error = generateError;
+		if (error.isEmpty() && r->error() != QNetworkReply::NoError) {
+			error = r->errorString();
+		}
+		FinishGenerate(error.isEmpty() ? QString() : QTStr("Notepad.Generate.Error").arg(error));
+	});
+}
+
+void NotepadDock::ReadGenerated(bool flush)
+{
+	if (reply) {
+		pendingLine += reply->readAll();
+	}
+
+	/* Ollama streams one JSON object per line */
+	QList<QByteArray> lines;
+	qsizetype newline;
+	while ((newline = pendingLine.indexOf('\n')) >= 0) {
+		lines.append(pendingLine.left(newline));
+		pendingLine.remove(0, newline + 1);
+	}
+	if (flush && !pendingLine.trimmed().isEmpty()) {
+		lines.append(pendingLine);
+		pendingLine.clear();
+	}
+
+	QTextCursor cursor(edit->document());
+	cursor.movePosition(QTextCursor::End);
+	for (const QByteArray &line : lines) {
+		QJsonObject obj = QJsonDocument::fromJson(line).object();
+		if (obj.contains("error")) {
+			generateError = obj["error"].toString();
+			continue;
+		}
+		QString text = obj["response"].toString();
+		if (!text.isEmpty()) {
+			cursor.insertText(text);
+		}
+	}
+}
+
+void NotepadDock::FinishGenerate(const QString &error)
+{
+	generating = false;
+	generateId++;
+	if (reply) {
+		reply->abort();
+	}
+
+	edit->setReadOnly(false);
+	generateButton->setText(QTStr("Notepad.Generate"));
+	UpdateStatus();
+	SaveScratch();
+
+	if (!error.isEmpty()) {
+		OBSMessageBox::warning(this, QTStr("Notepad.Generate"), error);
+	}
 }

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <QPointer>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
 
 class QLabel;
+class QNetworkAccessManager;
+class QNetworkReply;
 class QPlainTextEdit;
 class QPushButton;
 
@@ -26,6 +29,19 @@ private:
 	QString currentPath; /* empty while the note is untitled */
 	bool loading = false;
 
+	/* AI Generate: sample text from the local Ollama, never a cloud model */
+	QPushButton *generateButton;
+	QNetworkAccessManager *network;
+	QPointer<QNetworkReply> reply;
+	QByteArray pendingLine;
+	QString generateModel;
+	QString generatePrompt;
+	QString generateStatus;
+	QString generateError;
+	bool generating = false;
+	bool ollamaStarted = false;
+	int generateId = 0;
+
 	static QString ScratchPath();
 
 	void New();
@@ -34,6 +50,14 @@ private:
 	bool SaveAs();
 	void ChooseFont();
 	void SetWordWrap(bool wrap);
+
+	void ToggleGenerate();
+	void StartGenerate();
+	void CheckOllama(int triesLeft);
+	bool StartOllama();
+	void SendGenerate();
+	void ReadGenerated(bool flush);
+	void FinishGenerate(const QString &error);
 
 	bool HasUnsavedChanges() const;
 	bool MaybeSave();
