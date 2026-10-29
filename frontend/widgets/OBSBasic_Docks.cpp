@@ -118,11 +118,13 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 
 	for (int i = 0; i < extraBrowserDocks.size(); i++) {
 		if (extraBrowserDockNames[i] == "Music" && extraBrowserDockTargets[i].contains("music.youtube.com")) {
-			TabifyMusicDock(extraBrowserDocks[i].get());
+			TabifyBesideTransitions(extraBrowserDocks[i].get());
 			break;
 		}
 	}
 #endif
+
+	TabifyBesideTransitions(notepadDock);
 
 	QList<QDockWidget *> bottomDocks{ui->mixerDock, ui->transitionsDock, controlsDock};
 
@@ -133,6 +135,14 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	resizeDocks({ui->scenesDock, ui->sourcesDock}, {sideDockWidth, sideDockWidth}, Qt::Horizontal);
 
 	activateWindow();
+}
+
+void OBSBasic::TabifyBesideTransitions(QDockWidget *dock)
+{
+	dock->setFloating(false);
+	tabifyDockWidget(ui->transitionsDock, dock);
+	dock->setVisible(true);
+	ui->transitionsDock->raise();
 }
 
 void OBSBasic::on_lockDocks_toggled(bool lock)
@@ -152,6 +162,7 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	controlsDock->setFeatures(mainFeatures);
 	statsDock->setFeatures(features);
 	multistreamDock->setFeatures(features);
+	notepadDock->setFeatures(features);
 	if (youtubePipelineDock) {
 		youtubePipelineDock->setFeatures(features);
 	}
@@ -263,6 +274,7 @@ bool OBSBasic::IsDockObjectNameUsed(const QString &name)
 	     << "controlsDock"
 	     << "statsDock"
 	     << "multistreamDock"
+	     << "notepadDock"
 	     << "youtubePipelineDock";
 	for (const CanvasSlotId &id : CanvasSlotId::All()) {
 		list << id.DockName("Preview") << id.DockName("Scenes") << id.DockName("Sources");

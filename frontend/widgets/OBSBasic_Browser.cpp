@@ -80,14 +80,6 @@ void OBSBasic::LoadExtraBrowserDocks()
 	}
 }
 
-void OBSBasic::TabifyMusicDock(QDockWidget *dock)
-{
-	dock->setFloating(false);
-	tabifyDockWidget(ui->transitionsDock, dock);
-	dock->setVisible(true);
-	ui->transitionsDock->raise();
-}
-
 void OBSBasic::SaveExtraBrowserDocks()
 {
 	Json::array array;

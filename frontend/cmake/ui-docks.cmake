@@ -5,6 +5,8 @@ target_sources(
     docks/CanvasDocks.hpp
     docks/MultistreamDock.cpp
     docks/MultistreamDock.hpp
+    docks/NotepadDock.cpp
+    docks/NotepadDock.hpp
     docks/OBSDock.cpp
     docks/OBSDock.hpp
     youtube/YouTubeBrollRecorder.cpp

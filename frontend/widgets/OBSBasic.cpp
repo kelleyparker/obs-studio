@@ -34,6 +34,7 @@
 #include <docks/ChatDocks.hpp>
 #endif
 #include <docks/MultistreamDock.hpp>
+#include <docks/NotepadDock.hpp>
 #include <docks/CanvasDocks.hpp>
 #include <youtube/YouTubePipelineDock.hpp>
 #include <dialogs/OBSCanvasSettings.hpp>
@@ -275,6 +276,12 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	multistreamDock->setFloating(true);
 	multistreamDock->resize(560, 320);
 
+	notepadDock = new OBSDock();
+	notepadDock->setObjectName(QStringLiteral("notepadDock"));
+	notepadDock->setWindowTitle(QTStr("Notepad.Title"));
+	addDockWidget(Qt::BottomDockWidgetArea, notepadDock);
+	notepadDock->setVisible(false);
+
 	youtubePipelineDock = new OBSDock();
 	youtubePipelineDock->setObjectName(QStringLiteral("youtubePipelineDock"));
 	youtubePipelineDock->setWindowTitle(QStringLiteral("YouTube Pipeline"));
@@ -444,6 +451,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(controlsDock);
 	SETUP_DOCK(statsDock);
 	SETUP_DOCK(multistreamDock);
+	SETUP_DOCK(notepadDock);
 	SETUP_DOCK(youtubePipelineDock);
 	for (const auto &slot : canvasSlots) {
 		SETUP_DOCK(slot->previewDock);
@@ -1136,6 +1144,8 @@ void OBSBasic::OBSInit()
 	MultistreamDock *multistreamWidget = new MultistreamDock(multistream.get(), streamInfo.get(), multistreamDock);
 	multistreamDock->setWidget(multistreamWidget);
 
+	notepadDock->setWidget(new NotepadDock(notepadDock));
+
 	YouTubePipelineDock *ytDockWidget = new YouTubePipelineDock(youtubePipelineDock);
 	youtubePipelineDock->setWidget(ytDockWidget);
 	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
@@ -1208,9 +1218,15 @@ void OBSBasic::OBSInit()
 #ifdef BROWSER_AVAILABLE
 	/* A saved layout does not know the new Music dock yet */
 	if (seededMusicDock) {
-		TabifyMusicDock(seededMusicDock);
+		TabifyBesideTransitions(seededMusicDock);
 	}
 #endif
+
+	/* Same for the Notepad dock, placed once for layouts saved before it existed */
+	if (!config_get_bool(App()->GetUserConfig(), "BasicWindow", "NotepadDockPlaced")) {
+		TabifyBesideTransitions(notepadDock);
+		config_set_bool(App()->GetUserConfig(), "BasicWindow", "NotepadDockPlaced", true);
+	}
 
 	bool pre23Defaults = config_get_bool(App()->GetUserConfig(), "General", "Pre23Defaults");
 	if (pre23Defaults) {

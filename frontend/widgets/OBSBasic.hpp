@@ -389,7 +389,6 @@ private:
 	QPointer<QDockWidget> seededMusicDock;
 
 	void ClearExtraBrowserDocks();
-	void TabifyMusicDock(QDockWidget *dock);
 	void LoadExtraBrowserDocks();
 	void SaveExtraBrowserDocks();
 	void ManageExtraBrowserDocks();
@@ -472,6 +471,10 @@ public slots:
 private:
 	QPointer<QDockWidget> statsDock;
 	QPointer<QDockWidget> multistreamDock;
+	QPointer<QDockWidget> notepadDock;
+
+	/* Puts a dock in the bottom row as a tab beside Scene Transitions */
+	void TabifyBesideTransitions(QDockWidget *dock);
 	QPointer<QDockWidget> youtubePipelineDock;
 	QByteArray startingDockLayout;
 	QStringList extraDockNames;
