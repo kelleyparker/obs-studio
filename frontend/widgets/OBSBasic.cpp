@@ -1205,6 +1205,13 @@ void OBSBasic::OBSInit()
 		}
 	}
 
+#ifdef BROWSER_AVAILABLE
+	/* A saved layout does not know the new Music dock yet */
+	if (seededMusicDock) {
+		TabifyMusicDock(seededMusicDock);
+	}
+#endif
+
 	bool pre23Defaults = config_get_bool(App()->GetUserConfig(), "General", "Pre23Defaults");
 	if (pre23Defaults) {
 		bool resetDockLock23 = config_get_bool(App()->GetUserConfig(), "General", "ResetDockLock23");

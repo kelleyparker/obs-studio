@@ -68,6 +68,24 @@ void OBSBasic::LoadExtraBrowserDocks()
 
 		AddExtraBrowserDock(title.c_str(), url.c_str(), uuid.c_str(), false);
 	}
+
+	/* Add a YouTube Music dock once. It is an ordinary custom browser
+	 * dock, so deleting it in Custom Browser Docks keeps it gone */
+	if (!config_get_bool(App()->GetUserConfig(), "BasicWindow", "MusicDockSeeded")) {
+		AddExtraBrowserDock("Music", "https://music.youtube.com", "", false);
+		seededMusicDock = extraBrowserDocks.back().get();
+
+		config_set_bool(App()->GetUserConfig(), "BasicWindow", "MusicDockSeeded", true);
+		SaveExtraBrowserDocks();
+	}
+}
+
+void OBSBasic::TabifyMusicDock(QDockWidget *dock)
+{
+	dock->setFloating(false);
+	tabifyDockWidget(ui->transitionsDock, dock);
+	dock->setVisible(true);
+	ui->transitionsDock->raise();
 }
 
 void OBSBasic::SaveExtraBrowserDocks()

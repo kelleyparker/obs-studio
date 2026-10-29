@@ -384,7 +384,12 @@ private:
 	QStringList extraBrowserDockNames;
 	QStringList extraBrowserDockTargets;
 
+	/* Set when the default Music dock was added this run, so it can be
+	 * placed after the saved layout is restored */
+	QPointer<QDockWidget> seededMusicDock;
+
 	void ClearExtraBrowserDocks();
+	void TabifyMusicDock(QDockWidget *dock);
 	void LoadExtraBrowserDocks();
 	void SaveExtraBrowserDocks();
 	void ManageExtraBrowserDocks();

@@ -115,6 +115,13 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	if (chatDocks) {
 		chatDocks->ResetLayout();
 	}
+
+	for (int i = 0; i < extraBrowserDocks.size(); i++) {
+		if (extraBrowserDockNames[i] == "Music" && extraBrowserDockTargets[i].contains("music.youtube.com")) {
+			TabifyMusicDock(extraBrowserDocks[i].get());
+			break;
+		}
+	}
 #endif
 
 	QList<QDockWidget *> bottomDocks{ui->mixerDock, ui->transitionsDock, controlsDock};
