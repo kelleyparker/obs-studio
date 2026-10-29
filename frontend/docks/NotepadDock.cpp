@@ -11,9 +11,10 @@
 #include <QFontDatabase>
 #include <QFontDialog>
 #include <QLabel>
+#include <QHBoxLayout>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSaveFile>
-#include <QToolBar>
 #include <QVBoxLayout>
 
 NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
@@ -21,28 +22,41 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 	config_t *config = App()->GetUserConfig();
 	config_set_default_bool(config, "Notepad", "WordWrap", true);
 
-	QToolBar *toolbar = new QToolBar(this);
-	toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	/* Plain buttons rather than a QToolBar: the themes limit dock toolbar
+	 * buttons to icon width, which cuts text labels down to "..." */
+	QHBoxLayout *buttons = new QHBoxLayout();
+	buttons->setContentsMargins(4, 4, 4, 4);
 
-	auto makeAction = [&](const char *text, const QKeySequence &key, auto slot) {
-		QAction *action = toolbar->addAction(QTStr(text));
-		action->setShortcut(key);
-		action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-		connect(action, &QAction::triggered, this, slot);
-		/* Also add it to the dock, so the shortcut works while typing */
-		this->addAction(action);
-		return action;
+	auto makeButton = [&](const char *text, const QKeySequence &key, auto slot) {
+		QPushButton *button = new QPushButton(QTStr(text), this);
+		button->setFocusPolicy(Qt::NoFocus);
+		connect(button, &QPushButton::clicked, this, slot);
+		buttons->addWidget(button);
+
+		if (!key.isEmpty()) {
+			button->setToolTip(key.toString(QKeySequence::NativeText));
+
+			QAction *action = new QAction(this);
+			action->setShortcut(key);
+			action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+			connect(action, &QAction::triggered, this, slot);
+			addAction(action);
+		}
+		return button;
 	};
 
-	makeAction("Notepad.New", QKeySequence::New, &NotepadDock::New);
-	makeAction("Notepad.Open", QKeySequence::Open, &NotepadDock::Open);
-	makeAction("Notepad.Save", QKeySequence::Save, [this]() { Save(); });
-	makeAction("Notepad.SaveAs", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), [this]() { SaveAs(); });
-	toolbar->addSeparator();
-	makeAction("Notepad.Font", QKeySequence(), &NotepadDock::ChooseFont);
-	wrapAction = toolbar->addAction(QTStr("Notepad.WordWrap"));
-	wrapAction->setCheckable(true);
-	connect(wrapAction, &QAction::toggled, this, &NotepadDock::SetWordWrap);
+	makeButton("Notepad.New", QKeySequence::New, &NotepadDock::New);
+	makeButton("Notepad.Open", QKeySequence::Open, &NotepadDock::Open);
+	makeButton("Notepad.Save", QKeySequence::Save, [this]() { Save(); });
+	makeButton("Notepad.SaveAs", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), [this]() { SaveAs(); });
+	makeButton("Notepad.Font", QKeySequence(), &NotepadDock::ChooseFont);
+
+	wrapButton = new QPushButton(QTStr("Notepad.WordWrap"), this);
+	wrapButton->setCheckable(true);
+	wrapButton->setFocusPolicy(Qt::NoFocus);
+	connect(wrapButton, &QPushButton::toggled, this, &NotepadDock::SetWordWrap);
+	buttons->addWidget(wrapButton);
+	buttons->addStretch();
 
 	edit = new QPlainTextEdit(this);
 	status = new QLabel(this);
@@ -51,7 +65,7 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
 	layout->setSpacing(0);
-	layout->addWidget(toolbar);
+	layout->addLayout(buttons);
 	layout->addWidget(edit);
 	layout->addWidget(status);
 
@@ -67,7 +81,7 @@ NotepadDock::NotepadDock(QWidget *parent) : QWidget(parent)
 	edit->setFont(font);
 
 	bool wrap = config_get_bool(config, "Notepad", "WordWrap");
-	wrapAction->setChecked(wrap);
+	wrapButton->setChecked(wrap);
 	SetWordWrap(wrap);
 
 	autoSaveTimer.setSingleShot(true);

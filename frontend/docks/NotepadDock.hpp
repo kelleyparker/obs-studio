@@ -4,9 +4,9 @@
 #include <QTimer>
 #include <QWidget>
 
-class QAction;
 class QLabel;
 class QPlainTextEdit;
+class QPushButton;
 
 /* A plain text notepad. Untitled notes save themselves to the config
  * folder, so nothing is lost if OBS closes. Opened files only save when
@@ -21,7 +21,7 @@ public:
 private:
 	QPlainTextEdit *edit;
 	QLabel *status;
-	QAction *wrapAction;
+	QPushButton *wrapButton;
 	QTimer autoSaveTimer;
 	QString currentPath; /* empty while the note is untitled */
 	bool loading = false;
