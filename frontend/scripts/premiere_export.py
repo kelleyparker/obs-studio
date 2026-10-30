@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+Premiere Pro export for the YouTube pipeline: the AI edit as a Final Cut Pro 7 XML (xmeml v4)
+sequence, which Premiere opens with File > Import.
+
+The sequence uses the original recording, so every cut is a real edit point with handles and can be
+widened or tightened in Premiere. Tracks:
+  V1  the kept parts of the recording, back to back
+  V2  screen B-roll at each accepted insert (if any)
+  V3  the webcam bubble over the screen (picture-in-picture B-roll only)
+  A*  one stereo track per audio stream of the recording, linked to V1
+Markers show the chapters and every place the AI cut.
+"""
+
+import json
+import os
+import subprocess
+import urllib.parse
+import xml.etree.ElementTree as ET
+
+
+def probe_media(path: str) -> dict:
+    """Frame rate, size, length and audio streams of a media file (ffprobe)."""
+    res = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                          "format=duration:stream=codec_type,width,height,avg_frame_rate,r_frame_rate,channels,sample_rate",
+                          "-of", "json", path], capture_output=True, text=True, timeout=60)
+    data = json.loads(res.stdout or "{}")
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    fps = 30.0
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        num, _, den = str(video.get(key, "0/1")).partition("/")
+        try:
+            value = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            value = 0.0
+        if value > 0:
+            fps = value
+            break
+    return {
+        "duration": float(data.get("format", {}).get("duration") or 0.0),
+        "fps": fps,
+        "width": int(video.get("width") or 1920),
+        "height": int(video.get("height") or 1080),
+        "audio": [{"channels": int(s.get("channels") or 2), "sample_rate": int(s.get("sample_rate") or 48000)}
+                  for s in streams if s.get("codec_type") == "audio"],
+    }
+
+
+def timebase(fps: float) -> tuple[int, bool]:
+    """FCP timebase and NTSC flag: 29.97 -> (30, True), 25 -> (25, False)."""
+    rounded = max(1, round(fps))
+    return rounded, abs(fps - rounded * 1000 / 1001) < 0.01 and abs(fps - rounded) > 0.001
+
+
+def path_url(path: str) -> str:
+    """file://localhost/G%3a/obs_recordings/My%20Video.mp4, the way Premiere writes it."""
+    return "file://localhost/" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"), safe="/")
+
+
+def _sub(parent, tag: str, text=None, **attrs):
+    el = ET.SubElement(parent, tag, {k: str(v) for k, v in attrs.items()})
+    if text is not None:
+        el.text = str(text)
+    return el
+
+
+def _rate(parent, fps: float):
+    base, ntsc = timebase(fps)
+    rate = _sub(parent, "rate")
+    _sub(rate, "timebase", base)
+    _sub(rate, "ntsc", "TRUE" if ntsc else "FALSE")
+
+
+def _video_characteristics(parent, probe: dict):
+    sc = _sub(parent, "samplecharacteristics")
+    _rate(sc, probe["fps"])
+    _sub(sc, "width", probe["width"])
+    _sub(sc, "height", probe["height"])
+    _sub(sc, "anamorphic", "FALSE")
+    _sub(sc, "pixelaspectratio", "square")
+    _sub(sc, "fielddominance", "none")
+
+
+def _file(parent, file_id: str, path: str, probe: dict, fps: float, defined: set):
+    """The <file> of a clip: in full the first time, then only as a reference."""
+    if file_id in defined:
+        _sub(parent, "file", id=file_id)
+        return
+    defined.add(file_id)
+    f = _sub(parent, "file", id=file_id)
+    _sub(f, "name", os.path.basename(path))
+    _sub(f, "pathurl", path_url(path))
+    _rate(f, fps)
+    _sub(f, "duration", round(probe["duration"] * fps))
+    media = _sub(f, "media")
+    _video_characteristics(_sub(media, "video"), probe)
+    for stream in probe["audio"]:
+        audio = _sub(media, "audio")
+        sc = _sub(audio, "samplecharacteristics")
+        _sub(sc, "depth", 16)
+        _sub(sc, "samplerate", stream["sample_rate"])
+        _sub(audio, "channelcount", stream["channels"])
+
+
+def _motion(parent, scale: float, horiz: float = 0.0, vert: float = 0.0):
+    """Basic Motion: scale in percent, center offset as a fraction of the frame (0, 0 = middle)."""
+    effect = _sub(_sub(parent, "filter"), "effect")
+    _sub(effect, "name", "Basic Motion")
+    _sub(effect, "effectid", "basic")
+    _sub(effect, "effectcategory", "motion")
+    _sub(effect, "effecttype", "motion")
+    _sub(effect, "mediatype", "video")
+    p = _sub(effect, "parameter", authoringApp="PremierePro")
+    _sub(p, "parameterid", "scale")
+    _sub(p, "name", "Scale")
+    _sub(p, "valuemin", 0)
+    _sub(p, "valuemax", 1000)
+    _sub(p, "value", round(scale, 3))
+    p = _sub(effect, "parameter", authoringApp="PremierePro")
+    _sub(p, "parameterid", "center")
+    _sub(p, "name", "Center")
+    value = _sub(p, "value")
+    _sub(value, "horiz", round(horiz, 5))
+    _sub(value, "vert", round(vert, 5))
+
+
+def _clipitem(track, clip_id: str, name: str, fps: float, start: int, end: int, src_in: int, src_out: int,
+              file_id: str, path: str, probe: dict, defined: set, **attrs):
+    clip = _sub(track, "clipitem", id=clip_id, **attrs)
+    _sub(clip, "name", name)
+    _sub(clip, "enabled", "TRUE")
+    _sub(clip, "duration", round(probe["duration"] * fps))
+    _rate(clip, fps)
+    _sub(clip, "start", start)
+    _sub(clip, "end", end)
+    _sub(clip, "in", src_in)
+    _sub(clip, "out", src_out)
+    _file(clip, file_id, path, probe, fps, defined)
+    return clip
+
+
+def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll: dict | None,
+                       chapters: list, cut_marks: list, name: str = "AI edit") -> str:
+    """
+    The edit as FCP 7 XML. keep_intervals are (start, end) seconds of the recording; broll is None or
+    {path, probe, offset, inserts: [(start, end) in recording seconds], style: "pip"|"cutaway", pip_width};
+    chapters are (seconds, title) and cut_marks (seconds, name, comment), both on the edited timeline.
+    """
+    fps = probe["fps"]
+
+    def frames(seconds: float) -> int:
+        return int(round(seconds * fps))
+
+    # Where each kept part lands on the timeline; lengths come from the rounded in/out so there are no gaps
+    parts, t = [], 0
+    for a, b in keep_intervals:
+        src_in, src_out = frames(a), frames(b)
+        if src_out <= src_in:
+            continue
+        parts.append({"a": a, "b": b, "in": src_in, "out": src_out, "start": t, "end": t + src_out - src_in})
+        t += src_out - src_in
+    total = t
+
+    root = ET.Element("xmeml", version="4")
+    seq = _sub(root, "sequence", id="sequence-1")
+    _sub(seq, "name", name)
+    _sub(seq, "duration", total)
+    _rate(seq, fps)
+    tc = _sub(seq, "timecode")
+    _rate(tc, fps)
+    _sub(tc, "string", "00:00:00:00")
+    _sub(tc, "frame", 0)
+    _sub(tc, "displayformat", "NDF")
+
+    media = _sub(seq, "media")
+    video = _sub(media, "video")
+    _video_characteristics(_sub(video, "format"), probe)
+    defined = set()
+    audio_count = len(probe["audio"])
+
+    def link_part(clip, i: int):
+        """Link a part's picture and sound so they move together in Premiere."""
+        for kind, clip_id, track_index in [("video", f"clipitem-v1-{i + 1}", 1)] + [
+                ("audio", f"clipitem-a{n + 1}-{i + 1}", n + 1) for n in range(audio_count)]:
+            link = _sub(clip, "link")
+            _sub(link, "linkclipref", clip_id)
+            _sub(link, "mediatype", kind)
+            _sub(link, "trackindex", track_index)
+            _sub(link, "clipindex", i + 1)
+
+    v1 = _sub(video, "track")
+    for i, part in enumerate(parts):
+        link_part(_clipitem(v1, f"clipitem-v1-{i + 1}", f"Part {i + 1}", fps, part["start"], part["end"],
+                            part["in"], part["out"], "file-1", recording, probe, defined), i)
+
+    if broll and broll.get("inserts"):
+        screen_probe = broll["probe"]
+        fit = min(probe["width"] / screen_probe["width"], probe["height"] / screen_probe["height"]) * 100
+        v2 = _sub(video, "track")
+        v3 = _sub(video, "track") if broll.get("style", "pip") == "pip" else None
+        n = 0
+        for part in parts:
+            for s, e in broll["inserts"]:
+                s, e = max(s, part["a"]), min(e, part["b"])
+                if e - s < 1.0 / fps:
+                    continue
+                n += 1
+                start = part["start"] + frames(s) - part["in"]
+                end = start + frames(e) - frames(s)
+                screen = _clipitem(v2, f"clipitem-v2-{n}", f"Screen {n}", fps, start, end,
+                                   frames(s + broll["offset"]), frames(s + broll["offset"]) + end - start,
+                                   "file-2", broll["path"], screen_probe, defined)
+                if abs(fit - 100) > 0.5:
+                    _motion(screen, fit)
+                if v3 is not None:
+                    # Webcam bubble in the bottom-right corner, as in the rendered PiP
+                    width = float(broll.get("pip_width", 0.22))
+                    margin = 0.025
+                    bubble = _clipitem(v3, f"clipitem-v3-{n}", f"Webcam {n}", fps, start, end, frames(s), frames(e),
+                                       "file-1", recording, probe, defined)
+                    _motion(bubble, width * 100, 0.5 - margin - width / 2,
+                            0.5 - margin * probe["width"] / probe["height"] - width / 2)
+
+    audio = _sub(media, "audio")
+    _sub(audio, "numOutputChannels", 2)
+    fmt = _sub(_sub(audio, "format"), "samplecharacteristics")
+    _sub(fmt, "depth", 16)
+    _sub(fmt, "samplerate", probe["audio"][0]["sample_rate"] if probe["audio"] else 48000)
+    for n, stream in enumerate(probe["audio"]):
+        stereo = stream["channels"] >= 2
+        track = _sub(audio, "track", premiereTrackType="Stereo" if stereo else "Mono")
+        for i, part in enumerate(parts):
+            clip = _clipitem(track, f"clipitem-a{n + 1}-{i + 1}", f"Part {i + 1}", fps, part["start"], part["end"],
+                             part["in"], part["out"], "file-1", recording, probe, defined,
+                             premiereChannelType="stereo" if stereo else "mono")
+            source = _sub(clip, "sourcetrack")
+            _sub(source, "mediatype", "audio")
+            _sub(source, "trackindex", n + 1)
+            link_part(clip, i)
+
+    for seconds, title in chapters:
+        marker = _sub(seq, "marker")
+        _sub(marker, "name", title)
+        _sub(marker, "comment", "Chapter")
+        _sub(marker, "in", min(frames(seconds), max(0, total - 1)))
+        _sub(marker, "out", -1)
+    for seconds, title, comment in cut_marks:
+        marker = _sub(seq, "marker")
+        _sub(marker, "name", title)
+        _sub(marker, "comment", comment)
+        _sub(marker, "in", min(frames(seconds), max(0, total - 1)))
+        _sub(marker, "out", -1)
+
+    ET.indent(root, space="  ")
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' + ET.tostring(root, encoding="unicode") + "\n"

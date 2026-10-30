@@ -448,6 +448,68 @@ def subtract_cuts_from_intervals(
     return [(round(a, 3), round(b, 3)) for a, b in result if (b - a) >= 0.15]
 
 
+MIN_CUT_SEC = 0.10   # a reviewed cut shorter than this does nothing
+MIN_KEEP_SEC = 0.15  # same sliver rule as the automatic cut list
+
+
+def cuts_from_keep(
+    keep_intervals: list[tuple[float, float]],
+    retake_cuts: list[tuple[float, float, str]],
+    total_duration: float
+) -> list[dict]:
+    """The removed ranges (everything outside keep_intervals), labelled for the OBS cut editor."""
+    gaps = []
+    cursor = 0.0
+    for k_start, k_end in sorted(keep_intervals):
+        if k_start - cursor >= MIN_CUT_SEC:
+            gaps.append((cursor, k_start))
+        cursor = max(cursor, k_end)
+    if total_duration - cursor >= MIN_CUT_SEC:
+        gaps.append((cursor, total_duration))
+
+    cuts = []
+    for i, (g_start, g_end) in enumerate(gaps, start=1):
+        overlaps = [(min(g_end, c_end) - max(g_start, c_start), reason)
+                    for c_start, c_end, reason in retake_cuts]
+        overlaps = [o for o in overlaps if o[0] > 0.05]
+        if overlaps:
+            kind, reason = "retake", max(overlaps)[1]
+        else:
+            kind, reason = "silence", f"Dead air ({g_end - g_start:.1f}s)"
+        cuts.append({"id": f"c{i:02d}", "start": round(g_start, 3), "end": round(g_end, 3),
+                     "kind": kind, "reason": reason, "enabled": True})
+    return cuts
+
+
+def keep_from_cuts(cuts: list[dict], total_duration: float) -> list[tuple[float, float]]:
+    """Rebuild the keep list from reviewed cuts: everything outside the enabled ones."""
+    spans = []
+    for c in cuts:
+        if not c.get("enabled", True):
+            continue
+        start = max(0.0, float(c.get("start", 0.0)))
+        end = min(total_duration, float(c.get("end", 0.0)))
+        if end - start >= MIN_CUT_SEC:
+            spans.append([start, end])
+    spans.sort()
+    merged = []
+    for s in spans:
+        if merged and s[0] <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], s[1])
+        else:
+            merged.append(s)
+
+    keep = []
+    cursor = 0.0
+    for c_start, c_end in merged:
+        if c_start - cursor >= MIN_KEEP_SEC:
+            keep.append((round(cursor, 3), round(c_start, 3)))
+        cursor = c_end
+    if total_duration - cursor >= MIN_KEEP_SEC:
+        keep.append((round(cursor, 3), round(total_duration, 3)))
+    return keep
+
+
 # ---------------------------------------------------------------------------
 # 2b. Screen B-roll: sync, planning & guardrails
 # ---------------------------------------------------------------------------
@@ -1490,23 +1552,24 @@ def generate_metadata_with_priority(
 # 4. 1-to-4 Priority Custom Thumbnail Generator (1280x720 JPG)
 # ---------------------------------------------------------------------------
 
-def extract_best_talking_head_frame(video_path: str):
+def extract_top_talking_head_frames(video_path: str, count: int = 4, samples: int = 12, min_gap: float = 0.08) -> list:
     """
     Uses OpenCV to sample candidate frames across the edited video, scoring each
     by Laplacian sharpness and face visibility so you never get a blurry or mid-blink frame.
+    Returns up to `count` frames, best first, at least `min_gap` of the video apart.
     """
     import cv2
     import numpy as np
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        return None
+        return []
 
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     if frame_count <= 0:
         ret, frame = cap.read()
         cap.release()
-        return frame if ret else None
+        return [frame] if ret else []
 
     face_cascade = None
     try:
@@ -1516,9 +1579,9 @@ def extract_best_talking_head_frame(video_path: str):
     except Exception:
         pass
 
-    sample_points = [int(frame_count * p) for p in (0.12, 0.25, 0.38, 0.50, 0.62, 0.75, 0.85)]
-    best_frame = None
-    best_score = -1.0
+    # Evenly spread between 6% and 94%, away from the intro and outro
+    sample_points = [int(frame_count * (0.06 + 0.88 * i / max(1, samples - 1))) for i in range(samples)]
+    scored = []
 
     for idx in sample_points:
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -1538,54 +1601,122 @@ def extract_best_talking_head_frame(video_path: str):
             if len(faces) > 0:
                 face_bonus = 2.2
 
-        score = sharpness * exposure_weight * face_bonus
-        if score > best_score:
-            best_score = score
-            best_frame = frame.copy()
+        scored.append((sharpness * exposure_weight * face_bonus, idx, frame.copy()))
 
     cap.release()
-    return best_frame
+
+    picked = []
+    for score, idx, frame in sorted(scored, key=lambda s: s[0], reverse=True):
+        if all(abs(idx - other) >= frame_count * min_gap for _, other, _ in picked):
+            picked.append((score, idx, frame))
+        if len(picked) >= count:
+            break
+    return [frame for _, _, frame in picked]
 
 
-def overlay_youtube_hook_text(base_pil_img, hook_text: str):
+def extract_best_talking_head_frame(video_path: str):
+    frames = extract_top_talking_head_frames(video_path, count=1)
+    return frames[0] if frames else None
+
+
+def frame_to_pil(frame_bgr):
+    import cv2
+    from PIL import Image
+
+    if frame_bgr is None:
+        return Image.new("RGB", (1280, 720), (32, 18, 48))
+    return Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+
+
+def load_thumbnail_font(size: int):
+    from PIL import ImageFont
+
+    # Load bold Windows font (Impact / Arial Black / Segoe UI Black)
+    for font_name in ["impact.ttf", "ariblk.ttf", "segoeuib.ttf", "arialbd.ttf"]:
+        font_path = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", font_name)
+        if os.path.exists(font_path):
+            try:
+                return ImageFont.truetype(font_path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def wrap_hook_lines(text: str, max_chars: int = 12, max_lines: int = 3) -> list[str]:
+    lines = []
+    for word in text.split():
+        if lines and len(lines[-1]) + 1 + len(word) <= max_chars:
+            lines[-1] += " " + word
+        else:
+            lines.append(word)
+    return lines[:max_lines]
+
+
+THUMBNAIL_LAYOUTS = ("bottom", "left", "zoom", "duotone")
+
+
+def parse_hex_color(value: str, default: tuple) -> tuple:
+    value = (value or "").strip().lstrip("#")
+    if re.fullmatch(r"[0-9a-fA-F]{6}", value):
+        return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return default
+
+
+def overlay_youtube_hook_text(base_pil_img, hook_text: str, layout: str = "bottom", accent: tuple = (255, 55, 55)):
     """
     Renders high-contrast YouTube thumbnail typography with gradient vignette,
-    bold multi-line text, thick outline stroke, and accent badge using Pillow.
+    bold text, thick outline stroke, and accent badge using Pillow.
+    Layouts: "bottom" (banner), "left" (big stacked text), "zoom" (punch-in), "duotone" (tinted).
     """
-    from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+    from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
-    img = base_pil_img.convert("RGB").resize((1280, 720), Image.Resampling.LANCZOS)
+    img = base_pil_img.convert("RGB")
+    if layout == "zoom":
+        w, h = img.size
+        img = img.crop((int(w * 0.15), int(h * 0.12), int(w * 0.85), int(h * 0.82)))
+    img = img.resize((1280, 720), Image.Resampling.LANCZOS)
+    if layout == "duotone":
+        gray = ImageOps.grayscale(img)
+        img = ImageOps.colorize(gray, black=(10, 10, 20), white=tuple(min(255, c + 60) for c in accent))
     # Boost color contrast & saturation for YouTube feed pop
     img = ImageEnhance.Contrast(img).enhance(1.14)
     img = ImageEnhance.Color(img).enhance(1.18)
 
-    # Apply subtle dark gradient on bottom-left for text legibility
+    hook_clean = (hook_text or "MUST WATCH").upper().strip()
     overlay = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
     draw_ov = ImageDraw.Draw(overlay)
+
+    if layout in ("left", "right"):
+        # Dark gradient from that edge for big stacked text ("right" mirrors "left")
+        right = layout == "right"
+        for x in range(0, 760):
+            alpha = int(215 * (1.0 - x / 760.0))
+            edge_x = 1279 - x if right else x
+            draw_ov.line([(edge_x, 0), (edge_x, 720)], fill=(8, 8, 14, alpha))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        font = load_thumbnail_font(118)
+        lines = wrap_hook_lines(hook_clean[:40])
+        y = 360 - len(lines) * 66
+        bar_x = 1208 if right else 56
+        draw.rectangle([bar_x, y - 26, bar_x + 16, y + len(lines) * 132 - 20], fill=accent)
+        for line in lines:
+            x = 1184 - draw.textlength(line, font=font) if right else 96
+            draw.text((x, y), line, font=font, fill=(255, 235, 60), stroke_width=7, stroke_fill=(0, 0, 0))
+            y += 132
+        return img
+
+    # Apply subtle dark gradient on the bottom for text legibility
     for y in range(380, 720):
         alpha = int(185 * ((y - 380) / 340.0))
         draw_ov.line([(0, y), (1280, y)], fill=(8, 8, 14, alpha))
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
     draw = ImageDraw.Draw(img)
-    hook_clean = (hook_text or "MUST WATCH").upper().strip()
+    font = load_thumbnail_font(92)
 
-    # Load bold Windows font (Impact / Arial Black / Segoe UI Black)
-    font_size = 92
-    font = None
-    for font_name in ["impact.ttf", "ariblk.ttf", "segoeuib.ttf", "arialbd.ttf"]:
-        font_path = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", font_name)
-        if os.path.exists(font_path):
-            try:
-                font = ImageFont.truetype(font_path, font_size)
-                break
-            except Exception:
-                pass
-    if font is None:
-        font = ImageFont.load_default()
-
-    # Draw glowing red/gold accent bar + bold white/yellow text
-    draw.rounded_rectangle([54, 520, 1226, 675], radius=18, fill=(18, 18, 26), outline=(255, 55, 55), width=5)
+    # Draw glowing accent bar + bold white/yellow text
+    draw.rounded_rectangle([54, 520, 1226, 675], radius=18, fill=(18, 18, 26), outline=accent, width=5)
     draw.text(
         (86, 548),
         hook_clean[:34],
@@ -1597,7 +1728,8 @@ def overlay_youtube_hook_text(base_pil_img, hook_text: str):
     return img
 
 
-def generate_gemini_thumbnail(api_key: str, prompt: str, hook_text: str, out_jpg: str) -> bool:
+def generate_gemini_image(api_key: str, prompt: str):
+    """Text-to-image with Imagen 3. Returns a PIL image without any text."""
     if not api_key:
         raise ValueError("No Gemini API key configured.")
     from google import genai
@@ -1615,14 +1747,12 @@ def generate_gemini_thumbnail(api_key: str, prompt: str, hook_text: str, out_jpg
         )
     )
     for generated_image in result.generated_images:
-        pil_img = Image.open(io.BytesIO(generated_image.image.image_bytes))
-        final_img = overlay_youtube_hook_text(pil_img, hook_text)
-        final_img.save(out_jpg, "JPEG", quality=92)
-        return True
+        return Image.open(io.BytesIO(generated_image.image.image_bytes))
     raise RuntimeError("Imagen 3 returned no images.")
 
 
-def generate_openai_thumbnail(api_key: str, prompt: str, hook_text: str, out_jpg: str) -> bool:
+def generate_openai_image(api_key: str, prompt: str):
+    """Text-to-image with DALL-E 3. Returns a PIL image without any text."""
     if not api_key:
         raise ValueError("No OpenAI API key configured.")
     from PIL import Image
@@ -1645,68 +1775,569 @@ def generate_openai_thumbnail(api_key: str, prompt: str, hook_text: str, out_jpg
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    b64_bytes = base64.b64decode(data["data"][0]["b64_json"])
-    pil_img = Image.open(io.BytesIO(b64_bytes))
-    final_img = overlay_youtube_hook_text(pil_img, hook_text)
-    final_img.save(out_jpg, "JPEG", quality=92)
-    return True
+    return Image.open(io.BytesIO(base64.b64decode(data["data"][0]["b64_json"])))
 
 
-def generate_local_gpu_thumbnail(video_path: str, hook_text: str, out_jpg: str) -> bool:
-    import cv2
+DEFAULT_THUMBNAIL_IMAGE_MODEL = "x/z-image-turbo"
+
+# Local Stable Diffusion runs youtube_imagegen.py with the Python of its own venv (PyTorch + diffusers),
+# with the model cached next to it: ~/OBSYouTubeImageGen/{venv,hf}
+SD_HOME = os.path.join(os.path.expanduser("~"), "OBSYouTubeImageGen")
+DEFAULT_SD_PYTHON = os.path.join(SD_HOME, "venv", "Scripts" if os.name == "nt" else "bin",
+                                 "python.exe" if os.name == "nt" else "python")
+DEFAULT_SD_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
+SD_NEGATIVE_PROMPT = "text, words, letters, caption, watermark, logo, signature, blurry, lowres, deformed, ugly"
+
+THUMBNAIL_IMAGE_SOURCE_LABELS = {
+    "sd": "Local Stable Diffusion",
+    "local": "Local Ollama image model",
+    "gemini": "Google Gemini (Imagen 3)",
+    "openai": "ChatGPT / OpenAI (DALL-E 3)",
+    "claude": "Claude design + local compositor",
+}
+
+THUMBNAIL_PROMPT_VARIANTS = (
+    "cinematic lighting, shallow depth of field",
+    "bold graphic poster style, strong simple shapes",
+    "bright saturated colours, playful energy",
+    "dramatic close-up, moody high contrast",
+)
+
+THUMBNAIL_DESIGN_PROMPT = """You design YouTube thumbnails for a talking-head video.
+Return ONLY a JSON object: {"designs": [{"hook": "...", "layout": "...", "accent": "#RRGGBB"}]}
+with exactly {count} designs. Each hook is 2 to 5 punchy, curiosity-driven words, at most
+28 characters, and every design uses a different hook. layout is one of: bottom, left, zoom, duotone
+(use each layout at most once while possible). accent is a bold colour that pops on a dark background."""
+
+
+def generate_ollama_image(model: str, prompt: str):
+    """Text-to-image on the local Ollama server (experimental in Ollama). Returns a PIL image."""
     from PIL import Image
 
-    frame_bgr = extract_best_talking_head_frame(video_path)
-    if frame_bgr is not None:
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(frame_rgb)
-    else:
-        pil_img = Image.new("RGB", (1280, 720), (32, 18, 48))
-
-    final_img = overlay_youtube_hook_text(pil_img, hook_text)
-    final_img.save(out_jpg, "JPEG", quality=92)
-    return True
-
-
-def generate_thumbnail_with_priority(
-    priority_list: list[str],
-    secrets: dict,
-    video_path: str,
-    metadata: dict,
-    thumb_style: str,
-    out_jpg: str
-) -> str:
-    """
-    Walks the user's 1-to-4 Priority Ranking list to generate the 1280x720 custom thumbnail.
-    """
-    hook_text = metadata.get("thumbnail_hook", "NEW VIDEO")
-    prompt = metadata.get("thumbnail_prompt", metadata.get("title", "YouTube creator studio"))
-
-    # If user explicitly selected "Talking-Head Frame + AI Hook Text" style, use local smart frame compositor directly
-    if thumb_style == "frame_overlay":
-        generate_local_gpu_thumbnail(video_path, hook_text, out_jpg)
-        return "Smart Keyframe + AI Hook Compositor"
-
-    for rank_idx, provider in enumerate(priority_list, start=1):
-        p_key = provider.lower().strip()
-        update_step("thumbnail", 20 + rank_idx * 18, f"Thumbnail Priority #{rank_idx} ({p_key.upper()})...")
+    if not ensure_ollama_server():
+        raise RuntimeError(f"Local Ollama isn't answering on {OLLAMA_URL} and could not be started.")
+    body = {"model": model, "prompt": prompt, "stream": False, "width": 1280, "height": 720}
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = str(e)
         try:
-            if p_key == "gemini":
-                if generate_gemini_thumbnail(secrets.get("gemini_key", ""), prompt, hook_text, out_jpg):
-                    return f"Priority #{rank_idx}: Google Gemini (Imagen 3)"
-            elif p_key == "openai":
-                if generate_openai_thumbnail(secrets.get("openai_key", ""), prompt, hook_text, out_jpg):
-                    return f"Priority #{rank_idx}: OpenAI (DALL-E 3)"
-            elif p_key in ("claude", "local"):
-                # Claude does not have an image endpoint; pairs its prompt/hook with Local GPU Smart Frame Compositor
-                if generate_local_gpu_thumbnail(video_path, hook_text, out_jpg):
-                    label = "Claude Hook + Smart Frame Compositor" if p_key == "claude" else "Local GPU Smart Frame Compositor"
-                    return f"Priority #{rank_idx}: {label}"
-        except Exception as e:
-            log_warn(f"Thumbnail Priority #{rank_idx} ({p_key}) fell back: {e}")
+            detail = json.loads(e.read().decode("utf-8", "replace")).get("error", detail)
+        except Exception:
+            pass
+        raise RuntimeError(detail)
+    b64 = data.get("image") or (data.get("images") or [""])[0]
+    if not b64:
+        raise RuntimeError(f"'{model}' returned no image (is it an image model, and does this Ollama support image generation?)")
+    return Image.open(io.BytesIO(base64.b64decode(b64)))
 
-    generate_local_gpu_thumbnail(video_path, hook_text, out_jpg)
-    return "Fallback: Local GPU Smart Frame Compositor"
+
+THUMBNAIL_STYLES = {
+    "mixed": THUMBNAIL_PROMPT_VARIANTS,
+    "cinematic": ("cinematic lighting, shallow depth of field", "cinematic wide shot, anamorphic lens flare",
+                  "cinematic low angle, volumetric light", "cinematic golden hour, film grain"),
+    "poster": ("bold graphic poster style, strong simple shapes", "flat vector poster art, limited palette",
+               "retro screen-print poster, halftone texture", "minimal geometric poster, big negative space"),
+    "bright": ("bright saturated colours, playful energy", "vivid pop-art colours, high key lighting",
+               "colourful 3D render, soft studio light", "sunny bright scene, clean and cheerful"),
+    "moody": ("dramatic close-up, moody high contrast", "dark moody scene, rim lighting, deep shadows",
+              "noir style, single hard light, haze", "low-key lighting, deep blue and orange tones"),
+}
+
+# Measured on an RTX 5070 with SDXL at 1344x768, 30 steps; replaced by this PC's own timings after a run
+SD_TIMINGS_DEFAULT = {"load_s": 15.0, "first_image_s": 27.0, "image_s": 10.0}
+
+
+def sd_timings_path() -> str:
+    return os.path.join(SD_HOME, "timings.json")
+
+
+def load_sd_timings() -> dict:
+    try:
+        saved = read_json_file(sd_timings_path())
+        return {k: float(saved.get(k, v)) for k, v in SD_TIMINGS_DEFAULT.items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return dict(SD_TIMINGS_DEFAULT)
+
+
+def save_sd_timings(load_s: float, image_times: list):
+    if not image_times:
+        return
+    later = image_times[1:]
+    timings = {
+        "load_s": round(load_s, 1),
+        "first_image_s": round(image_times[0], 1),
+        "image_s": round(sum(later) / len(later), 1) if later else load_sd_timings()["image_s"],
+    }
+    try:
+        write_json_file(sd_timings_path(), timings)
+    except OSError:
+        pass
+
+
+def sd_eta_seconds(timings: dict, count: int, done: int, phase: str, elapsed: float = 0.0,
+                   step: int = 0, steps: int = 0, last_image_s: float | None = None, work: float = 1.0,
+                   step_rate: float | None = None) -> float:
+    """
+    Seconds left in a Stable Diffusion job of `count` images, `done` of them finished. `phase` is
+    "loading" (elapsed = time since the model started loading) or "image" (elapsed = time in the
+    current image, `step` of `steps` done, `step_rate` seconds per step once measured). `work` scales
+    the saved timings (Refine runs fewer steps).
+    """
+    if done >= count:
+        return 0.0
+    next_image = last_image_s or timings["image_s"] * work
+    if phase == "loading":
+        return (max(0.0, timings["load_s"] - elapsed) + timings["first_image_s"] * work
+                + max(0, count - 1) * timings["image_s"] * work)
+    if step_rate and steps > 0:
+        current = step_rate * max(0, steps - step)
+    else:
+        first = timings["first_image_s"] * work if done == 0 and last_image_s is None else next_image
+        current = max(0.0, first - elapsed)
+    return current + max(0, count - done - 1) * next_image
+
+
+def imagegen_command(config: dict) -> tuple[list, dict, int]:
+    """Command line, environment and creation flags for youtube_imagegen.py in the Stable Diffusion venv."""
+    python = config.get("thumbnail_sd_python") or DEFAULT_SD_PYTHON
+    if not os.path.exists(python):
+        raise RuntimeError(f"Stable Diffusion isn't installed (no {python}).")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_imagegen.py")
+    env = dict(os.environ, HF_HOME=os.path.join(SD_HOME, "hf"), HF_HUB_DISABLE_TELEMETRY="1",
+               PYTHONIOENCODING="utf-8", PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
+               U2NET_HOME=os.path.join(SD_HOME, "rembg"))
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    return [python, script], env, flags
+
+
+def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, init_images: list | None = None,
+                       strength: float = 0.5, negative_prompt: str = SD_NEGATIVE_PROMPT,
+                       notes: list | None = None) -> list:
+    """
+    Local Stable Diffusion (youtube_imagegen.py in its own venv): text-to-image, or image-to-image
+    when `init_images` is given. Shows a countdown in the thumbnail step. Returns PIL images.
+    """
+    import queue
+    import threading
+
+    from PIL import Image
+
+    cmd, env, flags = imagegen_command(config)
+    job = {"model": config.get("thumbnail_sd_model") or DEFAULT_SD_MODEL, "prompts": prompts,
+           "negative_prompt": negative_prompt, "width": 1344, "height": 768, "steps": 30,
+           "guidance": 7.0, "out_dir": out_dir}
+    work = 1.0
+    if init_images:
+        job.update(init_images=init_images, strength=strength)
+        work = strength
+    timings = load_sd_timings()
+    count = len(prompts)
+
+    # stderr (library warnings) goes to a file: an unread pipe fills up and stalls the generator
+    err_path = os.path.join(out_dir, "sd_log.txt")
+    with open(err_path, "w", encoding="utf-8") as err_file:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_file, env=env,
+                                creationflags=flags, text=True, encoding="utf-8", errors="replace")
+        proc.stdin.write(json.dumps(job))
+        proc.stdin.close()
+
+        # A reader thread, so the countdown keeps ticking while the model loads and nothing is printed
+        lines = queue.Queue()
+
+        def pump():
+            for raw in proc.stdout:
+                lines.put(raw)
+            lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        images, image_times = [], []
+        finished, step, steps, load_s = 0, 0, 0, 0.0
+        phase, phase_started = "loading", time.time()
+        # Seconds per step, measured from the first step reported in an image (the time before it is warm-up)
+        rate_from, step_rate = None, None
+
+        def show():
+            left = sd_eta_seconds(timings, count, finished, phase, time.time() - phase_started, step, steps,
+                                  image_times[-1] if image_times else None, work, step_rate)
+            if phase == "loading":
+                update_step("thumbnail", 30, f"Loading Stable Diffusion… ~{_fmt_clock(left)} left")
+            else:
+                done = finished + (step / steps if steps else 0.0)
+                update_step("thumbnail", 30 + int(55 * done / count),
+                            f"AI image {min(finished + 1, count)}/{count} · {_fmt_clock(left)} left")
+
+        show()
+        while True:
+            try:
+                line = lines.get(timeout=1.0)
+            except queue.Empty:
+                show()
+                continue
+            if line is None:
+                break
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            kind = event.get("type")
+            if kind == "loading":
+                phase_started = time.time()
+            elif kind == "loaded":
+                load_s = float(event.get("seconds") or 0.0)
+                log_info(f"Stable Diffusion loaded on {event.get('device')} in {event.get('seconds')} s.")
+                phase, phase_started, step, steps = "image", time.time(), 0, 0
+            elif kind == "progress":
+                step, steps = int(event.get("step", 0)), int(event.get("steps", 0))
+                if rate_from is None:
+                    rate_from = (time.time(), step)
+                elif step > rate_from[1]:
+                    step_rate = (time.time() - rate_from[0]) / (step - rate_from[1])
+            elif kind == "image":
+                images.append(Image.open(event["path"]).convert("RGB"))
+                image_times.append(float(event.get("seconds") or 0.0))
+                finished += 1
+                phase_started, step, steps, rate_from = time.time(), 0, 0, None
+            elif kind == "error":
+                message = event.get("message", "")
+                log_warn(f"{label}: {message}")
+                if "index" in event:
+                    finished += 1
+                    phase_started, step, steps, rate_from = time.time(), 0, 0, None
+                    if notes is not None:
+                        notes.append(f"Image {event['index'] + 1} failed: {message[:160]}")
+                elif notes is not None:
+                    notes.append(message[:200])
+            show()
+        proc.wait()
+    if not images:
+        with open(err_path, encoding="utf-8", errors="replace") as f:
+            tail = f.read().strip().splitlines()[-1:]
+        raise RuntimeError(tail[0] if tail else f"no images (exit code {proc.returncode})")
+    os.remove(err_path)
+    if not init_images:
+        save_sd_timings(load_s, image_times)
+    return images
+
+
+def cut_out_person(config: dict, image_path: str):
+    """The person in a photo with the background removed (RGBA, cropped), cached by the photo's contents."""
+    import hashlib
+
+    from PIL import Image
+
+    with open(image_path, "rb") as f:
+        digest = hashlib.sha1(f.read()).hexdigest()[:16]
+    cached = os.path.join(SD_HOME, "cutouts", f"{digest}.png")
+    if not os.path.exists(cached):
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        cmd, env, flags = imagegen_command(config)
+        res = subprocess.run(cmd, input=json.dumps({"task": "cutout", "image": image_path, "out": cached}),
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             env=env, creationflags=flags, timeout=900)
+        if not os.path.exists(cached):
+            events = [json.loads(l) for l in res.stdout.splitlines() if l.startswith("{")]
+            error = next((e.get("message") for e in events if e.get("type") == "error"), "")
+            raise RuntimeError(error or (res.stderr.strip().splitlines() or ["background removal failed"])[-1])
+    return Image.open(cached).convert("RGBA")
+
+
+def resolve_person(config: dict, options: dict, frames: list, out_dir: str, notes: list):
+    """The cut-out person for the thumbnail (from the attached photo or the best video frame), or None."""
+    mode = options.get("person", "none")
+    if mode not in ("photo", "video"):
+        return None
+    try:
+        if mode == "photo":
+            path = options.get("photo_path", "")
+            if not path or not os.path.exists(path):
+                raise RuntimeError(f"the photo wasn't found ({path or 'none attached'})")
+        else:
+            if not frames:
+                raise RuntimeError("no video frame to cut you out of")
+            path = os.path.join(out_dir, "person_frame.jpg")
+            frame_to_pil(frames[0]).save(path, "JPEG", quality=95)
+        update_step("thumbnail", 25, "Cutting you out of the photo...")
+        return cut_out_person(config, path)
+    except Exception as e:
+        log_warn(f"Couldn't place you in the thumbnail: {e}")
+        notes.append(f"Couldn't place you in the thumbnail: {e}")
+        return None
+
+
+def paste_person(img, person, side: str):
+    """Paste a cut-out person at the bottom of one side, with a white outline and a soft shadow."""
+    from PIL import Image, ImageFilter, ImageOps
+
+    w, h = img.size
+    scale = min(h * 0.92 / person.height, w * 0.45 / person.width)
+    person = person.resize((max(1, int(person.width * scale)), max(1, int(person.height * scale))),
+                           Image.Resampling.LANCZOS)
+    pad = 12
+    person = ImageOps.expand(person, border=pad, fill=(0, 0, 0, 0))
+    x = w - person.width - 30 + pad if side == "right" else 30 - pad
+    y = h - person.height + pad
+    alpha = person.getchannel("A")
+
+    def layer(color, mask, dx=0, dy=0):
+        full = Image.new("L", img.size, 0)
+        full.paste(mask, (x + dx, y + dy))
+        out = Image.new("RGBA", img.size, color + (0,))
+        out.putalpha(full)
+        return out
+
+    canvas = img.convert("RGBA")
+    shadow = alpha.filter(ImageFilter.GaussianBlur(16)).point(lambda a: int(a * 0.75))
+    canvas = Image.alpha_composite(canvas, layer((0, 0, 0), shadow, 12, 10))
+    canvas = Image.alpha_composite(canvas, layer((255, 255, 255), alpha.filter(ImageFilter.MaxFilter(13))))
+    canvas.alpha_composite(person, (x, y))
+    return canvas.convert("RGB")
+
+
+def compose_thumbnail(bg, hook: str, person=None, side: str = "right", layout: str = "", accent: tuple = (255, 55, 55)):
+    """
+    1280x720 thumbnail from a text-free background: the cut-out person on one side (if any) and the
+    hook text on the other. An empty hook means no text.
+    """
+    from PIL import ImageEnhance, ImageOps
+
+    img = ImageOps.fit(bg.convert("RGB"), (1280, 720))
+    if person is not None:
+        img = paste_person(img, person, side)
+        layout = "left" if side == "right" else "right"
+    if (hook or "").strip():
+        return overlay_youtube_hook_text(img, hook, layout or "bottom", accent)
+    return ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.14)).enhance(1.18)
+
+
+def thumbnail_prompts(base_prompt: str, count: int, options: dict) -> tuple[list, str]:
+    """Prompts for `count` AI backgrounds in the chosen style, and the negative prompt."""
+    style = THUMBNAIL_STYLES.get(options.get("style") or "mixed", THUMBNAIL_PROMPT_VARIANTS)
+    with_person = options.get("person", "none") in ("photo", "video")
+    room = f", empty space on the {options.get('side', 'right')} side, no people" if with_person else ""
+    prompts = [f"YouTube thumbnail background, {base_prompt}, {style[i % len(style)]}{room}, highly detailed, sharp focus"
+               for i in range(count)]
+    negative = SD_NEGATIVE_PROMPT + (", person, people, hands, face" if with_person else "")
+    avoid = (options.get("avoid") or "").strip().strip(",")
+    if avoid:
+        negative += f", {avoid}"
+    return prompts, negative
+
+
+def thumbnail_hook(metadata: dict, options: dict) -> str:
+    """The text on the thumbnail: the user's (empty means none) or the AI's hook."""
+    hook = options.get("hook")
+    return hook if hook is not None else metadata.get("thumbnail_hook", "NEW VIDEO")
+
+
+def save_ai_candidate(bg, name: str, out_dir: str, hook: str, person, side: str) -> dict:
+    from PIL import ImageOps
+
+    bg = ImageOps.fit(bg.convert("RGB"), (1280, 720))
+    bg_path = os.path.join(out_dir, f"{name}_bg.jpg")
+    bg.save(bg_path, "JPEG", quality=95)
+    out_jpg = os.path.join(out_dir, f"{name}.jpg")
+    compose_thumbnail(bg, hook, person, side).save(out_jpg, "JPEG", quality=92)
+    return {"path": out_jpg, "bg": bg_path}
+
+
+def design_thumbnails(designer: str, count: int, config: dict, metadata: dict) -> tuple[list[dict], str]:
+    """Hooks, layouts and colours for frame-based thumbnails, from Claude or the local LLM."""
+    title = metadata.get("title", "")
+    user_text = (f"Video title: {title}\nSuggested hook: {metadata.get('thumbnail_hook', '')}\n"
+                 f"Description:\n{metadata.get('description', '')[:800]}")
+    system_prompt = THUMBNAIL_DESIGN_PROMPT.replace("{count}", str(count))
+    designs, label = [], "Local smart frame compositor"
+    try:
+        if designer == "claude":
+            res = call_claude_json(config.get("secrets", {}).get("claude_key", ""), system_prompt, user_text, 800)
+            label = f"Claude design ({CLAUDE_MODEL}) + local compositor"
+        else:
+            model = config.get("ollama_model", "gemma4:12b")
+            res = call_local_ollama_json(model, system_prompt, user_text)
+            label = f"Local LLM design ({model}) + local compositor"
+        designs = [d for d in (res.get("designs") or []) if isinstance(d, dict) and str(d.get("hook", "")).strip()]
+    except Exception as e:
+        log_warn(f"Thumbnail design via {designer} failed ({e}); using the video's own hooks.")
+
+    # Fill up with the metadata hook and alternative titles so there are always `count` designs
+    fallback_hooks = [metadata.get("thumbnail_hook", "")] + list(metadata.get("alternative_titles", []))
+    fallback_hooks = [h for h in fallback_hooks if h] or ["NEW VIDEO"]
+    while len(designs) < count:
+        designs.append({"hook": fallback_hooks[len(designs) % len(fallback_hooks)][:28]})
+    out = []
+    for i, d in enumerate(designs[:count]):
+        layout = d.get("layout") if d.get("layout") in THUMBNAIL_LAYOUTS else THUMBNAIL_LAYOUTS[i % len(THUMBNAIL_LAYOUTS)]
+        out.append({"hook": str(d["hook"]).strip()[:40], "layout": layout,
+                    "accent": parse_hex_color(d.get("accent", ""), (255, 55, 55))})
+    return out, label
+
+
+def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict, frames: list, out_dir: str,
+                           options: dict | None = None, notes: list | None = None,
+                           person=None) -> tuple[list[dict], str]:
+    """
+    Makes `count` AI thumbnails as ai_1.jpg.. in out_dir, each with its text-free background
+    (ai_1_bg.jpg..) so the text and photo can be changed later. Returns ([{path, bg}], label).
+    Local Stable Diffusion and local Ollama are free; Gemini and OpenAI cost API credits. Claude can't
+    draw, so it designs frame-based thumbnails. If image generation fails, falls back to free locally
+    designed frame thumbnails.
+    """
+    options = options or {}
+    notes = notes if notes is not None else []
+    hook = thumbnail_hook(metadata, options)
+    side = options.get("side", "right")
+    base_prompt = (options.get("prompt") or metadata.get("thumbnail_prompt") or metadata.get("title")
+                   or "YouTube creator studio").strip()
+    prompts, negative = thumbnail_prompts(base_prompt, count, options)
+    secrets = config.get("secrets", {})
+    label = THUMBNAIL_IMAGE_SOURCE_LABELS.get(source, source)
+    made = []
+    designer = "claude" if source == "claude" else "local"
+
+    if source == "sd":
+        model = config.get("thumbnail_sd_model") or DEFAULT_SD_MODEL
+        label = f"Local Stable Diffusion ({model.split('/')[-1]})"
+        try:
+            for i, img in enumerate(generate_sd_images(config, prompts, out_dir, label,
+                                                       negative_prompt=negative, notes=notes)):
+                made.append(save_ai_candidate(img, f"ai_{i + 1}", out_dir, hook, person, side))
+        except Exception as e:
+            log_warn(f"{label} failed: {e}")
+            notes.append(f"{label} failed: {str(e)[:200]}")
+        for raw in Path(out_dir).glob("sd_*.png"):
+            raw.unlink()
+        if made:
+            return made, label
+        log_info("AI image generation didn't work; making free locally designed thumbnails instead.")
+
+    if source in ("local", "gemini", "openai"):
+        model = config.get("thumbnail_image_model") or DEFAULT_THUMBNAIL_IMAGE_MODEL
+        if source == "local":
+            label = f"Local Ollama image ({model})"
+        avoid = (options.get("avoid") or "").strip()
+        for i in range(count):
+            prompt = prompts[i].replace("YouTube thumbnail background,", "YouTube thumbnail background, 16:9, no text:")
+            if avoid:
+                prompt += f". Do not show: {avoid}"
+            update_step("thumbnail", 30 + 55 * i // count, f"AI image {i + 1}/{count} ({label})...")
+            try:
+                if source == "local":
+                    img = generate_ollama_image(model, prompt)
+                elif source == "gemini":
+                    img = generate_gemini_image(secrets.get("gemini_key", ""), prompt)
+                else:
+                    img = generate_openai_image(secrets.get("openai_key", ""), prompt)
+                made.append(save_ai_candidate(img, f"ai_{len(made) + 1}", out_dir, hook, person, side))
+            except Exception as e:
+                log_warn(f"{label} image {i + 1} failed: {e}")
+                notes.append(f"{label} image {i + 1} failed: {str(e)[:160]}")
+                if not made:
+                    break  # the first one failed; don't keep retrying a source that doesn't work
+        if made:
+            return made, label
+        log_info("AI image generation didn't work; making free locally designed thumbnails instead.")
+
+    designs, label = design_thumbnails(designer, count, config, metadata)
+    for i, d in enumerate(designs):
+        bg = frame_to_pil(frames[i % len(frames)] if frames else None)
+        bg_path = os.path.join(out_dir, f"ai_{i + 1}_bg.jpg")
+        bg.save(bg_path, "JPEG", quality=95)
+        out_jpg = os.path.join(out_dir, f"ai_{i + 1}.jpg")
+        text = hook if options.get("hook") is not None else d["hook"]
+        compose_thumbnail(bg, text, None, side, d["layout"], d["accent"]).save(out_jpg, "JPEG", quality=92)
+        made.append({"path": out_jpg, "bg": bg_path, "layout": d["layout"], "accent": list(d["accent"])})
+    return made, label
+
+
+def refine_thumbnail(config: dict, candidate: dict, metadata: dict, options: dict, out_dir: str,
+                     person, notes: list, first: int, count: int = 2) -> list[dict]:
+    """Image-to-image (local Stable Diffusion) on a candidate's background. Returns [{path, bg}] as refined_N."""
+    base_prompt = (options.get("prompt") or metadata.get("thumbnail_prompt") or metadata.get("title") or "").strip()
+    prompts, negative = thumbnail_prompts(base_prompt, count, options)
+    strength = min(0.8, max(0.3, float(options.get("strength", 0.5))))
+    label = "Refine (local Stable Diffusion)"
+    images = generate_sd_images(config, prompts, out_dir, label, init_images=[candidate["bg"]] * count,
+                                strength=strength, negative_prompt=negative, notes=notes)
+    for raw in Path(out_dir).glob("sd_*.png"):
+        raw.unlink()
+    hook = thumbnail_hook(metadata, options)
+    side = options.get("side", "right")
+    return [save_ai_candidate(img, f"refined_{first + i}", out_dir, hook, person, side)
+            for i, img in enumerate(images)]
+
+
+def recompose_candidate(candidate: dict, hook: str, person, side: str):
+    """Redraw a candidate from its text-free background with new text and photo."""
+    from PIL import Image
+
+    bg_path = candidate.get("bg", "")
+    if not bg_path or not os.path.exists(bg_path):
+        return
+    bg = Image.open(bg_path)
+    if candidate.get("kind") == "frame":
+        img = compose_thumbnail(bg, hook)  # a video frame already shows you
+    else:
+        accent = tuple(candidate.get("accent") or (255, 55, 55))
+        img = compose_thumbnail(bg, hook, person, side, candidate.get("layout", "") if person is None else "", accent)
+    img.save(candidate["path"], "JPEG", quality=92)
+
+
+def make_thumbnail_candidates(config: dict, video_path: str, metadata: dict, out_dir: str,
+                              frame_count: int, ai_count: int, options: dict | None = None) -> dict:
+    """Writes frame_N.jpg and ai_N.jpg candidates and returns {candidates, chosen, provider, notes, options}."""
+    options = dict(options or {})
+    os.makedirs(out_dir, exist_ok=True)
+    for old in list(Path(out_dir).glob("*.jpg")) + list(Path(out_dir).glob("*.png")):
+        old.unlink()
+
+    hook = thumbnail_hook(metadata, options)
+    notes = []
+    update_step("thumbnail", 10, "Picking the best video frames...")
+    frames = extract_top_talking_head_frames(video_path, count=max(frame_count, 4))
+
+    candidates = []
+    for i in range(frame_count):
+        bg = frame_to_pil(frames[i] if i < len(frames) else (frames[0] if frames else None))
+        bg_path = os.path.join(out_dir, f"frame_{i + 1}_bg.jpg")
+        bg.save(bg_path, "JPEG", quality=95)
+        out_jpg = os.path.join(out_dir, f"frame_{i + 1}.jpg")
+        compose_thumbnail(bg, hook).save(out_jpg, "JPEG", quality=92)
+        candidates.append({"id": f"frame_{i + 1}", "path": out_jpg, "bg": bg_path, "kind": "frame",
+                           "label": f"Frame {i + 1}"})
+
+    provider = "Local smart frame compositor"
+    source = config.get("thumbnail_image_source", "sd")
+    if ai_count > 0 and source != "off":
+        person = resolve_person(config, options, frames, out_dir, notes)
+        made, provider = generate_ai_thumbnails(source, ai_count, config, metadata, frames, out_dir,
+                                                options, notes, person)
+        for i, m in enumerate(made):
+            candidates.append({"id": f"ai_{i + 1}", "kind": "ai", "label": f"AI {i + 1}", **m})
+
+    if not candidates:
+        # Last resort so a run never ends without a thumbnail
+        out_jpg = os.path.join(out_dir, "frame_1.jpg")
+        compose_thumbnail(frame_to_pil(frames[0] if frames else None), hook).save(out_jpg, "JPEG", quality=92)
+        candidates.append({"id": "frame_1", "path": out_jpg, "kind": "frame", "label": "Frame 1"})
+
+    chosen = next((c["id"] for c in candidates if c["kind"] == "ai"), candidates[0]["id"])
+    return {"version": 1, "candidates": candidates, "chosen": chosen, "provider": provider,
+            "notes": notes, "options": options}
+
+
+def chosen_thumbnail_path(thumbs: dict) -> str:
+    by_id = {c["id"]: c["path"] for c in thumbs.get("candidates", [])}
+    path = by_id.get(thumbs.get("chosen", ""))
+    if path and os.path.exists(path):
+        return path
+    return next((p for p in by_id.values() if os.path.exists(p)), "")
 
 
 # ---------------------------------------------------------------------------
@@ -1912,6 +2543,38 @@ def update_video_details(video_id: str, title: str, description: str, oauth_toke
         raise
 
 
+RECONNECT_FOR_DELETE_MESSAGE = (
+    "Your Google connection can upload but not delete videos. Open Settings -> YouTube Automation "
+    "and click 'Connect Google Account' once more to allow it, then try again."
+)
+
+
+def delete_youtube_video(video_id: str, oauth_token_json: str):
+    """Permanently delete an uploaded video. A video that's already gone counts as deleted."""
+    if not oauth_token_json:
+        raise ValueError("YouTube account not connected yet. Open Settings -> YouTube Automation and click 'Connect Google Account'.")
+    if not video_id:
+        raise ValueError("There's no uploaded video to delete.")
+    if not any(scope in YOUTUBE_EDIT_SCOPES for scope in (parse_youtube_token(oauth_token_json).get("scopes") or [])):
+        raise PermissionError(RECONNECT_FOR_DELETE_MESSAGE)
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+
+    youtube = build("youtube", "v3", credentials=load_youtube_credentials(oauth_token_json))
+    try:
+        youtube.videos().delete(id=video_id).execute()
+        log_info(f"Deleted https://youtu.be/{video_id} from YouTube.")
+    except HttpError as e:
+        status = getattr(e.resp, "status", 0)
+        if status == 404:
+            log_info(f"YouTube video {video_id} was already gone.")
+            return
+        if status == 403 and "insufficient" in str(e).lower():
+            raise PermissionError(RECONNECT_FOR_DELETE_MESSAGE) from e
+        raise
+
+
 _CODEC_LABELS = {
     "h264": "H.264", "hevc": "HEVC (H.265)", "av1": "AV1", "vp9": "VP9",
     "aac": "AAC", "opus": "Opus", "mp3": "MP3",
@@ -2011,16 +2674,46 @@ def pipeline_paths(input_video: str) -> dict:
     return {
         "edited_video": os.path.join(base_dir, f"{stem}_yt_edited.mp4"),
         "thumbnail_jpg": os.path.join(base_dir, f"{stem}_yt_thumb.jpg"),
+        "thumbs_dir": os.path.join(base_dir, f"{stem}_yt_thumbs"),
+        "thumbs_file": os.path.join(base_dir, f"{stem}_yt_thumbs.json"),
+        "cuts_file": os.path.join(base_dir, f"{stem}_yt_cuts.json"),
+        "metadata_file": os.path.join(base_dir, f"{stem}_yt_metadata.json"),
         "transcript_file": os.path.join(base_dir, f"{stem}_yt_transcript.txt"),
         "titles_file": os.path.join(base_dir, f"{stem}_yt_titles.txt"),
         "broll_plan": os.path.join(base_dir, f"{stem}_broll_plan.json"),
         "broll_thumbs": os.path.join(base_dir, f"{stem}_broll"),
         "state_file": os.path.join(base_dir, f"{stem}_yt_state.json"),
+        "premiere_dir": os.path.join(base_dir, f"{stem}_premiere"),
     }
 
 
+# Step mode pauses at these gates; Auto mode runs straight through.
+REVIEW_GATES = ("cuts", "broll", "metadata", "thumbnail", "publish")
+STEP_FRAME_THUMBNAILS = 4
+STEP_AI_THUMBNAILS = 4
+
+
+def review_gates(config: dict) -> set:
+    if "review_gates" in config:
+        return {g for g in config.get("review_gates") or [] if g in REVIEW_GATES}
+    # Older callers only knew the B-roll review switch
+    return {"broll"} if (config.get("broll") or {}).get("review", True) else set()
+
+
+def pause_for_review(config: dict, ctx: dict, gate: str) -> str:
+    """Save everything the next stage needs (never the secrets) and let OBS relaunch us in resume_pipeline mode."""
+    ctx["pending_gate"] = gate
+    state_file = pipeline_paths(ctx["input_video"])["state_file"]
+    write_json_file(state_file, {
+        "version": 2,
+        "config": {k: v for k, v in config.items() if k != "secrets"},
+        "ctx": ctx,
+    })
+    return state_file
+
+
 def stage_analyze(config: dict) -> dict | None:
-    """Transcribe, find the cut list and plan B-roll. Returns the context for stage_finish, or None on error."""
+    """Transcribe and find the cut list. Returns the pipeline context, or None on error."""
     input_video = config.get("input_video", "")
     if not input_video or not os.path.exists(input_video):
         log_error(f"Input video not found: {input_video}")
@@ -2033,7 +2726,6 @@ def stage_analyze(config: dict) -> dict | None:
     padding_sec = float(config.get("padding_sec", 0.25))
     cut_retakes = bool(config.get("cut_retakes", True))
     whisper_model = config.get("whisper_model", "large-v3-turbo")
-    broll_cfg = config.get("broll") or {}
 
     total_duration = get_video_duration(input_video)
     log_info(f"Starting YouTube Auto-Edit Pipeline for '{ os.path.basename(input_video) }' ({total_duration:.1f}s)")
@@ -2063,6 +2755,7 @@ def stage_analyze(config: dict) -> dict | None:
         speech_segments=segments
     )
 
+    retake_cuts = []
     if cut_retakes and len(segments) > 1:
         update_step("edit", 45, "Scanning transcript for butchered sentences & repeated takes...")
         retake_cuts = detect_butchered_retakes(segments)
@@ -2073,50 +2766,54 @@ def stage_analyze(config: dict) -> dict | None:
 
     update_step("edit", 60, f"Cut list ready ({len(keep_intervals)} sections kept).")
 
-    # STAGE 2b: Screen B-roll plan
-    broll_plan_path = ""
-    if broll_cfg.get("enabled"):
-        plan = plan_broll(
-            broll_cfg, input_video, segments, keep_intervals,
-            priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
-            secrets=config.get("secrets", {}),
-            ollama_model=config.get("ollama_model", "gemma4:12b"),
-            plan_path=paths["broll_plan"],
-            thumbs_dir=paths["broll_thumbs"]
-        )
-        if plan and plan["inserts"]:
-            broll_plan_path = paths["broll_plan"]
-        elif plan:
-            update_step("broll", 100, "No B-roll moments found.")
-    else:
-        update_step("broll", 100, "Skipped (B-roll is off).")
-
     return {
         "input_video": input_video,
         "total_duration": total_duration,
         "segments": segments,
         "keep_intervals": [list(k) for k in keep_intervals],
-        "broll_plan_path": broll_plan_path,
+        "retake_cuts": [list(c) for c in retake_cuts],
+        "broll_plan_path": "",
+        "next_stage": "broll_plan",
     }
 
 
-def stage_finish(config: dict, ctx: dict) -> int:
-    """Render (with accepted B-roll), generate metadata and thumbnail, then upload."""
+def stage_broll_plan(config: dict, ctx: dict, gates: set) -> str | None:
+    """Plans B-roll on the (reviewed) cut list. Returns 'broll' to pause for review, else None."""
+    ctx["next_stage"] = "render"
+    broll_cfg = config.get("broll") or {}
+    if not broll_cfg.get("enabled"):
+        update_step("broll", 100, "Skipped (B-roll is off).")
+        return None
+
+    paths = pipeline_paths(ctx["input_video"])
+    plan = plan_broll(
+        broll_cfg, ctx["input_video"], ctx["segments"], [tuple(k) for k in ctx["keep_intervals"]],
+        priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
+        secrets=config.get("secrets", {}),
+        ollama_model=config.get("ollama_model", "gemma4:12b"),
+        plan_path=paths["broll_plan"],
+        thumbs_dir=paths["broll_thumbs"]
+    )
+    if not plan or not plan["inserts"]:
+        if plan:
+            update_step("broll", 100, "No B-roll moments found.")
+        return None
+
+    ctx["broll_plan_path"] = paths["broll_plan"]
+    if "broll" in gates:
+        return "broll"
+    for ins in plan["inserts"]:
+        ins["status"] = "accepted" if ins.get("confidence", 0) >= BROLL_ACCEPT_CONFIDENCE else "rejected"
+    write_json_file(paths["broll_plan"], plan)
+    return None
+
+
+def stage_render(config: dict, ctx: dict) -> None:
+    """Render the edit (with accepted B-roll)."""
     input_video = ctx["input_video"]
     total_duration = float(ctx["total_duration"])
-    segments = ctx["segments"]
     keep_intervals = [tuple(k) for k in ctx["keep_intervals"]]
-    paths = pipeline_paths(input_video)
-    edited_video = paths["edited_video"]
-    thumbnail_jpg = paths["thumbnail_jpg"]
-
-    ollama_model = config.get("ollama_model", "gemma4:12b")
-    priority_list = config.get("priority_list", ["gemini", "openai", "claude", "local"])
-    thumb_style = config.get("thumbnail_style", "ai_graphic")
-    privacy_status = config.get("privacy_status", "unlisted")
-    category_id = config.get("category_id", "28")
-    made_for_kids = bool(config.get("made_for_kids", False))
-    secrets = config.get("secrets", {})
+    edited_video = pipeline_paths(input_video)["edited_video"]
 
     broll = None
     if ctx.get("broll_plan_path"):
@@ -2148,27 +2845,33 @@ def stage_finish(config: dict, ctx: dict) -> int:
         rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration)
 
     if rendered:
-        final_video_to_upload = edited_video
-        # Chapters must use the trimmed video's timeline, not the raw recording's.
-        meta_segments = remap_segments_to_edited_timeline(segments, keep_intervals)
+        ctx["final_video"] = edited_video
+        ctx["rendered"] = True
+        ctx["joins"] = edit_joins(keep_intervals)
         log_info(f"Edited video saved: {os.path.basename(edited_video)} ({kept_duration:.1f}s, saved {removed_sec:.1f}s)")
     else:
-        final_video_to_upload = input_video
-        meta_segments = segments
+        ctx["final_video"] = input_video
+        ctx["rendered"] = False
+        ctx["joins"] = []
         log_warn("Using original remuxed MP4 for upload.")
 
     update_step("edit", 100, f"Video edit complete (-{removed_sec:.1f}s trimmed).")
+    emit("render_ready", video=ctx["final_video"], duration=round(kept_duration, 3), joins=ctx["joins"])
+    ctx["next_stage"] = "metadata"
+    save_checkpoint(config, ctx)
 
-    # STAGE 3: Priority-Ranked AI Title & Description
-    update_step("llm", 10, "Generating Title & SEO Description via Priority Chain...")
-    metadata, llm_provider_used = generate_metadata_with_priority(
-        priority_list=priority_list,
-        secrets=secrets,
-        ollama_model=ollama_model,
-        segments=meta_segments
-    )
-    metadata["description"] = append_social_footer(metadata.get("description", ""))
-    write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
+
+def edit_joins(keep_intervals: list) -> list[float]:
+    """Where each cut lands in the edited video: the running total of the kept lengths."""
+    joins, t = [], 0.0
+    for a, b in keep_intervals[:-1]:
+        t += b - a
+        joins.append(round(t, 3))
+    return joins
+
+
+def emit_metadata(ctx: dict):
+    metadata = ctx["metadata"]
     emit(
         "metadata_ready",
         title=metadata.get("title", ""),
@@ -2176,25 +2879,92 @@ def stage_finish(config: dict, ctx: dict) -> int:
         description=metadata.get("description", ""),
         tags=metadata.get("tags", []),
         thumbnail_hook=metadata.get("thumbnail_hook", ""),
-        provider=llm_provider_used
+        provider=ctx.get("llm_provider", "")
     )
+
+
+def stage_metadata(config: dict, ctx: dict, gates: set) -> str | None:
+    """AI title & description. Returns 'metadata' to pause for review, else None."""
+    paths = pipeline_paths(ctx["input_video"])
+    segments = ctx["segments"]
+    if ctx.get("rendered"):
+        # Chapters must use the trimmed video's timeline, not the raw recording's.
+        segments = remap_segments_to_edited_timeline(segments, [tuple(k) for k in ctx["keep_intervals"]])
+
+    update_step("llm", 10, "Generating Title & SEO Description via Priority Chain...")
+    metadata, llm_provider_used = generate_metadata_with_priority(
+        priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
+        secrets=config.get("secrets", {}),
+        ollama_model=config.get("ollama_model", "gemma4:12b"),
+        segments=segments
+    )
+    metadata["description"] = append_social_footer(metadata.get("description", ""))
+    ctx["metadata"] = metadata
+    ctx["llm_provider"] = llm_provider_used
+    ctx["next_stage"] = "thumbnails"
+    write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
+    emit_metadata(ctx)
+
+    if "metadata" in gates:
+        write_json_file(paths["metadata_file"], {
+            "version": 1,
+            "title": metadata.get("title", ""),
+            "alternative_titles": metadata.get("alternative_titles", []),
+            "description": metadata.get("description", ""),
+            "tags": metadata.get("tags", []),
+            "thumbnail_hook": metadata.get("thumbnail_hook", ""),
+            "provider": llm_provider_used,
+        })
+        update_step("llm", 100, f"Waiting for your review ({llm_provider_used}).")
+        return "metadata"
     update_step("llm", 100, f"Metadata ready ({llm_provider_used}).")
+    return None
 
-    # STAGE 4: Priority-Ranked Custom 1280x720 Thumbnail
-    update_step("thumbnail", 10, "Generating 1280x720 Custom Thumbnail...")
-    thumb_provider_used = generate_thumbnail_with_priority(
-        priority_list=priority_list,
-        secrets=secrets,
-        video_path=final_video_to_upload,
-        metadata=metadata,
-        thumb_style=thumb_style,
-        out_jpg=thumbnail_jpg
+
+def stage_thumbnails(config: dict, ctx: dict, gates: set) -> str | None:
+    """Thumbnail candidates. Step mode: 4 frames + 4 AI to choose from. Auto: one AI thumbnail."""
+    paths = pipeline_paths(ctx["input_video"])
+    step_mode = "thumbnail" in gates
+    options = dict(config.get("thumb_options") or {})
+    options.update(ctx.get("thumb_options") or {})
+    ctx["thumb_options"] = options
+    thumbs = make_thumbnail_candidates(
+        config, ctx["final_video"], ctx["metadata"], paths["thumbs_dir"],
+        frame_count=STEP_FRAME_THUMBNAILS if step_mode else 0,
+        ai_count=STEP_AI_THUMBNAILS if step_mode else 1,
+        options=options
     )
-    emit("thumbnail_ready", thumbnail_path=thumbnail_jpg, provider=thumb_provider_used)
-    update_step("thumbnail", 100, f"Thumbnail ready ({thumb_provider_used}).")
+    write_json_file(paths["thumbs_file"], thumbs)
+    ctx["thumb_provider"] = thumbs["provider"]
+    ctx["next_stage"] = "publish"
+    if step_mode:
+        update_step("thumbnail", 100, f"Pick a thumbnail ({len(thumbs['candidates'])} options).")
+        return "thumbnail"
+    use_chosen_thumbnail(ctx)
+    return None
 
-    # STAGE 5: YouTube Upload (Unlisted) + Custom Thumbnail
+
+def use_chosen_thumbnail(ctx: dict):
+    paths = pipeline_paths(ctx["input_video"])
+    thumbs = read_json_file(paths["thumbs_file"])
+    chosen = chosen_thumbnail_path(thumbs)
+    if chosen:
+        shutil.copyfile(chosen, paths["thumbnail_jpg"])
+    emit("thumbnail_ready", thumbnail_path=paths["thumbnail_jpg"], provider=ctx.get("thumb_provider", ""))
+    update_step("thumbnail", 100, f"Thumbnail ready ({thumbs.get('chosen', '')}, {ctx.get('thumb_provider', '')}).")
+
+
+def stage_upload(config: dict, ctx: dict) -> int:
+    """YouTube Upload + Custom Thumbnail (of the edit, or of the finished file the user picked)."""
+    final_video_to_upload = ctx.get("upload_file") or ctx["final_video"]
+    thumbnail_jpg = pipeline_paths(ctx["input_video"])["thumbnail_jpg"]
+    metadata = ctx["metadata"]
+    privacy_status = config.get("privacy_status", "unlisted")
+    secrets = config.get("secrets", {})
+    ctx["next_stage"] = "done"
+
     if config.get("skip_upload", False):
+        save_checkpoint(config, ctx)
         emit(
             "complete",
             video_id="LOCAL_DRY_RUN",
@@ -2205,7 +2975,7 @@ def stage_finish(config: dict, ctx: dict) -> int:
         )
         return 0
 
-    if llm_provider_used == TEMPLATE_METADATA_BADGE and privacy_status == "public":
+    if ctx.get("llm_provider") == TEMPLATE_METADATA_BADGE and privacy_status == "public":
         privacy_status = "unlisted"
         log_warn("Uploading as UNLISTED instead of public because the title is a template; review it first.")
 
@@ -2216,11 +2986,14 @@ def stage_finish(config: dict, ctx: dict) -> int:
             thumbnail_path=thumbnail_jpg,
             metadata=metadata,
             privacy_status=privacy_status,
-            category_id=category_id,
-            made_for_kids=made_for_kids,
+            category_id=config.get("category_id", "28"),
+            made_for_kids=bool(config.get("made_for_kids", False)),
             oauth_token_json=secrets.get("youtube_token_json", "")
         )
-        emit_upload_stats(final_video_to_upload, total_duration)
+        ctx["video_id"] = video_id
+        ctx["video_url"] = video_url
+        save_checkpoint(config, ctx)
+        emit_upload_stats(final_video_to_upload, float(ctx["total_duration"]))
         emit(
             "complete",
             video_id=video_id,
@@ -2232,6 +3005,7 @@ def stage_finish(config: dict, ctx: dict) -> int:
         return 0
     except Exception as e:
         log_error(f"YouTube Upload Error: {e}")
+        save_checkpoint(config, ctx)
         emit(
             "upload_pending",
             edited_video=final_video_to_upload,
@@ -2241,49 +3015,399 @@ def stage_finish(config: dict, ctx: dict) -> int:
         return 0
 
 
+def finish_without_upload(config: dict, ctx: dict, message: str) -> int:
+    ctx["next_stage"] = "done"
+    save_checkpoint(config, ctx)
+    update_step("upload", 100, "Not uploaded (finished locally).")
+    emit("complete", video_id="", url="", edited_video=ctx.get("final_video", ""),
+         thumbnail_path=pipeline_paths(ctx["input_video"])["thumbnail_jpg"], message=message)
+    return 0
+
+
+def parse_chapters(description: str) -> list[tuple[float, str]]:
+    """The 'MM:SS Title' chapter lines of a description as (seconds, title)."""
+    chapters = []
+    for line in (description or "").split("\n"):
+        m = _CHAPTER_LINE_RE.match(line)
+        if not m:
+            continue
+        seconds = 0
+        for part in m.group(1).strip().split(":"):
+            seconds = seconds * 60 + int(part)
+        chapters.append((float(seconds), m.group(3).strip()))
+    return chapters
+
+
+def export_premiere_project(ctx: dict) -> str:
+    """Writes {stem}_premiere/ with a Premiere Pro (FCP 7 XML) sequence of the edit. Returns the XML path."""
+    import premiere_export
+
+    paths = pipeline_paths(ctx["input_video"])
+    out_dir = paths["premiere_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    total = float(ctx["total_duration"])
+    keep = [tuple(k) for k in ctx.get("keep_intervals") or [[0.0, total]]]
+
+    broll = None
+    if ctx.get("broll_plan_path") and os.path.exists(ctx["broll_plan_path"]):
+        plan = read_json_file(ctx["broll_plan_path"])
+        screen = plan.get("screen_video", "")
+        if os.path.exists(screen):
+            spans = accepted_broll_inserts(plan, get_video_duration(screen))
+            if spans:
+                broll = {"path": screen, "probe": premiere_export.probe_media(screen),
+                         "offset": float(plan.get("offset_sec", 0.0)), "inserts": spans,
+                         "style": plan.get("style", "pip"), "pip_width": BROLL_PIP_WIDTH}
+
+    # Where each cut was, on the edited timeline, so it can be checked in Premiere
+    cut_marks = []
+    for c in cuts_from_keep(keep, [tuple(r) for r in ctx.get("retake_cuts", [])], total):
+        at = sum(max(0.0, min(b, c["start"]) - a) for a, b in keep)
+        cut_marks.append((at, f"Cut: {c['kind']} {c['end'] - c['start']:.1f}s", c.get("reason", "")))
+
+    metadata = ctx.get("metadata") or {}
+    stem = Path(ctx["input_video"]).stem
+    xml = premiere_export.build_premiere_xml(
+        ctx["input_video"], premiere_export.probe_media(ctx["input_video"]), keep, broll,
+        parse_chapters(metadata.get("description", "")) if ctx.get("rendered") else [], cut_marks,
+        name=f"{stem} (AI edit)")
+    xml_path = os.path.join(out_dir, f"{stem}.xml")
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write(xml)
+
+    if os.path.exists(paths["thumbnail_jpg"]):
+        shutil.copyfile(paths["thumbnail_jpg"], os.path.join(out_dir, "thumbnail.jpg"))
+    if metadata:
+        alts = "\n".join(f"- {t}" for t in metadata.get("alternative_titles", []))
+        with open(os.path.join(out_dir, "youtube_details.txt"), "w", encoding="utf-8") as f:
+            f.write(f"TITLE\n{metadata.get('title', '')}\n\nALTERNATIVE TITLES\n{alts}\n\n"
+                    f"DESCRIPTION\n{metadata.get('description', '')}\n\nTAGS\n{', '.join(metadata.get('tags', []))}\n")
+    log_info(f"Premiere Pro sequence saved: {xml_path}. In Premiere use File > Import and pick this XML. "
+             f"It uses the original recording, so keep {os.path.basename(ctx['input_video'])} where it is.")
+    emit("premiere_exported", xml_path=xml_path, folder=out_dir)
+    return xml_path
+
+
+def apply_review(ctx: dict, review: dict | None = None) -> None:
+    """Read back what the user decided at the gate the run paused on."""
+    review = review or {}
+    gate = ctx.pop("pending_gate", "")
+    paths = pipeline_paths(ctx["input_video"])
+    if gate == "cuts":
+        cuts = read_json_file(paths["cuts_file"]).get("cuts", [])
+        keep = keep_from_cuts(cuts, float(ctx["total_duration"]))
+        if not keep:
+            log_warn("Every part of the video was cut; keeping the whole recording instead.")
+            keep = [(0.0, float(ctx["total_duration"]))]
+        ctx["keep_intervals"] = [list(k) for k in keep]
+        enabled = sum(1 for c in cuts if c.get("enabled", True))
+        log_info(f"Using your reviewed cut list ({enabled} of {len(cuts)} cuts, {len(keep)} sections kept).")
+    elif gate == "metadata":
+        reviewed = read_json_file(paths["metadata_file"])
+        metadata = ctx["metadata"]
+        for key in ("title", "alternative_titles", "description", "tags", "thumbnail_hook"):
+            if key in reviewed:
+                metadata[key] = reviewed[key]
+        write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
+        emit_metadata(ctx)
+        update_step("llm", 100, f"Approved: {metadata.get('title', '')}")
+        log_info(f"Using your approved title: {metadata.get('title', '')}")
+    elif gate == "thumbnail":
+        use_chosen_thumbnail(ctx)
+    elif gate == "publish":
+        action = review.get("action", "upload")
+        if action == "finish":
+            ctx["next_stage"] = "finish"
+        elif action == "upload_file":
+            path = review.get("file", "")
+            if not path or not os.path.exists(path):
+                raise ValueError(f"The file to upload wasn't found: {path}")
+            ctx["upload_file"] = path
+            edited = get_video_duration(ctx["final_video"]) if os.path.exists(ctx.get("final_video", "")) else 0.0
+            length = get_video_duration(path)
+            if edited and abs(length - edited) > 1.0:
+                log_warn(f"{os.path.basename(path)} is {length:.1f}s long and the edit was {edited:.1f}s; "
+                         "the chapter times in the description may be off.")
+            log_info(f"Uploading your file instead of the edit: {path}")
+
+
+def run_stages(config: dict, ctx: dict) -> int:
+    """Runs from ctx['next_stage'] to the end, stopping at any review gate the config asks for."""
+    gates = review_gates(config)
+    paths = pipeline_paths(ctx["input_video"])
+    while True:
+        stage = ctx.get("next_stage", "render")
+        if stage == "cuts_review":
+            ctx["next_stage"] = "broll_plan"
+            cuts = cuts_from_keep([tuple(k) for k in ctx["keep_intervals"]],
+                                  [tuple(c) for c in ctx.get("retake_cuts", [])], float(ctx["total_duration"]))
+            if ctx.pop("reuse_cuts", False) and os.path.exists(paths["cuts_file"]):
+                # Starting over from the cuts: begin from the cut list you approved last time
+                saved = read_json_file(paths["cuts_file"])
+                if abs(float(saved.get("duration", 0.0)) - float(ctx["total_duration"])) < 0.5:
+                    cuts = saved.get("cuts", cuts)
+                    if "cuts" not in gates:
+                        keep = keep_from_cuts(cuts, float(ctx["total_duration"])) or [(0.0, float(ctx["total_duration"]))]
+                        ctx["keep_intervals"] = [list(k) for k in keep]
+            if "cuts" in gates and cuts:
+                write_json_file(paths["cuts_file"], {
+                    "version": 1,
+                    "video": ctx["input_video"],
+                    "duration": float(ctx["total_duration"]),
+                    "cuts": cuts,
+                })
+                state_file = pause_for_review(config, ctx, "cuts")
+                removed = sum(c["end"] - c["start"] for c in cuts if c.get("enabled", True))
+                update_step("edit", 60, f"Waiting for your review ({len(cuts)} cuts, {removed:.1f}s).")
+                emit("review_ready", gate="cuts", state_path=state_file, data_path=paths["cuts_file"],
+                     count=len(cuts), removed_sec=round(removed, 2))
+                return 0
+        elif stage == "broll_plan":
+            if stage_broll_plan(config, ctx, gates) == "broll":
+                state_file = pause_for_review(config, ctx, "broll")
+                plan = read_json_file(ctx["broll_plan_path"])
+                update_step("broll", 100, f"Waiting for your review ({len(plan['inserts'])} B-roll moments).")
+                emit("broll_plan_ready", plan_path=ctx["broll_plan_path"], state_path=state_file,
+                     insert_count=len(plan["inserts"]))
+                return 0
+        elif stage == "render":
+            stage_render(config, ctx)
+        elif stage == "metadata":
+            if stage_metadata(config, ctx, gates) == "metadata":
+                state_file = pause_for_review(config, ctx, "metadata")
+                emit("review_ready", gate="metadata", state_path=state_file, data_path=paths["metadata_file"])
+                return 0
+            save_checkpoint(config, ctx)
+        elif stage == "thumbnails":
+            if stage_thumbnails(config, ctx, gates) == "thumbnail":
+                state_file = pause_for_review(config, ctx, "thumbnail")
+                emit("review_ready", gate="thumbnail", state_path=state_file, data_path=paths["thumbs_file"])
+                return 0
+            save_checkpoint(config, ctx)
+        elif stage == "publish":
+            ctx["next_stage"] = "upload"
+            if "publish" in gates:
+                state_file = pause_for_review(config, ctx, "publish")
+                update_step("upload", 0, "Waiting for you to publish.")
+                emit("review_ready", gate="publish", state_path=state_file, data_path=state_file,
+                     video=ctx.get("final_video", ""), title=ctx.get("metadata", {}).get("title", ""),
+                     duration=round(get_video_duration(ctx["final_video"]), 2) if os.path.exists(ctx.get("final_video", "")) else 0.0)
+                return 0
+            finish = config.get("auto_finish", "upload")
+            if finish in ("premiere", "both"):
+                try:
+                    export_premiere_project(ctx)
+                except Exception as e:
+                    log_error(f"Premiere export failed: {e}")
+            if finish == "premiere":
+                return finish_without_upload(config, ctx, "Exported for Premiere Pro (not uploaded).")
+        elif stage == "finish":
+            return finish_without_upload(config, ctx, "Finished without uploading. The edit and thumbnail are next to your recording.")
+        elif stage == "upload":
+            return stage_upload(config, ctx)
+        else:
+            log_error(f"Unknown pipeline stage '{stage}'.")
+            emit("error", message=f"Unknown pipeline stage '{stage}'.")
+            return 1
+
+
+def save_checkpoint(config: dict, ctx: dict):
+    """The state file for a run that isn't waiting at a gate, so it can be started over or exported later."""
+    ctx.pop("pending_gate", None)
+    write_json_file(pipeline_paths(ctx["input_video"])["state_file"], {
+        "version": 2,
+        "config": {k: v for k, v in config.items() if k != "secrets"},
+        "ctx": ctx,
+    })
+
+
 def run_pipeline(config: dict):
     ctx = stage_analyze(config)
     if ctx is None:
         return 1
-
-    plan_path = ctx["broll_plan_path"]
-    if plan_path:
-        plan = read_json_file(plan_path)
-        if (config.get("broll") or {}).get("review", True):
-            # Pause for review: save everything stage_finish needs (never the secrets)
-            # and let OBS relaunch us in resume_pipeline mode.
-            state_file = pipeline_paths(ctx["input_video"])["state_file"]
-            write_json_file(state_file, {
-                "version": 1,
-                "config": {k: v for k, v in config.items() if k != "secrets"},
-                "ctx": ctx,
-            })
-            update_step("broll", 100, f"Waiting for your review ({len(plan['inserts'])} B-roll moments).")
-            emit("broll_plan_ready", plan_path=plan_path, state_path=state_file, insert_count=len(plan["inserts"]))
-            return 0
-        for ins in plan["inserts"]:
-            ins["status"] = "accepted" if ins.get("confidence", 0) >= BROLL_ACCEPT_CONFIDENCE else "rejected"
-        write_json_file(plan_path, plan)
-
-    return stage_finish(config, ctx)
+    ctx["auto_keep_intervals"] = [list(k) for k in ctx["keep_intervals"]]
+    ctx["next_stage"] = "cuts_review"
+    save_checkpoint(config, ctx)
+    return run_stages(config, ctx)
 
 
-def resume_pipeline(state_path: str, secrets: dict) -> int:
-    """Second half of a paused run, after the B-roll plan was reviewed in OBS."""
+def load_state(state_path: str) -> dict | None:
     try:
         state = read_json_file(state_path)
     except (OSError, ValueError) as e:
         log_error(f"Could not read pipeline state: {e}")
-        emit("error", message=f"Could not resume the pipeline: {e}")
+        emit("error", message=f"Could not read the pipeline state: {e}")
+        return None
+    ctx = state.get("ctx", {})
+    if not ctx.get("input_video") or not os.path.exists(ctx["input_video"]):
+        emit("error", message=f"Input video not found: {ctx.get('input_video', '')}")
+        return None
+    return state
+
+
+def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None) -> int:
+    """Continue a paused run after the user reviewed a gate in OBS."""
+    state = load_state(state_path)
+    if state is None:
         return 1
     config = dict(state.get("config", {}))
     config["secrets"] = secrets or {}
     ctx = state.get("ctx", {})
-    if not ctx.get("input_video") or not os.path.exists(ctx["input_video"]):
-        emit("error", message=f"Input video not found: {ctx.get('input_video', '')}")
+    if state.get("version", 1) < 2:
+        # Version 1 only ever paused for the B-roll review, right before rendering
+        ctx["next_stage"] = "render"
+        ctx["pending_gate"] = "broll"
+    gate = ctx.get("pending_gate", "")
+    log_info(f"Resuming pipeline for '{os.path.basename(ctx['input_video'])}' after the {gate or 'previous'} review.")
+    try:
+        apply_review(ctx, review)
+    except (OSError, ValueError) as e:
+        log_error(f"Could not read your {gate} review: {e}")
+        emit("error", message=f"Could not read your {gate} review: {e}")
         return 1
-    log_info(f"Resuming pipeline for '{os.path.basename(ctx['input_video'])}' after B-roll review.")
-    return stage_finish(config, ctx)
+    return run_stages(config, ctx)
+
+
+def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: dict) -> int:
+    """
+    At the thumbnail gate: make new AI images ("generate"), refine one ("refine"), or redraw every
+    candidate with new text and photo ("recompose"). Then wait at the thumbnail gate again.
+    """
+    state = load_state(state_path)
+    if state is None:
+        return 1
+    config = dict(state.get("config", {}))
+    config["secrets"] = secrets or {}
+    ctx = state.get("ctx", {})
+    if ctx.get("pending_gate") != "thumbnail":
+        emit("error", message="This job isn't waiting at the thumbnail step.")
+        return 1
+    paths = pipeline_paths(ctx["input_video"])
+    out_dir = paths["thumbs_dir"]
+    thumbs = read_json_file(paths["thumbs_file"])
+    opts = dict(ctx.get("thumb_options") or {})
+    opts.update(options or {})
+    ctx["thumb_options"] = opts
+    metadata = ctx["metadata"]
+    hook = thumbnail_hook(metadata, opts)
+    side = opts.get("side", "right")
+    notes = []
+    candidates = thumbs.get("candidates", [])
+
+    needs_frames = action == "generate" or opts.get("person") == "video"
+    update_step("thumbnail", 5, "Getting ready...")
+    frames = extract_top_talking_head_frames(ctx["final_video"], count=4) if needs_frames else []
+    person = resolve_person(config, opts, frames, out_dir, notes)
+
+    try:
+        if action == "generate":
+            # New images overwrite ai_N in place, so cancelling halfway still leaves pictures to pick from
+            source = config.get("thumbnail_image_source", "sd")
+            if source == "off":
+                source = "sd"
+            made, provider = generate_ai_thumbnails(source, STEP_AI_THUMBNAILS, config, metadata, frames,
+                                                    out_dir, opts, notes, person)
+            candidates = [c for c in candidates if c.get("kind") == "frame"] + [
+                {"id": f"ai_{i + 1}", "kind": "ai", "label": f"AI {i + 1}", **m} for i, m in enumerate(made)]
+            thumbs["provider"] = provider
+            ctx["thumb_provider"] = provider
+            thumbs["chosen"] = next((c["id"] for c in candidates if c["kind"] == "ai"), thumbs.get("chosen", ""))
+        elif action == "refine":
+            source_cand = next((c for c in candidates if c["id"] == opts.get("refine_id")), None)
+            if not source_cand or not os.path.exists(source_cand.get("bg", "")):
+                raise ValueError("Pick the image to refine first.")
+            first = 1 + sum(1 for c in candidates if c.get("kind") == "refined")
+            made = refine_thumbnail(config, source_cand, metadata, opts, out_dir, person, notes, first)
+            new = [{"id": f"refined_{first + i}", "kind": "refined", "label": f"Refined {first + i}", **m}
+                   for i, m in enumerate(made)]
+            candidates += new
+            if new:
+                thumbs["chosen"] = new[0]["id"]
+        else:
+            update_step("thumbnail", 50, "Redrawing the thumbnails...")
+            for c in candidates:
+                recompose_candidate(c, hook, person, side)
+    except Exception as e:
+        log_error(f"Thumbnail {action} failed: {e}")
+        notes.append(f"{action.capitalize()} failed: {str(e)[:200]}")
+
+    thumbs["candidates"] = candidates
+    thumbs["notes"] = notes
+    thumbs["options"] = opts
+    write_json_file(paths["thumbs_file"], thumbs)
+    state_file = pause_for_review(config, ctx, "thumbnail")
+    update_step("thumbnail", 100, f"Pick a thumbnail ({len(candidates)} options).")
+    emit("review_ready", gate="thumbnail", state_path=state_file, data_path=paths["thumbs_file"])
+    return 0
+
+
+REDO_STAGES = {"cuts": "cuts_review", "metadata": "metadata", "thumbnails": "thumbnails"}
+REDO_DROPS = {
+    "cuts": ("rendered", "final_video", "joins", "metadata", "llm_provider", "thumb_provider"),
+    "metadata": ("metadata", "llm_provider", "thumb_provider"),
+    "thumbnails": ("thumb_provider",),
+}
+
+
+def redo_pipeline(cfg: dict) -> int:
+    """Start a video over from the cuts, the title or the thumbnail, optionally deleting its YouTube upload first."""
+    state = load_state(cfg.get("state_path", ""))
+    if state is None:
+        return 1
+    start = cfg.get("from", "")
+    if start not in REDO_STAGES and start != "transcribe":
+        emit("error", message=f"Can't start over from '{start}'.")
+        return 1
+    ctx = state.get("ctx", {})
+    ctx.pop("pending_gate", None)
+    needs = {"transcribe": "input_video", "cuts": "keep_intervals", "metadata": "final_video",
+             "thumbnails": "metadata"}[start]
+    if not ctx.get(needs) or (needs == "final_video" and not os.path.exists(ctx["final_video"])):
+        emit("error", message="This video never got that far; start over from an earlier step.")
+        return 1
+
+    # The current settings (Step/Auto gates, thumbnail source...) replace the ones the video was made with
+    config = dict(state.get("config", {}))
+    config.update({k: v for k, v in cfg.items() if k not in ("mode", "state_path", "from", "delete_video_id")})
+    config["secrets"] = cfg.get("secrets", {})
+
+    video_id = cfg.get("delete_video_id", "")
+    if video_id:
+        try:
+            delete_youtube_video(video_id, config["secrets"].get("youtube_token_json", ""))
+        except Exception as e:
+            log_error(f"Could not delete the YouTube video: {e}")
+            emit("error", message=f"Could not delete the YouTube video, so nothing was started over: {e}")
+            return 1
+        emit("video_deleted", video_id=video_id)
+    if start == "transcribe":
+        config["input_video"] = ctx["input_video"]
+        return run_pipeline(config)
+    for key in ("video_id", "video_url", "upload_file") + REDO_DROPS[start]:
+        ctx.pop(key, None)
+    if start == "cuts":
+        ctx["reuse_cuts"] = True
+        ctx["keep_intervals"] = ctx.get("auto_keep_intervals") or ctx["keep_intervals"]
+    ctx["next_stage"] = REDO_STAGES[start]
+    log_info(f"Starting '{os.path.basename(ctx['input_video'])}' over from the {start} step (the recording is kept).")
+    return run_stages(config, ctx)
+
+
+def export_premiere_from_state(state_path: str) -> int:
+    state = load_state(state_path)
+    if state is None:
+        return 1
+    ctx = state.get("ctx", {})
+    if not ctx.get("keep_intervals"):
+        emit("error", message="This video hasn't been cut yet, so there's nothing to export.")
+        return 1
+    try:
+        export_premiere_project(ctx)
+        return 0
+    except Exception as e:
+        log_error(f"Premiere export failed: {e}")
+        emit("error", message=f"Premiere export failed: {e}")
+        return 1
 
 
 def main():
@@ -2303,7 +3427,8 @@ def main():
             log_error("No configuration received on stdin.")
             return 1
         cfg = json.loads(raw_line)
-        if cfg.get("mode") == "oauth_login":
+        mode = cfg.get("mode")
+        if mode == "oauth_login":
             try:
                 run_interactive_oauth_login(
                     client_id=cfg.get("client_id", ""),
@@ -2316,7 +3441,7 @@ def main():
                 log_error(str(e))
                 emit("oauth_error", message=str(e))
                 return 1
-        if cfg.get("mode") == "update_video":
+        if mode == "update_video":
             try:
                 update_video_details(
                     video_id=cfg.get("video_id", ""),
@@ -2330,8 +3455,24 @@ def main():
                 log_error(f"YouTube update error: {e}")
                 emit("update_error", message=str(e))
                 return 1
-        if cfg.get("mode") == "resume_pipeline":
-            return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}))
+        if mode == "delete_video":
+            try:
+                delete_youtube_video(cfg.get("video_id", ""), cfg.get("secrets", {}).get("youtube_token_json", ""))
+                emit("video_deleted", video_id=cfg.get("video_id", ""))
+                return 0
+            except Exception as e:
+                log_error(f"YouTube delete error: {e}")
+                emit("delete_error", message=str(e))
+                return 0
+        if mode == "resume_pipeline":
+            return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("review"))
+        if mode == "thumbnail_regen":
+            return regenerate_thumbnails(cfg.get("state_path", ""), cfg.get("secrets", {}),
+                                         cfg.get("action", "generate"), cfg.get("options") or {})
+        if mode == "redo_pipeline":
+            return redo_pipeline(cfg)
+        if mode == "export_premiere":
+            return export_premiere_from_state(cfg.get("state_path", ""))
         return run_pipeline(cfg)
 
     if args.self_test:

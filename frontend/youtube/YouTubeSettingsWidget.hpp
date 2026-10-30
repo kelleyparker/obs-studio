@@ -20,6 +20,9 @@ public:
 	void LoadFromManager();
 	void SaveToManager();
 
+	/* Local Ollama / Gemini / ChatGPT / Claude / Off, shared with the YouTube dock */
+	static void FillThumbnailImageSources(QComboBox *combo);
+
 signals:
 	void SettingsModified();
 
@@ -42,7 +45,9 @@ private:
 	QListWidget *priorityListWidget = nullptr;
 	QPushButton *moveUpBtn = nullptr;
 	QPushButton *moveDownBtn = nullptr;
-	QComboBox *thumbnailStyleCombo = nullptr;
+	QComboBox *thumbnailImageSourceCombo = nullptr;
+	QComboBox *thumbnailImageModelCombo = nullptr;
+	QComboBox *autoFinishCombo = nullptr;
 	QComboBox *whisperModelCombo = nullptr;
 	QComboBox *ollamaModelCombo = nullptr;
 
@@ -73,7 +78,6 @@ private:
 	QComboBox *brollSourceCombo = nullptr;
 	QComboBox *brollStyleCombo = nullptr;
 	QDoubleSpinBox *brollCoverageSpin = nullptr;
-	QCheckBox *brollReviewCheck = nullptr;
 
 	void RefreshBrollSources(const QString &selected);
 

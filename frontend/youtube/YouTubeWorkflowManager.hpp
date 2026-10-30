@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QProcess>
 #include <QJsonObject>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -14,9 +15,15 @@ class YouTubeBrollRecorder;
 struct YouTubeWorkflowConfig {
 	// 1-to-4 Priority Ranking (e.g. {"gemini", "openai", "claude", "local"})
 	QStringList priorityList = {"gemini", "openai", "claude", "local"};
-	QString thumbnailStyle = "ai_graphic"; // "ai_graphic" or "frame_overlay"
 	QString whisperModel = "large-v3-turbo";
 	QString ollamaModel = "gemma4:12b";
+
+	// "step" stops for approval at each review gate; "auto" runs from recording to upload
+	QString pipelineMode = "step";
+	// AI thumbnail images: "sd" (free local Stable Diffusion), "local" (free Ollama), "gemini", "openai",
+	// "claude" (paid) or "off"
+	QString thumbnailImageSource = "sd";
+	QString thumbnailImageModel = "x/z-image-turbo";
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
@@ -36,7 +43,21 @@ struct YouTubeWorkflowConfig {
 	QString brollSourceName;
 	QString brollStyle = "pip"; // "pip" (webcam bubble over the screen) or "cutaway"
 	double brollMaxCoverage = 0.40;
-	bool brollReview = true;
+
+	// How AI thumbnails are tweaked (remembered for the next video): "Leave out" text, and the
+	// person composited on top ("none", "video" or "photo") with the photo and side
+	QString thumbAvoid;
+	QString thumbPersonMode = "none";
+	QString thumbPhotoPath;
+	QString thumbPersonSide = "right";
+
+	// What Auto mode does at the end: "upload", "premiere" or "both"
+	QString autoFinish = "upload";
+
+	// A run paused at a review gate, so the dock can show it again after OBS restarts
+	QString pendingReviewGate; // "cuts", "broll", "metadata", "thumbnail" or "publish"
+	QString pendingReviewState;
+	QString pendingReviewData;
 };
 
 class YouTubeWorkflowManager : public QObject {
@@ -71,8 +92,29 @@ public:
 	void OnRemuxFinished(const QString &remuxedMp4Path, bool success);
 
 	void StartPipelineForVideo(const QString &videoPath);
-	/* Second half of a run paused for B-roll review (the plan file has been updated) */
-	void ResumePipeline(const QString &statePath);
+	/* Continues a run paused at a review gate (the gate's file has been updated); eview carries
+	 * choices that have no file, such as the publish gate's {"action": "upload"|"upload_file"|"finish"} */
+	void ResumePipeline(const QString &statePath, const QJsonObject &review = QJsonObject());
+	/* At the thumbnail gate: "generate" new AI images, "refine" one, or "recompose" text and photo */
+	void RegenerateThumbnails(const QString &action, const QJsonObject &options);
+	bool IsRegeneratingThumbnails() const { return thumbRegenActive; }
+	/* Starts the last video over from "transcribe", "cuts", "metadata" or "thumbnails", keeping the
+	 * recording; optionally deletes its YouTube upload first */
+	void RedoPipeline(const QString &from, bool deleteFromYouTube);
+	/* Permanently deletes the last uploaded video from YouTube */
+	void DeleteUploadedVideo();
+	/* Writes a Premiere Pro (FCP 7 XML) sequence of the last edit */
+	void ExportToPremiere();
+	/* The state file of the last video (paused or finished run), or empty if there is none */
+	QString LastStatePath() const;
+	/* The rendered edit of the last video and where its cuts are, for the preview player */
+	bool GetEditInfo(QString &videoPath, QList<double> &joins) const;
+	/* Forgets a paused run without continuing it */
+	void DiscardPendingReview();
+	bool HasPendingReview() const { return !config.pendingReviewGate.isEmpty(); }
+
+	void SetPipelineMode(const QString &mode);
+	void SetThumbnailImageSource(const QString &source);
 	void StartOAuthLogin();
 	void CancelPipeline();
 
@@ -81,6 +123,7 @@ public:
 
 	QString GetLastVideoPath() const { return lastVideoPath; }
 	QString GetLastVideoId() const { return lastVideoId; }
+	QString GetLastVideoUrl() const { return lastVideoUrl; }
 
 	/* Called by OBSBasic when the main recording output stops */
 	void OnMainRecordingStopped();
@@ -99,7 +142,20 @@ signals:
 			       const QString &message);
 	void UploadStatsReady(const QString &statsText);
 	void BrollPlanReady(const QString &planPath, const QString &statePath);
+	/* Step mode: the run is paused until the user approves this gate */
+	void ReviewReady(const QString &gate, const QString &statePath, const QString &dataPath);
+	void ReviewCleared();
+	void PipelineModeChanged(const QString &mode);
+	void ThumbnailImageSourceChanged(const QString &source);
 	void VideoUpdateFinished(bool ok, const QString &message);
+	void VideoDeleteFinished(bool ok, const QString &message);
+	/* The edit has been rendered and can be watched */
+	void EditReady(const QString &videoPath);
+	/* A run is about to render the edit again; anything playing it must let go of the file */
+	void EditWillChange();
+	void PremiereExported(const QString &xmlPath);
+	void ThumbnailRegenStarted();
+	void ThumbnailRegenFinished();
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
 
@@ -112,12 +168,21 @@ private:
 	void ProcessJsonEvent(const QByteArray &line);
 	bool LaunchPipelineWorker(QJsonObject payload);
 	void OnBrollRecorderStopped(int code);
+	void SetPendingReview(const QString &gate, const QString &statePath, const QString &dataPath);
+	/* The settings every pipeline run gets (gates, models, thumbnail tweaks, upload defaults) */
+	QJsonObject PipelineSettingsPayload() const;
+	void SetLastVideo(const QString &path);
+	void SetLastUpload(const QString &videoId, const QString &url);
 
 	YouTubeWorkflowConfig config;
 	bool workflowArmed = false;
 	bool waitingForRemux = false;
+	bool thumbRegenActive = false;
 	QString lastVideoPath;
 	QString lastVideoId;
+	QString lastVideoUrl;
+	QString lastEditedVideo;
+	QList<double> lastJoins;
 	QByteArray stdoutBuffer;
 	QPointer<QProcess> workerProcess;
 

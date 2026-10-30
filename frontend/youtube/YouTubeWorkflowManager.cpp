@@ -48,6 +48,14 @@ YouTubeWorkflowManager::YouTubeWorkflowManager(QObject *parent) : QObject(parent
 {
 	LoadConfig();
 
+	/* The last video and its upload, so Start Over, Delete and Export still work after a restart */
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		lastVideoPath = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "LastVideoPath"));
+		lastVideoId = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "LastVideoId"));
+		lastVideoUrl = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "LastVideoUrl"));
+	}
+
 	brollRecorder = new YouTubeBrollRecorder(this);
 	connect(brollRecorder, &YouTubeBrollRecorder::Stopped, this, &YouTubeWorkflowManager::OnBrollRecorderStopped);
 }
@@ -72,10 +80,39 @@ void YouTubeWorkflowManager::LoadConfig()
 		}
 	}
 
-	const char *thumbStyle = config_get_string(cfg, "YouTubeWorkflow", "ThumbnailStyle");
-	if (thumbStyle && *thumbStyle) {
-		config.thumbnailStyle = QString::fromUtf8(thumbStyle);
+	const char *mode = config_get_string(cfg, "YouTubeWorkflow", "PipelineMode");
+	if (mode && *mode) {
+		config.pipelineMode = QString::fromUtf8(mode);
 	}
+
+	const char *imageSource = config_get_string(cfg, "YouTubeWorkflow", "ThumbnailImageSource");
+	if (imageSource && *imageSource) {
+		config.thumbnailImageSource = QString::fromUtf8(imageSource);
+	}
+
+	const char *imageModel = config_get_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel");
+	if (imageModel && *imageModel) {
+		config.thumbnailImageModel = QString::fromUtf8(imageModel);
+	}
+
+	config.thumbAvoid = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "ThumbAvoid"));
+	config.thumbPhotoPath = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath"));
+	const char *personMode = config_get_string(cfg, "YouTubeWorkflow", "ThumbPersonMode");
+	if (personMode && *personMode) {
+		config.thumbPersonMode = QString::fromUtf8(personMode);
+	}
+	const char *personSide = config_get_string(cfg, "YouTubeWorkflow", "ThumbPersonSide");
+	if (personSide && *personSide) {
+		config.thumbPersonSide = QString::fromUtf8(personSide);
+	}
+	const char *autoFinish = config_get_string(cfg, "YouTubeWorkflow", "AutoFinish");
+	if (autoFinish && *autoFinish) {
+		config.autoFinish = QString::fromUtf8(autoFinish);
+	}
+
+	config.pendingReviewGate = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "PendingReviewGate"));
+	config.pendingReviewState = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "PendingReviewState"));
+	config.pendingReviewData = QString::fromUtf8(config_get_string(cfg, "YouTubeWorkflow", "PendingReviewData"));
 
 	const char *whisper = config_get_string(cfg, "YouTubeWorkflow", "WhisperModel");
 	if (whisper && *whisper) {
@@ -134,9 +171,6 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollMaxCoverage")) {
 		config.brollMaxCoverage = config_get_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage");
 	}
-	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollReview")) {
-		config.brollReview = config_get_bool(cfg, "YouTubeWorkflow", "BrollReview");
-	}
 }
 
 void YouTubeWorkflowManager::SaveConfig()
@@ -148,7 +182,20 @@ void YouTubeWorkflowManager::SaveConfig()
 
 	QByteArray prioJoined = config.priorityList.join(',').toUtf8();
 	config_set_string(cfg, "YouTubeWorkflow", "PriorityList", prioJoined.constData());
-	config_set_string(cfg, "YouTubeWorkflow", "ThumbnailStyle", config.thumbnailStyle.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "PipelineMode", config.pipelineMode.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbnailImageSource",
+			  config.thumbnailImageSource.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel",
+			  config.thumbnailImageModel.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath", config.thumbPhotoPath.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonMode", config.thumbPersonMode.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonSide", config.thumbPersonSide.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "AutoFinish", config.autoFinish.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewGate", config.pendingReviewGate.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewState",
+			  config.pendingReviewState.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewData", config.pendingReviewData.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "WhisperModel", config.whisperModel.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "OllamaModel", config.ollamaModel.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "PrivacyStatus", config.privacyStatus.toUtf8().constData());
@@ -166,7 +213,6 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_string(cfg, "YouTubeWorkflow", "BrollSource", config.brollSourceName.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "BrollStyle", config.brollStyle.toUtf8().constData());
 	config_set_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage", config.brollMaxCoverage);
-	config_set_bool(cfg, "YouTubeWorkflow", "BrollReview", config.brollReview);
 
 	config_save_safe(cfg, "tmp", nullptr);
 }
@@ -337,7 +383,7 @@ void YouTubeWorkflowManager::OnRecordingStopped(const QString &rawRecordingPath,
 	}
 
 	SetWorkflowArmed(false);
-	lastVideoPath = rawRecordingPath;
+	SetLastVideo(rawRecordingPath);
 
 	if (willAutoRemux) {
 		waitingForRemux = true;
@@ -364,7 +410,7 @@ void YouTubeWorkflowManager::OnRemuxFinished(const QString &remuxedMp4Path, bool
 		return;
 	}
 
-	lastVideoPath = remuxedMp4Path;
+	SetLastVideo(remuxedMp4Path);
 	emit StepProgressUpdated("remux", 100, QString("Remuxed to %1").arg(QFileInfo(remuxedMp4Path).fileName()));
 	StartPipelineForVideo(remuxedMp4Path);
 }
@@ -384,6 +430,93 @@ QString YouTubeWorkflowManager::ResolvePipelineScriptPath() const
 	return candidates.last();
 }
 
+QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
+{
+	bool stepMode = config.pipelineMode == "step";
+	QJsonArray prioArr;
+	for (const QString &p : config.priorityList) {
+		prioArr.append(p);
+	}
+
+	QJsonObject thumbOptions;
+	thumbOptions["avoid"] = config.thumbAvoid;
+	thumbOptions["person"] = config.thumbPersonMode;
+	thumbOptions["photo_path"] = config.thumbPhotoPath;
+	thumbOptions["side"] = config.thumbPersonSide;
+
+	QJsonObject payload;
+	payload["priority_list"] = prioArr;
+	payload["thumbnail_image_source"] = config.thumbnailImageSource;
+	payload["thumbnail_image_model"] = config.thumbnailImageModel;
+	payload["thumb_options"] = thumbOptions;
+	payload["auto_finish"] = config.autoFinish;
+	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "thumbnail", "publish"}
+					   : QJsonArray();
+	payload["whisper_model"] = config.whisperModel;
+	payload["ollama_model"] = config.ollamaModel;
+	payload["privacy_status"] = config.privacyStatus;
+	payload["category_id"] = config.categoryId;
+	payload["made_for_kids"] = config.madeForKids;
+	payload["silence_db"] = config.silenceDb;
+	payload["min_silence_sec"] = config.minSilenceSec;
+	payload["padding_sec"] = config.paddingSec;
+	payload["cut_retakes"] = config.cutRetakes;
+	return payload;
+}
+
+void YouTubeWorkflowManager::SetLastVideo(const QString &path)
+{
+	lastVideoPath = path;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "LastVideoPath", path.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+}
+
+void YouTubeWorkflowManager::SetLastUpload(const QString &videoId, const QString &url)
+{
+	lastVideoId = videoId;
+	lastVideoUrl = url;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "LastVideoId", videoId.toUtf8().constData());
+		config_set_string(cfg, "YouTubeWorkflow", "LastVideoUrl", url.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+}
+
+QString YouTubeWorkflowManager::LastStatePath() const
+{
+	if (lastVideoPath.isEmpty()) {
+		return QString();
+	}
+	QFileInfo video(lastVideoPath);
+	/* The pipeline names it after the MP4 it worked on: {stem}_yt_state.json */
+	QString state = video.absoluteDir().filePath(video.completeBaseName() + "_yt_state.json");
+	return QFileInfo::exists(state) ? state : QString();
+}
+
+bool YouTubeWorkflowManager::GetEditInfo(QString &videoPath, QList<double> &joins) const
+{
+	if (!lastEditedVideo.isEmpty() && QFileInfo::exists(lastEditedVideo)) {
+		videoPath = lastEditedVideo;
+		joins = lastJoins;
+		return true;
+	}
+	QFile file(LastStatePath());
+	if (!file.open(QIODevice::ReadOnly)) {
+		return false;
+	}
+	QJsonObject ctx = QJsonDocument::fromJson(file.readAll()).object().value("ctx").toObject();
+	videoPath = ctx.value("final_video").toString();
+	joins.clear();
+	for (const QJsonValue &v : ctx.value("joins").toArray()) {
+		joins.append(v.toDouble());
+	}
+	return !videoPath.isEmpty() && QFileInfo::exists(videoPath);
+}
+
 void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 {
 	if (IsPipelineRunning()) {
@@ -397,10 +530,18 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	}
 
 	LoadConfig();
-	lastVideoPath = videoPath;
+	DiscardPendingReview();
+	emit EditWillChange();
+	SetLastVideo(videoPath);
 	lastVideoId.clear();
+	lastVideoUrl.clear();
+	lastEditedVideo.clear();
+	lastJoins.clear();
 
-	emit PipelineStateChanged("⚙️ Running YouTube AI Edit, Thumbnail & Upload Pipeline...", true);
+	bool stepMode = config.pipelineMode == "step";
+	emit PipelineStateChanged(stepMode ? "⚙️ Step mode: analyzing, then waiting for you to review the cuts..."
+					   : "⚙️ Auto mode: edit, thumbnail & upload without stopping...",
+				  true);
 	emit StepProgressUpdated("remux", 100, "MP4 Ready");
 	emit StepProgressUpdated("transcribe", 0, "Queued...");
 	emit StepProgressUpdated("edit", 0, "Queued...");
@@ -409,25 +550,9 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	emit StepProgressUpdated("thumbnail", 0, "Queued...");
 	emit StepProgressUpdated("upload", 0, "Queued...");
 
-	QJsonArray prioArr;
-	for (const QString &p : config.priorityList) {
-		prioArr.append(p);
-	}
-
-	QJsonObject payload;
+	QJsonObject payload = PipelineSettingsPayload();
 	payload["mode"] = "pipeline";
 	payload["input_video"] = videoPath;
-	payload["priority_list"] = prioArr;
-	payload["thumbnail_style"] = config.thumbnailStyle;
-	payload["whisper_model"] = config.whisperModel;
-	payload["ollama_model"] = config.ollamaModel;
-	payload["privacy_status"] = config.privacyStatus;
-	payload["category_id"] = config.categoryId;
-	payload["made_for_kids"] = config.madeForKids;
-	payload["silence_db"] = config.silenceDb;
-	payload["min_silence_sec"] = config.minSilenceSec;
-	payload["padding_sec"] = config.paddingSec;
-	payload["cut_retakes"] = config.cutRetakes;
 
 	if (config.brollEnabled && !brollSession.screenPath.isEmpty() && QFileInfo::exists(brollSession.screenPath)) {
 		QJsonArray markers;
@@ -441,31 +566,205 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 		broll["markers"] = markers;
 		broll["style"] = config.brollStyle;
 		broll["max_coverage"] = config.brollMaxCoverage;
-		broll["review"] = config.brollReview;
+		broll["review"] = stepMode;
 		payload["broll"] = broll;
 	}
 
 	LaunchPipelineWorker(payload);
 }
 
-void YouTubeWorkflowManager::ResumePipeline(const QString &statePath)
+void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const QJsonObject &review)
 {
+	/* Copy first: callers may pass a review field that our own signals clear below */
+	const QString statePath = statePathRef;
 	if (IsPipelineRunning()) {
 		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
 		return;
 	}
 	LoadConfig();
+	QString gate = config.pendingReviewGate;
+	SetPendingReview(QString(), QString(), QString());
+	if (gate == "cuts" || gate == "broll") {
+		emit EditWillChange();
+	}
 
-	emit PipelineStateChanged("⚙️ Rendering with B-roll, then metadata, thumbnail & upload...", true);
-	emit StepProgressUpdated("edit", 0, "Queued...");
-	emit StepProgressUpdated("llm", 0, "Queued...");
-	emit StepProgressUpdated("thumbnail", 0, "Queued...");
-	emit StepProgressUpdated("upload", 0, "Queued...");
+	emit PipelineStateChanged("⚙️ Continuing the pipeline...", true);
+	/* Reset only the steps that still have to run after this gate */
+	QStringList steps = {"edit", "broll", "llm", "thumbnail", "upload"};
+	qsizetype from = gate == "metadata" ? 3 : (gate == "thumbnail" || gate == "publish") ? 4 : 0;
+	for (qsizetype i = from; i < steps.size(); i++) {
+		emit StepProgressUpdated(steps[i], 0, "Queued...");
+	}
 
 	QJsonObject payload;
 	payload["mode"] = "resume_pipeline";
 	payload["state_path"] = statePath;
+	if (!review.isEmpty()) {
+		payload["review"] = review;
+	}
 	LaunchPipelineWorker(payload);
+}
+
+void YouTubeWorkflowManager::RegenerateThumbnails(const QString &action, const QJsonObject &options)
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	if (config.pendingReviewGate != "thumbnail") {
+		emit LogMessageReceived("warning", "No job is waiting at the thumbnail step.");
+		return;
+	}
+
+	/* Remember the tweaks for the next video */
+	config.thumbAvoid = options.value("avoid").toString(config.thumbAvoid);
+	config.thumbPersonMode = options.value("person").toString(config.thumbPersonMode);
+	config.thumbPhotoPath = options.value("photo_path").toString(config.thumbPhotoPath);
+	config.thumbPersonSide = options.value("side").toString(config.thumbPersonSide);
+	SaveConfig();
+
+	thumbRegenActive = true;
+	emit ThumbnailRegenStarted();
+	emit StepProgressUpdated("thumbnail", 0, "Starting...");
+
+	QJsonObject payload;
+	payload["mode"] = "thumbnail_regen";
+	payload["state_path"] = config.pendingReviewState;
+	payload["action"] = action;
+	payload["options"] = options;
+	if (!LaunchPipelineWorker(payload)) {
+		thumbRegenActive = false;
+		emit ThumbnailRegenFinished();
+	}
+}
+
+void YouTubeWorkflowManager::RedoPipeline(const QString &from, bool deleteFromYouTube)
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	QString statePath = LastStatePath();
+	if (statePath.isEmpty()) {
+		/* Nothing saved yet: all that can be done is a fresh run */
+		if (!lastVideoPath.isEmpty() && QFileInfo::exists(lastVideoPath)) {
+			StartPipelineForVideo(lastVideoPath);
+		}
+		return;
+	}
+
+	LoadConfig();
+	DiscardPendingReview();
+	if (from == "transcribe" || from == "cuts") {
+		emit EditWillChange();
+	}
+	lastEditedVideo.clear();
+	lastJoins.clear();
+
+	const QStringList steps = {"transcribe", "edit", "broll", "llm", "thumbnail", "upload"};
+	qsizetype first = from == "transcribe" ? 0 : from == "cuts" ? 1 : from == "metadata" ? 3 : 4;
+	for (qsizetype i = first; i < steps.size(); i++) {
+		emit StepProgressUpdated(steps[i], 0, "Queued...");
+	}
+	emit PipelineStateChanged(deleteFromYouTube && !lastVideoId.isEmpty()
+					  ? "🗑 Deleting the YouTube upload, then starting over..."
+					  : "🔄 Starting over (your recording is kept)...",
+				  true);
+
+	QJsonObject payload = PipelineSettingsPayload();
+	payload["mode"] = "redo_pipeline";
+	payload["state_path"] = statePath;
+	payload["from"] = from;
+	if (deleteFromYouTube && !lastVideoId.isEmpty()) {
+		payload["delete_video_id"] = lastVideoId;
+	}
+	LaunchPipelineWorker(payload);
+}
+
+void YouTubeWorkflowManager::DeleteUploadedVideo()
+{
+	if (IsPipelineRunning()) {
+		emit VideoDeleteFinished(false, "Wait for the current job to finish first.");
+		return;
+	}
+	if (lastVideoId.isEmpty()) {
+		emit VideoDeleteFinished(false, "There's no uploaded video to delete.");
+		return;
+	}
+	QJsonObject payload;
+	payload["mode"] = "delete_video";
+	payload["video_id"] = lastVideoId;
+	LaunchPipelineWorker(payload);
+}
+
+void YouTubeWorkflowManager::ExportToPremiere()
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "Wait for the current job to finish before exporting.");
+		return;
+	}
+	QString statePath = HasPendingReview() ? config.pendingReviewState : LastStatePath();
+	if (statePath.isEmpty() || !QFileInfo::exists(statePath)) {
+		emit LogMessageReceived("warning", "There's no edit to export yet.");
+		return;
+	}
+	emit LogMessageReceived("info", "Exporting the edit for Premiere Pro...");
+	QJsonObject payload;
+	payload["mode"] = "export_premiere";
+	payload["state_path"] = statePath;
+	LaunchPipelineWorker(payload);
+}
+
+void YouTubeWorkflowManager::SetPendingReview(const QString &gate, const QString &statePath, const QString &dataPath)
+{
+	config.pendingReviewGate = gate;
+	config.pendingReviewState = statePath;
+	config.pendingReviewData = dataPath;
+
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "PendingReviewGate", gate.toUtf8().constData());
+		config_set_string(cfg, "YouTubeWorkflow", "PendingReviewState", statePath.toUtf8().constData());
+		config_set_string(cfg, "YouTubeWorkflow", "PendingReviewData", dataPath.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+}
+
+void YouTubeWorkflowManager::DiscardPendingReview()
+{
+	if (config.pendingReviewGate.isEmpty()) {
+		return;
+	}
+	SetPendingReview(QString(), QString(), QString());
+	emit ReviewCleared();
+}
+
+void YouTubeWorkflowManager::SetPipelineMode(const QString &mode)
+{
+	if (config.pipelineMode == mode) {
+		return;
+	}
+	config.pipelineMode = mode;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "PipelineMode", mode.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+	emit PipelineModeChanged(mode);
+}
+
+void YouTubeWorkflowManager::SetThumbnailImageSource(const QString &source)
+{
+	if (config.thumbnailImageSource == source) {
+		return;
+	}
+	config.thumbnailImageSource = source;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "ThumbnailImageSource", source.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+	emit ThumbnailImageSourceChanged(source);
 }
 
 bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
@@ -500,6 +799,10 @@ bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
 			if (workerProcess) {
 				workerProcess->deleteLater();
 				workerProcess = nullptr;
+			}
+			if (thumbRegenActive) {
+				thumbRegenActive = false;
+				emit ThumbnailRegenFinished();
 			}
 		});
 
@@ -665,8 +968,26 @@ void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QStrin
 
 void YouTubeWorkflowManager::CancelPipeline()
 {
+	if (thumbRegenActive && workerProcess) {
+		/* Stop only the new images; the job keeps waiting with the thumbnails it had */
+		workerProcess->kill();
+		workerProcess->waitForFinished(2000);
+		workerProcess->deleteLater();
+		workerProcess = nullptr;
+		thumbRegenActive = false;
+		emit ThumbnailRegenFinished();
+		emit LogMessageReceived("warning", "Stopped making new thumbnails.");
+		emit PipelineStateChanged("👀 Waiting for you: pick a thumbnail below", false);
+		emit ReviewReady(config.pendingReviewGate, config.pendingReviewState, config.pendingReviewData);
+		return;
+	}
 	waitingForRemux = false;
 	SetWorkflowArmed(false);
+	if (HasPendingReview()) {
+		DiscardPendingReview();
+		emit PipelineStateChanged("⏹ Paused job discarded", false);
+		emit LogMessageReceived("warning", "The paused YouTube job was discarded.");
+	}
 	if (workerProcess && workerProcess->state() != QProcess::NotRunning) {
 		workerProcess->kill();
 		workerProcess->waitForFinished(2000);
@@ -729,7 +1050,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "complete") {
 		QString url = obj.value("url").toString();
 		if (!url.isEmpty()) {
-			lastVideoId = obj.value("video_id").toString();
+			SetLastUpload(obj.value("video_id").toString(), url);
 		}
 		QString editedVideo = obj.value("edited_video").toString();
 		QString thumbPath = obj.value("thumbnail_path").toString();
@@ -753,7 +1074,42 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 			QString("👀 Review %1 B-roll suggestion(s) below, then Render & Upload").arg(count), false);
 		emit LogMessageReceived("info",
 					QString("B-roll plan ready: %1").arg(obj.value("plan_path").toString()));
+		SetPendingReview("broll", obj.value("state_path").toString(), obj.value("plan_path").toString());
 		emit BrollPlanReady(obj.value("plan_path").toString(), obj.value("state_path").toString());
+	} else if (type == "review_ready") {
+		QString gate = obj.value("gate").toString();
+		QString banner;
+		if (gate == "cuts") {
+			banner = QString("👀 Waiting for you: review %1 cuts (%2s removed) in the Cut Editor")
+					 .arg(obj.value("count").toInt())
+					 .arg(obj.value("removed_sec").toDouble(), 0, 'f', 1);
+		} else if (gate == "metadata") {
+			banner = "👀 Waiting for you: approve the title & description below";
+		} else if (gate == "thumbnail") {
+			banner = "👀 Waiting for you: pick a thumbnail below";
+		} else if (gate == "publish") {
+			banner = "📤 Ready to publish: upload to YouTube, export for Premiere Pro, or finish";
+		}
+		SetPendingReview(gate, obj.value("state_path").toString(), obj.value("data_path").toString());
+		emit PipelineStateChanged(banner, false);
+		emit ReviewReady(gate, obj.value("state_path").toString(), obj.value("data_path").toString());
+	} else if (type == "render_ready") {
+		lastEditedVideo = obj.value("video").toString();
+		lastJoins.clear();
+		for (const QJsonValue &v : obj.value("joins").toArray()) {
+			lastJoins.append(v.toDouble());
+		}
+		emit EditReady(lastEditedVideo);
+	} else if (type == "premiere_exported") {
+		emit PremiereExported(obj.value("xml_path").toString());
+	} else if (type == "video_deleted") {
+		QString id = obj.value("video_id").toString();
+		if (id == lastVideoId) {
+			SetLastUpload(QString(), QString());
+		}
+		emit VideoDeleteFinished(true, QString("Deleted https://youtu.be/%1 from YouTube.").arg(id));
+	} else if (type == "delete_error") {
+		emit VideoDeleteFinished(false, obj.value("message").toString("Deleting the video failed"));
 	} else if (type == "upload_stats") {
 		emit UploadStatsReady(obj.value("text").toString());
 	} else if (type == "update_success") {

@@ -97,11 +97,28 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	prioLayout->addLayout(listRow);
 
 	QFormLayout *modelForm = new QFormLayout();
-	thumbnailStyleCombo = new QComboBox(prioGroup);
-	thumbnailStyleCombo->addItem("AI Graphic + Bold Hook Overlay (Cloud AI -> Local Frame Fallback)", "ai_graphic");
-	thumbnailStyleCombo->addItem("Talking-Head Best Video Frame + AI Bold Hook Text (Local OpenCV/Pillow)",
-				     "frame_overlay");
-	modelForm->addRow("Custom Thumbnail Style:", thumbnailStyleCombo);
+	thumbnailImageSourceCombo = new QComboBox(prioGroup);
+	FillThumbnailImageSources(thumbnailImageSourceCombo);
+	thumbnailImageSourceCombo->setToolTip(
+		"Where the AI thumbnail images come from. Auto mode makes one; Step mode makes 4 next to 4 video frames.\n"
+		"Local Stable Diffusion and local Ollama are free. Stable Diffusion runs on your NVIDIA GPU from\n"
+		"%USERPROFILE%\\OBSYouTubeImageGen. If local image generation isn't installed or fails, OBS makes free\n"
+		"thumbnails designed by your local LLM on your best video frames instead.");
+	modelForm->addRow("AI thumbnail images:", thumbnailImageSourceCombo);
+
+	thumbnailImageModelCombo = new QComboBox(prioGroup);
+	thumbnailImageModelCombo->setEditable(true);
+	thumbnailImageModelCombo->addItem("x/z-image-turbo");
+	thumbnailImageModelCombo->addItem("x/flux2-klein");
+	thumbnailImageModelCombo->setToolTip("Ollama image model for local thumbnails. Install it with: ollama pull <name>");
+	modelForm->addRow("Local image model (Ollama):", thumbnailImageModelCombo);
+
+	autoFinishCombo = new QComboBox(prioGroup);
+	autoFinishCombo->addItem("Upload to YouTube", "upload");
+	autoFinishCombo->addItem("Export to Premiere Pro (don't upload)", "premiere");
+	autoFinishCombo->addItem("Both: export to Premiere Pro and upload", "both");
+	autoFinishCombo->setToolTip("What Auto mode does with the finished edit. Step mode always asks you at the end.");
+	modelForm->addRow("When Auto mode finishes:", autoFinishCombo);
 
 	whisperModelCombo = new QComboBox(prioGroup);
 	whisperModelCombo->addItem("large-v3-turbo (Recommended — 8x Faster RTX CUDA FP16)", "large-v3-turbo");
@@ -315,13 +332,9 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	brollCoverageSpin->setValue(40.0);
 	brollForm->addRow("Maximum B-roll:", brollCoverageSpin);
 
-	brollReviewCheck = new QCheckBox("Let me review the B-roll suggestions before rendering & uploading", brollGroup);
-	brollReviewCheck->setChecked(true);
-	brollForm->addRow("Review:", brollReviewCheck);
-
 	QLabel *brollHint = new QLabel(
 		"Tip: bind \"YouTube: Mark B-roll moment\" in Settings → Hotkeys and press it while recording to flag "
-		"spots that need your screen.",
+		"spots that need your screen. In Step mode (YouTube dock) you review the suggestions before rendering.",
 		brollGroup);
 	brollHint->setWordWrap(true);
 	brollHint->setStyleSheet("color: #b8a8c8; font-size: 11px;");
@@ -365,7 +378,9 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 			emit SettingsModified();
 		}
 	};
-	connect(thumbnailStyleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(thumbnailImageSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(thumbnailImageModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
+	connect(autoFinishCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(ollamaModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
 	connect(privacyCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
@@ -379,7 +394,6 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(brollSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(brollStyleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(brollCoverageSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
-	connect(brollReviewCheck, &QCheckBox::toggled, this, notifyMod);
 
 	connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::OAuthStatusUpdated, this,
 		[this](bool connected, const QString &channelTitle, const QString &message) {
@@ -537,9 +551,11 @@ void YouTubeSettingsWidget::LoadFromManager()
 
 	SetPriorityKeys(cfg.priorityList);
 
-	int styleIdx = thumbnailStyleCombo->findData(cfg.thumbnailStyle);
-	if (styleIdx >= 0)
-		thumbnailStyleCombo->setCurrentIndex(styleIdx);
+	int sourceIdx = thumbnailImageSourceCombo->findData(cfg.thumbnailImageSource);
+	if (sourceIdx >= 0)
+		thumbnailImageSourceCombo->setCurrentIndex(sourceIdx);
+	thumbnailImageModelCombo->setCurrentText(cfg.thumbnailImageModel);
+	autoFinishCombo->setCurrentIndex(std::max(0, autoFinishCombo->findData(cfg.autoFinish)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
 	if (wIdx >= 0)
@@ -596,7 +612,6 @@ void YouTubeSettingsWidget::LoadFromManager()
 	int brollStyleIdx = brollStyleCombo->findData(cfg.brollStyle);
 	brollStyleCombo->setCurrentIndex(brollStyleIdx >= 0 ? brollStyleIdx : 0);
 	brollCoverageSpin->setValue(cfg.brollMaxCoverage * 100.0);
-	brollReviewCheck->setChecked(cfg.brollReview);
 
 	internalUpdating = false;
 }
@@ -629,7 +644,9 @@ void YouTubeSettingsWidget::SaveToManager()
 	YouTubeWorkflowConfig &cfg = mgr->GetConfig();
 
 	cfg.priorityList = CurrentPriorityKeys();
-	cfg.thumbnailStyle = thumbnailStyleCombo->currentData().toString();
+	cfg.thumbnailImageSource = thumbnailImageSourceCombo->currentData().toString();
+	cfg.thumbnailImageModel = thumbnailImageModelCombo->currentText().trimmed();
+	cfg.autoFinish = autoFinishCombo->currentData().toString();
 	cfg.whisperModel = whisperModelCombo->currentData().toString();
 	cfg.ollamaModel = ollamaModelCombo->currentText().trimmed();
 	cfg.privacyStatus = privacyCombo->currentData().toString();
@@ -644,7 +661,6 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.brollSourceName = brollSourceCombo->currentData().toString();
 	cfg.brollStyle = brollStyleCombo->currentData().toString();
 	cfg.brollMaxCoverage = brollCoverageSpin->value() / 100.0;
-	cfg.brollReview = brollReviewCheck->isChecked();
 
 	mgr->SetVaultKey("GeminiKey", geminiKeyEdit->text());
 	mgr->SetVaultKey("OpenAIKey", openaiKeyEdit->text());
@@ -653,4 +669,15 @@ void YouTubeSettingsWidget::SaveToManager()
 	mgr->SetVaultKey("YouTubeClientSecret", oauthClientSecretEdit->text());
 
 	mgr->SaveConfig();
+	emit mgr->ThumbnailImageSourceChanged(cfg.thumbnailImageSource);
+}
+
+void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)
+{
+	combo->addItem("Local Stable Diffusion (free, default)", "sd");
+	combo->addItem("Local Ollama image model (free, macOS only for now)", "local");
+	combo->addItem("Google Gemini Imagen (paid)", "gemini");
+	combo->addItem("ChatGPT / OpenAI DALL-E (paid)", "openai");
+	combo->addItem("Claude design + local render (paid)", "claude");
+	combo->addItem("Off (video frames only)", "off");
 }

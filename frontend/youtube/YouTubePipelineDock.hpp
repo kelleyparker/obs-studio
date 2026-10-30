@@ -1,12 +1,17 @@
 #pragma once
 
 #include <QMap>
+#include <QPointer>
 #include <QString>
 #include <QWidget>
 
+class QGroupBox;
 class QLabel;
 class YouTubeBrollReview;
+class YouTubeCutEditor;
 class YouTubeTerminalWidget;
+class YouTubeThumbnailPicker;
+class YouTubeVideoPreview;
 class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
@@ -31,8 +36,20 @@ private slots:
 	void OnLogMessageReceived(const QString &level, const QString &message);
 	void OnUploadStatsReady(const QString &statsText);
 	void OnVideoUpdateFinished(bool ok, const QString &message);
+	void OnReviewReady(const QString &gate, const QString &statePath, const QString &dataPath);
+	void OnReviewCleared();
+	void OnVideoDeleteFinished(bool ok, const QString &message);
+	void OnPremiereExported(const QString &xmlPath);
 
 private:
+	void OpenCutEditor(bool reload);
+	void ApproveMetadata();
+	void SetModeButtons(const QString &mode);
+	void ShowStartOverDialog();
+	void ConfirmDeleteFromYouTube();
+	void WatchEdit();
+	void RefreshEditButtons();
+
 	struct StepRow {
 		QLabel *titleLabel = nullptr;
 		QLabel *detailLabel = nullptr;
@@ -54,8 +71,30 @@ private:
 	YouTubeBrollReview *brollReview = nullptr;
 	YouTubeTerminalWidget *terminal = nullptr;
 
+	/* Step | Auto toggle and the AI thumbnail source, applied to the next run */
+	QPushButton *stepModeBtn = nullptr;
+	QPushButton *autoModeBtn = nullptr;
+	QComboBox *imageSourceCombo = nullptr;
+
+	/* Step mode review gates */
+	QGroupBox *reviewPanel = nullptr;
+	QLabel *reviewLabel = nullptr;
+	QPushButton *openCutEditorBtn = nullptr;
+	QPushButton *reviewWatchBtn = nullptr;
+	QWidget *publishRow = nullptr;
+	YouTubeThumbnailPicker *thumbnailPicker = nullptr;
+	QPointer<YouTubeCutEditor> cutEditor;
+	QString reviewGate;
+	QString reviewState;
+	QString reviewData;
+
 	QPushButton *openFolderBtn = nullptr;
 	QPushButton *rerunBtn = nullptr;
+	QPushButton *watchBtn = nullptr;
+	QPushButton *premiereBtn = nullptr;
+	QPushButton *openPremiereBtn = nullptr;
+	QPushButton *deleteBtn = nullptr;
+	QPointer<YouTubeVideoPreview> preview;
 	QPushButton *cancelBtn = nullptr;
 
 	QString currentEditedVideoPath;

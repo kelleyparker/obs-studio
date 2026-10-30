@@ -255,7 +255,7 @@ class RenderTests(unittest.TestCase):
         }
         patches = (
             mock.patch.object(yp, "transcribe_video", return_value=segs),
-            mock.patch.object(yp, "generate_thumbnail_with_priority", return_value="test"),
+            mock.patch.object(yp, "generate_ai_thumbnails", return_value=([], "test")),
         )
 
         def events(fn, *args):

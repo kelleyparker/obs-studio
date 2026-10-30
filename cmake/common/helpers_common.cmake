@@ -247,6 +247,7 @@ function(find_qt_plugins)
   list(APPEND qt_plugins_Location geoservices)
   list(APPEND qt_plugins_TextToSpeech texttospeech)
   list(APPEND qt_plugins_WebView webview)
+  list(APPEND qt_plugins_Multimedia multimedia)
 
   if(qt_plugins_${library_name})
     get_target_property(library_location ${var_COMPONENT} IMPORTED_LOCATION)
