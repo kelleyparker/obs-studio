@@ -426,6 +426,77 @@ def run_events(fn, *args):
     return rc, [json.loads(line) for line in buf.getvalue().splitlines()]
 
 
+def gemini_text_ok(*args, **kwargs):
+    text = json.dumps({"title": "Gemini Title"})
+    return FakeResponse(json.dumps({"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode())
+
+
+def gemini_error(code, status, message):
+    import urllib.error
+
+    body = json.dumps({"error": {"code": code, "status": status, "message": message}}).encode()
+    return urllib.error.HTTPError("https://generativelanguage.googleapis.com", code, "error", {}, io.BytesIO(body))
+
+
+def requested_model(req):
+    return req.full_url.split("/models/")[1].split(":")[0]
+
+
+class GeminiTextTests(unittest.TestCase):
+    def setUp(self):
+        yp._working_cloud_model.clear()
+
+    def test_uses_the_newest_model_first(self):
+        with mock.patch("urllib.request.urlopen", side_effect=gemini_text_ok) as urlopen:
+            res = yp.call_gemini_json("g-test", "sys", "text")
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(requested_model(urlopen.call_args.args[0]), "gemini-3-flash-preview")
+        self.assertEqual(res["title"], "Gemini Title")
+        self.assertEqual(res["_model_used"], "Google Gemini (gemini-3-flash-preview)")
+
+    def test_falls_back_when_a_model_is_gone_and_remembers(self):
+        def urlopen(req, timeout=None):
+            if requested_model(req) == "gemini-3-flash-preview":
+                raise gemini_error(404, "NOT_FOUND", "models/gemini-3-flash-preview is not found")
+            return gemini_text_ok()
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen) as fake:
+            res = yp.call_gemini_json("g-test", "sys", "text")
+            self.assertEqual(res["_model_used"], "Google Gemini (gemini-3.1-pro-preview)")
+            fake.reset_mock()
+            yp.call_gemini_json("g-test", "sys", "text")
+        self.assertEqual(fake.call_count, 1)
+        self.assertEqual(requested_model(fake.call_args.args[0]), "gemini-3.1-pro-preview")
+
+    def test_key_error_does_not_fall_back(self):
+        err = gemini_error(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.")
+        with mock.patch("urllib.request.urlopen", side_effect=err) as urlopen:
+            with self.assertRaisesRegex(RuntimeError, "API key not valid"):
+                yp.call_gemini_json("bad", "sys", "text")
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_asks_google_for_a_model_when_all_are_gone(self):
+        listing = {"models": [
+            {"name": "models/gemini-2.0-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-flash-image", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-5-pro", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+
+        def urlopen(req, timeout=None):
+            if ":generateContent" not in req.full_url:
+                return FakeResponse(json.dumps(listing).encode())
+            if requested_model(req) in yp.GEMINI_TEXT_MODELS:
+                raise gemini_error(404, "NOT_FOUND", "model is not found")
+            return gemini_text_ok()
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen) as fake:
+            res = yp.call_gemini_json("g-test", "sys", "text")
+        self.assertEqual(res["_model_used"], "Google Gemini (gemini-4-flash)")
+        self.assertEqual(requested_model(fake.call_args.args[0]), "gemini-4-flash")
+
+
 FAKE_METADATA = {
     "title": "AI Title", "alternative_titles": ["Alt One", "Alt Two"], "description": "Desc",
     "tags": ["a"], "thumbnail_hook": "BIG HOOK", "thumbnail_prompt": "a desk",

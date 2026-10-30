@@ -1073,21 +1073,80 @@ def extract_json_object(raw_text: str) -> dict:
     return json.loads(raw_text)
 
 
+# Gemini text models for titles and descriptions, newest first; Google retires old ones, so the next
+# is tried when one is gone, and if all are gone the newest Flash model the key can use is picked
+GEMINI_TEXT_MODELS = ["gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def gemini_request(url: str, body: dict | None = None, timeout: int = 45) -> dict:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Google's reason (model not found, bad key, quota) is in the JSON body
+        detail = str(e)
+        try:
+            err = json.loads(e.read().decode("utf-8", "replace")).get("error") or {}
+            detail = f"HTTP {e.code} {err.get('status') or ''}: {err.get('message') or detail}"
+        except Exception:
+            pass
+        raise RuntimeError(detail) from None
+
+
+def gemini_generate_json(api_key: str, model: str, prompt: str) -> dict:
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
+    }
+    data = gemini_request(f"{GEMINI_API}/models/{model}:generateContent?key={api_key}", body)
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return extract_json_object(text)
+
+
+def newest_gemini_flash_model(api_key: str) -> str:
+    """The newest Flash text model this key can call, from Google's model list (free to ask)."""
+    data = gemini_request(f"{GEMINI_API}/models?key={api_key}&pageSize=1000")
+    skip = ("image", "tts", "live", "lite", "embedding", "audio")
+    names = [m.get("name", "").removeprefix("models/") for m in data.get("models", [])
+             if "generateContent" in m.get("supportedGenerationMethods", [])]
+    names = [n for n in names if "flash" in n and not any(s in n for s in skip)]
+    if not names:
+        raise RuntimeError("No Gemini Flash text model is available to this API key")
+
+    def version(name):
+        m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+        return (float(m.group(1)) if m else 0.0, "preview" not in name and "exp" not in name)
+
+    return max(names, key=version)
+
+
 def call_gemini_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
     if not api_key:
         raise ValueError("No Gemini API key configured in OBS Vault.")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    body = {
-        "contents": [{
-            "parts": [{"text": f"{system_prompt}\n\n{user_text[:24000]}"}]
-        }],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
-    }
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=45) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return extract_json_object(text)
+    prompt = f"{system_prompt}\n\n{user_text[:24000]}"
+    cached = _working_cloud_model.get("gemini_text")
+    models = ([cached] if cached else []) + [m for m in GEMINI_TEXT_MODELS if m != cached]
+    errors = []
+    for model in models:
+        try:
+            res = gemini_generate_json(api_key, model, prompt)
+        except Exception as e:
+            if not is_model_unavailable(e):
+                raise
+            errors.append(f"{model}: {e}")
+            continue
+        _working_cloud_model["gemini_text"] = model
+        res["_model_used"] = f"Google Gemini ({model})"
+        return res
+    log_warn("Gemini text models unavailable (" + " | ".join(errors) + "); asking Google which models this key can use")
+    model = newest_gemini_flash_model(api_key)
+    res = gemini_generate_json(api_key, model, prompt)
+    _working_cloud_model["gemini_text"] = model
+    res["_model_used"] = f"Google Gemini ({model})"
+    return res
 
 
 def call_openai_json(api_key: str, system_prompt: str, user_text: str, max_tokens: int = 1800) -> dict:
@@ -1228,7 +1287,7 @@ def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str
 
 def llm_provider_labels(ollama_model: str) -> dict:
     return {
-        "gemini": "Google Gemini (gemini-2.5-flash)",
+        "gemini": "Google Gemini (Gemini 3 Flash)",
         "openai": "ChatGPT / OpenAI (gpt-4o)",
         "claude": f"Anthropic Claude ({CLAUDE_MODEL})",
         "local": f"Local GPU LLM ({ollama_model})"
