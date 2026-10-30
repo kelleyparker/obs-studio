@@ -267,6 +267,154 @@ class DeleteVideoTests(unittest.TestCase):
         youtube.videos.return_value.delete.assert_called_once_with(id="abc")
 
 
+def png_bytes(color=(20, 120, 200)):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 36), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def openai_ok(*args, **kwargs):
+    return FakeResponse(json.dumps({"data": [{"b64_json": yp.base64.b64encode(png_bytes()).decode()}]}).encode())
+
+
+def openai_error(code, err_code, message):
+    import urllib.error
+
+    body = json.dumps({"error": {"code": err_code, "message": message}}).encode()
+    return urllib.error.HTTPError("https://api.openai.com", code, "error", {}, io.BytesIO(body))
+
+
+def gemini_reply(*parts):
+    from types import SimpleNamespace as NS
+
+    return NS(candidates=[NS(content=NS(parts=[
+        NS(inline_data=NS(data=p), text=None) if isinstance(p, bytes) else NS(inline_data=None, text=p)
+        for p in parts]))])
+
+
+class CloudImageTests(unittest.TestCase):
+    SECRETS = {"openai_key": "sk-test", "gemini_key": "g-test"}
+
+    def setUp(self):
+        yp._working_cloud_model.clear()
+
+    def test_openai_generate_uses_gpt_image(self):
+        with mock.patch("urllib.request.urlopen", side_effect=openai_ok) as urlopen:
+            img, model = yp.generate_cloud_image("openai", self.SECRETS, "a desk")
+        req = urlopen.call_args.args[0]
+        body = json.loads(req.data)
+        self.assertEqual(model, "gpt-image-2")
+        self.assertTrue(req.full_url.endswith("/images/generations"))
+        self.assertEqual((body["model"], body["size"]), ("gpt-image-2", "1536x1024"))
+        self.assertNotIn("response_format", body)
+        self.assertEqual(img.size, (64, 36))
+
+    def test_openai_edit_sends_the_background(self):
+        from PIL import Image
+
+        with mock.patch("urllib.request.urlopen", side_effect=openai_ok) as urlopen:
+            yp.generate_cloud_image("openai", self.SECRETS, "make it blue", Image.new("RGB", (32, 18)))
+        req = urlopen.call_args.args[0]
+        self.assertTrue(req.full_url.endswith("/images/edits"))
+        self.assertIn("multipart/form-data; boundary=", req.get_header("Content-type"))
+        self.assertIn(b'name="image"; filename="background.png"', req.data)
+        self.assertIn(b"\x89PNG", req.data)
+
+    def test_missing_model_falls_back_and_is_remembered(self):
+        calls = []
+
+        def urlopen(req, timeout=0):
+            model = json.loads(req.data)["model"]
+            calls.append(model)
+            if model == "gpt-image-2":
+                raise openai_error(404, "model_not_found", "The model `gpt-image-2` does not exist")
+            return openai_ok()
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen), contextlib.redirect_stdout(io.StringIO()):
+            _, model = yp.generate_cloud_image("openai", self.SECRETS, "a")
+            yp.generate_cloud_image("openai", self.SECRETS, "b")
+        self.assertEqual(model, "gpt-image-1.5")
+        self.assertEqual(calls, ["gpt-image-2", "gpt-image-1.5", "gpt-image-1.5"])
+
+    def test_auth_error_does_not_fall_back(self):
+        with mock.patch("urllib.request.urlopen", side_effect=openai_error(401, "invalid_api_key", "Bad key")) as u:
+            with self.assertRaisesRegex(RuntimeError, "Bad key"):
+                yp.generate_cloud_image("openai", self.SECRETS, "a")
+        self.assertEqual(u.call_count, 1)
+
+    def test_gemini_pro_tries_pro_first(self):
+        client = mock.MagicMock()
+        client.models.generate_content.return_value = gemini_reply("Here you go", png_bytes())
+        with mock.patch("google.genai.Client", return_value=client):
+            img, model = yp.generate_cloud_image("gemini_pro", self.SECRETS, "a desk")
+        self.assertEqual(model, "gemini-3-pro-image-preview")
+        kwargs = client.models.generate_content.call_args.kwargs
+        self.assertEqual(kwargs["model"], "gemini-3-pro-image-preview")
+        self.assertEqual(kwargs["config"].image_config.aspect_ratio, "16:9")
+        self.assertEqual(img.size, (64, 36))
+
+    def test_gemini_text_only_reply_raises_with_the_text(self):
+        client = mock.MagicMock()
+        client.models.generate_content.return_value = gemini_reply("I can't make that image.")
+        with mock.patch("google.genai.Client", return_value=client):
+            with self.assertRaisesRegex(RuntimeError, "can't make that image"):
+                yp.generate_cloud_image("gemini", self.SECRETS, "a")
+
+    def test_cloud_thumbnails_name_the_model(self):
+        from PIL import Image
+
+        img = Image.new("RGB", (1536, 1024), (30, 30, 30))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yp, "generate_cloud_image", return_value=(img, "gpt-image-2")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            made, label = yp.generate_ai_thumbnails("openai", 2, {"secrets": self.SECRETS},
+                                                    StableDiffusionThumbnailTests.META, [], tmp)
+        self.assertEqual(len(made), 2)
+        self.assertEqual(label, "OpenAI GPT Image (gpt-image-2)")
+
+    def refine(self, kind, extra=None):
+        from PIL import Image
+
+        notes = []
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            bg = os.path.join(tmp, "x_bg.jpg")
+            Image.new("RGB", (1280, 720)).save(bg)
+            cand = {"id": "x", "kind": kind, "bg": bg, **(extra or {})}
+            img = Image.new("RGB", (1280, 720), (90, 90, 90))
+            with mock.patch.object(yp, "generate_cloud_image", return_value=(img, "gpt-image-2")) as cloud, \
+                    mock.patch.object(yp, "generate_sd_images", return_value=[img, img]) as sd:
+                made = yp.refine_thumbnail({"thumbnail_image_source": "openai", "secrets": self.SECRETS}, cand,
+                                           StableDiffusionThumbnailTests.META,
+                                           {"strength": 0.3, "avoid": "hands"}, tmp, None, notes, 1)
+            return made, cloud, sd, notes
+
+    def test_cloud_refine_uses_the_edit_mode(self):
+        made, cloud, sd, _ = self.refine("ai")
+        self.assertEqual(len(made), 2)
+        sd.assert_not_called()
+        prompt, init = cloud.call_args.args[2], cloud.call_args.args[3]
+        self.assertIn("small changes", prompt)
+        self.assertIn("Do not show: hands", prompt)
+        self.assertEqual(init.size, (1280, 720))
+
+    def test_frames_of_you_are_refined_locally(self):
+        for kind, extra in (("frame", None), ("refined", {"shows_you": True})):
+            made, cloud, sd, notes = self.refine(kind, extra)
+            cloud.assert_not_called()
+            sd.assert_called_once()
+            self.assertTrue(any("nothing of you is uploaded" in n for n in notes))
+
+
 def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-y", "-v", "error", *args], check=True)
 

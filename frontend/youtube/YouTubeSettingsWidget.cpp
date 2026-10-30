@@ -24,9 +24,9 @@ namespace {
 QString ProviderDisplayName(const QString &key)
 {
 	if (key == "gemini")
-		return "Google Gemini (Gemini 2.5 Flash + Imagen 3 Thumbnail)";
+		return "Google Gemini (Gemini 2.5 Flash + Nano Banana Thumbnail)";
 	if (key == "openai")
-		return "ChatGPT / OpenAI (GPT-4o + DALL-E 3 Thumbnail)";
+		return "ChatGPT / OpenAI (GPT-4o + GPT Image Thumbnail)";
 	if (key == "claude")
 		return "Anthropic Claude (Claude Sonnet Copywriting + Hybrid Thumbnail)";
 	if (key == "local")
@@ -69,8 +69,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 
 	QFormLayout *prioTopForm = new QFormLayout();
 	preferredDefaultCombo = new QComboBox(prioGroup);
-	preferredDefaultCombo->addItem("Google Gemini (Gemini 2.5 + Imagen 3)", "gemini");
-	preferredDefaultCombo->addItem("ChatGPT / OpenAI (GPT-4o + DALL-E 3)", "openai");
+	preferredDefaultCombo->addItem("Google Gemini (Gemini 2.5 + Nano Banana)", "gemini");
+	preferredDefaultCombo->addItem("ChatGPT / OpenAI (GPT-4o + GPT Image)", "openai");
 	preferredDefaultCombo->addItem("Anthropic Claude (Sonnet + Smart Frame)", "claude");
 	preferredDefaultCombo->addItem("Local GPU LLM (Ollama + Smart Frame — 100% Free)", "local");
 	prioTopForm->addRow("Preferred Default (Promotes to Priority #1):", preferredDefaultCombo);
@@ -103,7 +103,9 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"Where the AI thumbnail images come from. Auto mode makes one; Step mode makes 4 next to 4 video frames.\n"
 		"Local Stable Diffusion and local Ollama are free. Stable Diffusion runs on your NVIDIA GPU from\n"
 		"%USERPROFILE%\\OBSYouTubeImageGen. If local image generation isn't installed or fails, OBS makes free\n"
-		"thumbnails designed by your local LLM on your best video frames instead.");
+		"thumbnails designed by your local LLM on your best video frames instead.\n"
+		"Nano Banana and GPT Image are paid per image (4 per Step run, 2 per refine) and give the best images.\n"
+		"Your photo and video frames are never sent to them: only the text-free background is.");
 	modelForm->addRow("AI thumbnail images:", thumbnailImageSourceCombo);
 
 	thumbnailImageModelCombo = new QComboBox(prioGroup);
@@ -676,8 +678,9 @@ void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)
 {
 	combo->addItem("Local Stable Diffusion (free, default)", "sd");
 	combo->addItem("Local Ollama image model (free, macOS only for now)", "local");
-	combo->addItem("Google Gemini Imagen (paid)", "gemini");
-	combo->addItem("ChatGPT / OpenAI DALL-E (paid)", "openai");
+	combo->addItem("Google Nano Banana 2 (paid)", "gemini");
+	combo->addItem("Google Nano Banana Pro (paid, best quality)", "gemini_pro");
+	combo->addItem("ChatGPT / OpenAI GPT Image 2 (paid)", "openai");
 	combo->addItem("Claude design + local render (paid)", "claude");
 	combo->addItem("Off (video frames only)", "off");
 }

@@ -733,7 +733,14 @@ void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath)
 	OnLogMessageReceived("info", "In Premiere Pro: File → Import, then pick " + QFileInfo(xmlPath).fileName() +
 					     ". It opens as a sequence; drag any cut's edge to widen or tighten it.");
 	statusBanner->setText(QString("🎬 Exported for Premiere Pro: %1").arg(xmlPath));
-	QProcess::startDetached("explorer.exe", {"/select," + QDir::toNativeSeparators(xmlPath)});
+	/* Explorer only understands /select,"path"; Qt would quote the whole argument (the path has spaces)
+	 * and Explorer would open Documents instead, so pass the command line as is */
+	QProcess explorer;
+	explorer.setProgram("explorer.exe");
+#ifdef _WIN32
+	explorer.setNativeArguments(QString("/select,\"%1\"").arg(QDir::toNativeSeparators(xmlPath)));
+#endif
+	explorer.startDetached();
 
 	/* The newest installed Premiere Pro (a release before a beta) */
 	QDir adobe("C:/Program Files/Adobe");

@@ -1728,8 +1728,25 @@ def overlay_youtube_hook_text(base_pil_img, hook_text: str, layout: str = "botto
     return img
 
 
-def generate_gemini_image(api_key: str, prompt: str):
-    """Text-to-image with Imagen 3. Returns a PIL image without any text."""
+# Cloud image sources: (name, models newest first). When a model isn't available (retired, or not
+# enabled for the API key yet), the next one is tried.
+CLOUD_IMAGE_MODELS = {
+    "gemini": ("Google Nano Banana 2",
+               ["gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-image"]),
+    "gemini_pro": ("Google Nano Banana Pro",
+                   ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]),
+    "openai": ("OpenAI GPT Image", ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]),
+}
+_working_cloud_model = {}
+
+
+def is_model_unavailable(error) -> bool:
+    text = str(error).lower()
+    return any(s in text for s in ("404", "not_found", "not found", "model_not_found", "does not exist"))
+
+
+def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None):
+    """Nano Banana (Gemini image model) text-to-image, or an edit of init_image. Returns a PIL image."""
     if not api_key:
         raise ValueError("No Gemini API key configured.")
     from google import genai
@@ -1737,45 +1754,90 @@ def generate_gemini_image(api_key: str, prompt: str):
     from PIL import Image
 
     client = genai.Client(api_key=api_key)
-    result = client.models.generate_images(
-        model="imagen-3.0-generate-002",
-        prompt=f"YouTube thumbnail 16:9 widescreen, high contrast, vibrant studio lighting: {prompt}",
-        config=types.GenerateImagesConfig(
-            number_of_images=1,
-            output_mime_type="image/jpeg",
-            aspect_ratio="16:9"
+    result = client.models.generate_content(
+        model=model,
+        contents=[prompt] if init_image is None else [prompt, init_image],
+        config=types.GenerateContentConfig(
+            response_modalities=["TEXT", "IMAGE"],
+            image_config=types.ImageConfig(aspect_ratio="16:9")
         )
     )
-    for generated_image in result.generated_images:
-        return Image.open(io.BytesIO(generated_image.image.image_bytes))
-    raise RuntimeError("Imagen 3 returned no images.")
+    said = []
+    for candidate in result.candidates or []:
+        for part in (candidate.content.parts if candidate.content else None) or []:
+            if part.inline_data and part.inline_data.data:
+                return Image.open(io.BytesIO(part.inline_data.data))
+            if part.text:
+                said.append(part.text.strip())
+    raise RuntimeError(f"{model} returned no image" + (f": {' '.join(said)[:200]}" if said else "."))
 
 
-def generate_openai_image(api_key: str, prompt: str):
-    """Text-to-image with DALL-E 3. Returns a PIL image without any text."""
+def multipart_body(fields: dict, files: dict) -> tuple[bytes, str]:
+    """multipart/form-data for urllib: fields {name: value}, files {name: (filename, bytes, type)}."""
+    boundary = "----obs" + os.urandom(12).hex()
+    out = io.BytesIO()
+    for name, value in fields.items():
+        out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8"))
+    for name, (filename, content, ctype) in files.items():
+        out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                  f'Content-Type: {ctype}\r\n\r\n'.encode("utf-8"))
+        out.write(content)
+        out.write(b"\r\n")
+    out.write(f"--{boundary}--\r\n".encode("utf-8"))
+    return out.getvalue(), f"multipart/form-data; boundary={boundary}"
+
+
+def generate_openai_image(api_key: str, prompt: str, model: str, init_image=None):
+    """GPT Image text-to-image, or an edit of init_image. Returns a PIL image."""
     if not api_key:
         raise ValueError("No OpenAI API key configured.")
     from PIL import Image
 
-    url = "https://api.openai.com/v1/images/generations"
-    body = {
-        "model": "dall-e-3",
-        "prompt": f"High-impact 16:9 YouTube thumbnail background, vibrant colors, cinematic lighting, no tiny text: {prompt}",
-        "n": 1,
-        "size": "1792x1024",
-        "response_format": "b64_json"
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    fields = {"model": model, "prompt": prompt, "n": 1, "size": "1536x1024", "quality": "medium"}
+    if init_image is None:
+        url = "https://api.openai.com/v1/images/generations"
+        body, ctype = json.dumps(fields).encode("utf-8"), "application/json"
+    else:
+        png = io.BytesIO()
+        init_image.convert("RGB").save(png, "PNG")
+        url = "https://api.openai.com/v1/images/edits"
+        body, ctype = multipart_body(fields, {"image": ("background.png", png.getvalue(), "image/png")})
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": ctype, "Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # The reason (model not found, organization not verified, safety) is in the JSON body
+        detail = str(e)
+        try:
+            err = json.loads(e.read().decode("utf-8", "replace")).get("error") or {}
+            detail = f"HTTP {e.code} {err.get('code') or ''}: {err.get('message') or detail}"
+        except Exception:
+            pass
+        raise RuntimeError(detail) from None
     return Image.open(io.BytesIO(base64.b64decode(data["data"][0]["b64_json"])))
+
+
+def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=None):
+    """One image from a cloud source, trying the next model if one isn't available. Returns (image, model)."""
+    _, models = CLOUD_IMAGE_MODELS[source]
+    working = _working_cloud_model.get(source)
+    models = sorted(models, key=lambda m: m != working)
+    last = None
+    for model in models:
+        try:
+            if source == "openai":
+                img = generate_openai_image(secrets.get("openai_key", ""), prompt, model, init_image)
+            else:
+                img = generate_gemini_image(secrets.get("gemini_key", ""), prompt, model, init_image)
+            _working_cloud_model[source] = model
+            return img, model
+        except Exception as e:
+            if not is_model_unavailable(e):
+                raise
+            log_warn(f"{model} isn't available ({str(e)[:160]}); trying the next model.")
+            last = e
+    raise RuntimeError(f"None of {', '.join(models)} is available: {last}")
 
 
 DEFAULT_THUMBNAIL_IMAGE_MODEL = "x/z-image-turbo"
@@ -1791,8 +1853,9 @@ SD_NEGATIVE_PROMPT = "text, words, letters, caption, watermark, logo, signature,
 THUMBNAIL_IMAGE_SOURCE_LABELS = {
     "sd": "Local Stable Diffusion",
     "local": "Local Ollama image model",
-    "gemini": "Google Gemini (Imagen 3)",
-    "openai": "ChatGPT / OpenAI (DALL-E 3)",
+    "gemini": CLOUD_IMAGE_MODELS["gemini"][0],
+    "gemini_pro": CLOUD_IMAGE_MODELS["gemini_pro"][0],
+    "openai": CLOUD_IMAGE_MODELS["openai"][0],
     "claude": "Claude design + local compositor",
 }
 
@@ -2217,7 +2280,7 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
             return made, label
         log_info("AI image generation didn't work; making free locally designed thumbnails instead.")
 
-    if source in ("local", "gemini", "openai"):
+    if source == "local" or source in CLOUD_IMAGE_MODELS:
         model = config.get("thumbnail_image_model") or DEFAULT_THUMBNAIL_IMAGE_MODEL
         if source == "local":
             label = f"Local Ollama image ({model})"
@@ -2230,10 +2293,9 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
             try:
                 if source == "local":
                     img = generate_ollama_image(model, prompt)
-                elif source == "gemini":
-                    img = generate_gemini_image(secrets.get("gemini_key", ""), prompt)
                 else:
-                    img = generate_openai_image(secrets.get("openai_key", ""), prompt)
+                    img, used = generate_cloud_image(source, secrets, prompt)
+                    label = f"{CLOUD_IMAGE_MODELS[source][0]} ({used})"
                 made.append(save_ai_candidate(img, f"ai_{len(made) + 1}", out_dir, hook, person, side))
             except Exception as e:
                 log_warn(f"{label} image {i + 1} failed: {e}")
@@ -2256,19 +2318,69 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
     return made, label
 
 
+def cloud_refine_prompt(base_prompt: str, options: dict, strength: float) -> str:
+    """Cloud edit models have no strength setting, so the "Change: a little ↔ a lot" slider becomes words."""
+    prompt = f"Edit this YouTube thumbnail background: {base_prompt}. Keep it free of any text, 16:9."
+    if strength <= 0.45:
+        prompt += " Make only small changes and keep the composition."
+    elif strength >= 0.65:
+        prompt += " Feel free to reimagine it."
+    if options.get("person", "none") in ("photo", "video"):
+        prompt += f" Keep the {options.get('side', 'right')} side empty, no people."
+    avoid = (options.get("avoid") or "").strip().strip(",")
+    if avoid:
+        prompt += f" Do not show: {avoid}."
+    return prompt
+
+
+def refine_with_cloud(source: str, secrets: dict, bg_path: str, prompt: str, count: int, notes: list) -> list:
+    """`count` edits of the background by the cloud model. Only the text-free background is sent, never your photo."""
+    from PIL import Image
+
+    name = CLOUD_IMAGE_MODELS[source][0]
+    init = Image.open(bg_path).convert("RGB")
+    images = []
+    for i in range(count):
+        update_step("thumbnail", 20 + 70 * i // count, f"Refining {i + 1}/{count} with {name}...")
+        try:
+            img, _ = generate_cloud_image(source, secrets, prompt, init)
+            images.append(img)
+        except Exception as e:
+            log_warn(f"{name} refine {i + 1} failed: {e}")
+            notes.append(f"{name} refine {i + 1} failed: {str(e)[:160]}")
+            break
+    return images
+
+
+def shows_you(candidate: dict) -> bool:
+    """Video frames (and refines of them) have you in the background, so they never go to a cloud model."""
+    return candidate.get("kind") == "frame" or bool(candidate.get("shows_you"))
+
+
 def refine_thumbnail(config: dict, candidate: dict, metadata: dict, options: dict, out_dir: str,
                      person, notes: list, first: int, count: int = 2) -> list[dict]:
-    """Image-to-image (local Stable Diffusion) on a candidate's background. Returns [{path, bg}] as refined_N."""
+    """
+    Image-to-image on a candidate's text-free background: the cloud model's edit mode when the source is
+    a cloud one, otherwise local Stable Diffusion. Returns [{path, bg}] as refined_N.
+    """
     base_prompt = (options.get("prompt") or metadata.get("thumbnail_prompt") or metadata.get("title") or "").strip()
-    prompts, negative = thumbnail_prompts(base_prompt, count, options)
     strength = min(0.8, max(0.3, float(options.get("strength", 0.5))))
-    label = "Refine (local Stable Diffusion)"
-    images = generate_sd_images(config, prompts, out_dir, label, init_images=[candidate["bg"]] * count,
-                                strength=strength, negative_prompt=negative, notes=notes)
-    for raw in Path(out_dir).glob("sd_*.png"):
-        raw.unlink()
     hook = thumbnail_hook(metadata, options)
     side = options.get("side", "right")
+    source = config.get("thumbnail_image_source", "sd")
+    if source in CLOUD_IMAGE_MODELS and shows_you(candidate):
+        notes.append("Video frames show you, so this one was refined with local Stable Diffusion "
+                     "(nothing of you is uploaded).")
+    if source in CLOUD_IMAGE_MODELS and not shows_you(candidate):
+        images = refine_with_cloud(source, config.get("secrets", {}), candidate["bg"],
+                                   cloud_refine_prompt(base_prompt, options, strength), count, notes)
+    else:
+        prompts, negative = thumbnail_prompts(base_prompt, count, options)
+        label = "Refine (local Stable Diffusion)"
+        images = generate_sd_images(config, prompts, out_dir, label, init_images=[candidate["bg"]] * count,
+                                    strength=strength, negative_prompt=negative, notes=notes)
+        for raw in Path(out_dir).glob("sd_*.png"):
+            raw.unlink()
     return [save_ai_candidate(img, f"refined_{first + i}", out_dir, hook, person, side)
             for i, img in enumerate(images)]
 
@@ -3318,8 +3430,8 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
                 raise ValueError("Pick the image to refine first.")
             first = 1 + sum(1 for c in candidates if c.get("kind") == "refined")
             made = refine_thumbnail(config, source_cand, metadata, opts, out_dir, person, notes, first)
-            new = [{"id": f"refined_{first + i}", "kind": "refined", "label": f"Refined {first + i}", **m}
-                   for i, m in enumerate(made)]
+            new = [{"id": f"refined_{first + i}", "kind": "refined", "label": f"Refined {first + i}",
+                    "shows_you": shows_you(source_cand), **m} for i, m in enumerate(made)]
             candidates += new
             if new:
                 thumbs["chosen"] = new[0]["id"]

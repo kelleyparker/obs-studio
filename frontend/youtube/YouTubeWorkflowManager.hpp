@@ -20,8 +20,8 @@ struct YouTubeWorkflowConfig {
 
 	// "step" stops for approval at each review gate; "auto" runs from recording to upload
 	QString pipelineMode = "step";
-	// AI thumbnail images: "sd" (free local Stable Diffusion), "local" (free Ollama), "gemini", "openai",
-	// "claude" (paid) or "off"
+	// AI thumbnail images: "sd" (free local Stable Diffusion), "local" (free Ollama), "gemini" (Nano Banana 2),
+	// "gemini_pro" (Nano Banana Pro), "openai" (GPT Image), "claude" (paid) or "off"
 	QString thumbnailImageSource = "sd";
 	QString thumbnailImageModel = "x/z-image-turbo";
 

@@ -170,6 +170,7 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	connect(stopButton, &QPushButton::clicked, mgr, &YouTubeWorkflowManager::CancelPipeline);
 	connect(mgr, &YouTubeWorkflowManager::ThumbnailRegenStarted, this, [this]() { SetBusy(true); });
 	connect(mgr, &YouTubeWorkflowManager::ThumbnailRegenFinished, this, [this]() { SetBusy(false); });
+	connect(mgr, &YouTubeWorkflowManager::ThumbnailImageSourceChanged, this, [this]() { UpdateEtaLabels(); });
 	connect(mgr, &YouTubeWorkflowManager::StepProgressUpdated, this,
 		[this](const QString &step, int percent, const QString &message) {
 			if (step == "thumbnail" && busyRow->isVisible()) {
@@ -347,8 +348,15 @@ void YouTubeThumbnailPicker::UpdateEtaLabels()
 	double strength = strengthSlider->value() / 100.0;
 	generateButton->setText(sd ? QString("🎨 Make 4 new AI images (~%1)").arg(Clock(load + first + 3 * image))
 				   : QString("🎨 Make 4 new AI images"));
-	refineButton->setText(
-		QString("✨ Refine selected (~%1)").arg(Clock(load + (first + image) * std::max(0.3, strength))));
+	/* With a cloud source, Refine uses the cloud model's edit mode */
+	bool cloud = QStringList{"gemini", "gemini_pro", "openai"}.contains(cfg.thumbnailImageSource);
+	refineButton->setText(cloud ? QString("✨ Refine selected")
+				    : QString("✨ Refine selected (~%1)")
+					      .arg(Clock(load + (first + image) * std::max(0.3, strength))));
+	refineButton->setToolTip(
+		cloud ? "Makes 2 new versions of the selected image's background with the cloud model's edit mode.\n"
+			"Video frames show you, so those are refined with local Stable Diffusion instead."
+		      : "Makes 2 new versions of the selected image's background with local Stable Diffusion.");
 }
 
 void YouTubeThumbnailPicker::Finish()
