@@ -136,19 +136,6 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	modeRow->addWidget(imageSourceCombo, 1);
 	mainLayout->addLayout(modeRow);
 
-	QHBoxLayout *musicRow = new QHBoxLayout();
-	musicSourceCombo = new QComboBox(container);
-	YouTubeSettingsWidget::FillMusicSources(musicSourceCombo);
-	musicSourceCombo->setToolTip("What makes the background music (also in Settings → YouTube Automation). Lyria "
-				     "uses your Gemini key; any song it can't make is made on this PC with ACE-Step");
-	musicSourceCombo->setCurrentIndex(std::max(0, musicSourceCombo->findData(mgr->GetConfig().musicSource)));
-	musicRow->addWidget(new QLabel("Music:", container));
-	musicRow->addWidget(musicSourceCombo, 1);
-	mainLayout->addLayout(musicRow);
-	connect(musicSourceCombo, QOverload<int>::of(&QComboBox::activated), this, [this, mgr](int index) {
-		mgr->SetMusicSource(musicSourceCombo->itemData(index).toString());
-	});
-
 	SetModeButtons(mgr->GetConfig().pipelineMode);
 	imageSourceCombo->setCurrentIndex(std::max(0, imageSourceCombo->findData(mgr->GetConfig().thumbnailImageSource)));
 	connect(stepModeBtn, &QPushButton::clicked, mgr, [mgr]() { mgr->SetPipelineMode("step"); });
@@ -271,11 +258,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		stepRows[def.key] = StepRow{tLabel, dLabel, bar};
 	}
 	mainLayout->addWidget(stagesGroup);
+	/* The music source is set in Settings only, so Auto mode never changes from the dock */
 	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, [this](const QString &source) {
-		int idx = musicSourceCombo->findData(source);
-		if (idx >= 0) {
-			musicSourceCombo->setCurrentIndex(idx);
-		}
 		stepRows["music"].titleLabel->setText(MusicStepTitle(source));
 	});
 

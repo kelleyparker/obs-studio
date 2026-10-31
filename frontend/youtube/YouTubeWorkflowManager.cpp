@@ -690,8 +690,11 @@ void YouTubeWorkflowManager::RegenerateMusic(const QJsonObject &options)
 	QJsonObject payload;
 	payload["mode"] = "music_regen";
 	payload["state_path"] = config.pendingReviewState;
+	/* The picker's "Make with" choice, else the Settings one */
 	QJsonObject withSource = options;
-	withSource["music_source"] = config.musicSource;
+	if (withSource.value("music_source").toString().isEmpty()) {
+		withSource["music_source"] = config.musicSource;
+	}
 	payload["options"] = withSource;
 	if (!LaunchPipelineWorker(payload)) {
 		musicRegenActive = false;

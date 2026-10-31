@@ -83,7 +83,6 @@ private:
 	QPushButton *stepModeBtn = nullptr;
 	QPushButton *autoModeBtn = nullptr;
 	QComboBox *imageSourceCombo = nullptr;
-	QComboBox *musicSourceCombo = nullptr;
 
 	/* Step mode review gates */
 	QGroupBox *reviewPanel = nullptr;

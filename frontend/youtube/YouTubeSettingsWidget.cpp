@@ -128,11 +128,13 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	musicSourceCombo = new QComboBox(prioGroup);
 	FillMusicSources(musicSourceCombo);
 	musicSourceCombo->setToolTip(
+		"What makes the music in both Step and Auto mode. In Step mode, the music picker can make more songs\n"
+		"with the other one without changing this.\n"
 		"ACE-Step makes the songs on your GPU (nothing is uploaded); it needs ACE-Step in\n"
 		"%USERPROFILE%\\OBSYouTubeMusicGen and takes about 3 minutes per minute of video.\n"
 		"Lyria is Google's music model, on the Gemini API key below (billing must be on: there's no free tier).\n"
-		"It makes about 2 minutes of music per song at about $0.08, in a minute or two: a 10-minute video is\n"
-		"about $0.72 for Step mode's 3 songs, $0.24 in Auto mode. Only the style text is sent, never your voice.\n"
+		"It makes about 2 minutes of music per song at about $0.08, in about half a minute: a 10-minute video\n"
+		"is about $0.72 for Step mode's 3 songs, $0.24 in Auto mode. Only the style text is sent, never your voice.\n"
 		"Any song Lyria can't make (out of quota, key refused) is made on this PC with ACE-Step instead.");
 	modelForm->addRow("Music source:", musicSourceCombo);
 

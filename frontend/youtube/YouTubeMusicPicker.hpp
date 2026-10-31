@@ -7,6 +7,7 @@
 class QAudioOutput;
 class QAudioSink;
 class QButtonGroup;
+class QComboBox;
 class QFile;
 class QLabel;
 class QMediaPlayer;
@@ -39,6 +40,8 @@ private:
 	QWidget *listBox;
 	QButtonGroup *group;
 	QPlainTextEdit *styleEdit;
+	/* What makes the new songs (starts at the Settings choice) */
+	QComboBox *sourceCombo;
 	QPushButton *regenButton;
 	QPushButton *useButton;
 	QWidget *busyRow;

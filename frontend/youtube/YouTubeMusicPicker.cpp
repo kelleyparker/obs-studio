@@ -1,4 +1,5 @@
 #include "YouTubeMusicPicker.hpp"
+#include "YouTubeSettingsWidget.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QAbstractButton>
@@ -7,6 +8,7 @@
 #include <QAudioOutput>
 #include <QAudioSink>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,6 +25,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
 #include <QStyleOptionSlider>
@@ -172,8 +175,21 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	styleEdit->setToolTip("The style prompt for the music. It starts as the selected song's; a tempo like "
 			      "\"100 bpm\" in it is used too.");
 	regenLayout->addWidget(styleEdit);
+	/* Just for these songs: it starts at the Settings choice each time, and Settings (what Auto mode uses)
+	 * stays as it is */
+	QHBoxLayout *sourceRow = new QHBoxLayout();
+	sourceCombo = new QComboBox(regenBox);
+	YouTubeSettingsWidget::FillMusicSources(sourceCombo);
+	sourceCombo->setToolTip("What makes the new songs. Lyria uses your Gemini key (about $0.08 per 2-minute song, "
+				"done in about half a minute); any song it can't make is made on this PC with ACE-Step.\n"
+				"This doesn't change the music source in Settings.");
+	sourceRow->addWidget(new QLabel("Make with:", regenBox));
+	sourceRow->addWidget(sourceCombo, 1);
+	regenLayout->addLayout(sourceRow);
 	regenButton = new QPushButton(regenBox);
 	regenLayout->addWidget(regenButton);
+	connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		&YouTubeMusicPicker::UpdateEtaLabel);
 	layout->addWidget(regenBox);
 
 	busyRow = new QWidget(this);
@@ -215,7 +231,9 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	connect(stopButton, &QPushButton::clicked, mgr, &YouTubeWorkflowManager::CancelPipeline);
 	connect(mgr, &YouTubeWorkflowManager::MusicRegenStarted, this, [this]() { SetBusy(true); });
 	connect(mgr, &YouTubeWorkflowManager::MusicRegenFinished, this, [this]() { SetBusy(false); });
-	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, &YouTubeMusicPicker::UpdateEtaLabel);
+	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, [this](const QString &source) {
+		sourceCombo->setCurrentIndex(std::max(0, sourceCombo->findData(source)));
+	});
 	connect(mgr, &YouTubeWorkflowManager::StepProgressUpdated, this,
 		[this](const QString &step, int percent, const QString &message) {
 			if (step == "music" && busyRow->isVisible()) {
@@ -369,6 +387,12 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 		styleEdit->clear();
 	}
 
+	/* Each review starts at the Settings choice */
+	{
+		QSignalBlocker block(sourceCombo);
+		QString source = YouTubeWorkflowManager::Instance()->GetConfig().musicSource;
+		sourceCombo->setCurrentIndex(std::max(0, sourceCombo->findData(source)));
+	}
 	UpdateEtaLabel();
 	SetBusy(YouTubeWorkflowManager::Instance()->IsRegeneratingMusic());
 	show();
@@ -528,6 +552,7 @@ void YouTubeMusicPicker::Regenerate()
 	if (QAbstractButton *checked = group->checkedButton()) {
 		options["base_id"] = checked->property("songId").toString();
 	}
+	options["music_source"] = sourceCombo->currentData().toString();
 	mgr->RegenerateMusic(options);
 }
 
@@ -568,12 +593,12 @@ void YouTubeMusicPicker::UpdateEtaLabel()
 {
 	/* How long the music source took last time (written by the pipeline) */
 	QJsonObject t = ReadJson(QDir::homePath() + "/OBSYouTubeMusicGen/timings.json");
-	if (YouTubeWorkflowManager::Instance()->GetConfig().musicSource == "lyria") {
+	if (sourceCombo->currentData().toString() == "lyria") {
 		/* The pipeline's sections: up to 240 s each, joined with 6 s crossfades, 10 s past the end */
 		double target = videoSeconds + 10.0;
 		int parts = target <= 240.0 ? 1 : int(std::ceil((target - 6.0) / 234.0));
 		int songs = regenCount * parts;
-		double seconds = std::ceil(songs / 3.0) * t.value("lyria_s").toDouble(45.0);
+		double seconds = std::ceil(songs / 3.0) * t.value("lyria_s").toDouble(30.0);
 		regenButton->setText(videoSeconds > 0 ? QString("🎵 Make %1 new songs with Lyria (~%2, ~$%3)")
 								.arg(regenCount)
 								.arg(Clock(seconds))

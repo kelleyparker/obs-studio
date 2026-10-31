@@ -2660,7 +2660,7 @@ STEP_MUSIC_OPTIONS = 3
 REGEN_MUSIC_OPTIONS = 2
 # ACE-Step's seconds to load the models and seconds of work per second of music, and Lyria's seconds per
 # song; replaced by this PC's own after a run
-MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0, "lyria_s": 45.0}
+MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0, "lyria_s": 30.0}
 
 # Google's Lyria through the Gemini API (the same key as the titles), newest first. About 2 minutes of
 # music per call, billed per call; no free tier. Only the text prompt is sent.
