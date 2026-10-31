@@ -158,6 +158,9 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "CutRetakes")) {
 		config.cutRetakes = config_get_bool(cfg, "YouTubeWorkflow", "CutRetakes");
 	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "NormalizeLoudness")) {
+		config.normalizeLoudness = config_get_bool(cfg, "YouTubeWorkflow", "NormalizeLoudness");
+	}
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "CloudImageFallback")) {
 		config.cloudImageFallback = config_get_bool(cfg, "YouTubeWorkflow", "CloudImageFallback");
 	}
@@ -217,6 +220,7 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_double(cfg, "YouTubeWorkflow", "MinSilenceSec", config.minSilenceSec);
 	config_set_double(cfg, "YouTubeWorkflow", "PaddingSec", config.paddingSec);
 	config_set_bool(cfg, "YouTubeWorkflow", "CutRetakes", config.cutRetakes);
+	config_set_bool(cfg, "YouTubeWorkflow", "NormalizeLoudness", config.normalizeLoudness);
 	config_set_bool(cfg, "YouTubeWorkflow", "BrollEnabled", config.brollEnabled);
 	config_set_string(cfg, "YouTubeWorkflow", "BrollSource", config.brollSourceName.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "BrollStyle", config.brollStyle.toUtf8().constData());
@@ -471,6 +475,7 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["min_silence_sec"] = config.minSilenceSec;
 	payload["padding_sec"] = config.paddingSec;
 	payload["cut_retakes"] = config.cutRetakes;
+	payload["normalize_loudness"] = config.normalizeLoudness;
 	return payload;
 }
 

@@ -74,6 +74,7 @@ private:
 	QDoubleSpinBox *minSilenceSecSpin = nullptr;
 	QDoubleSpinBox *paddingSecSpin = nullptr;
 	QCheckBox *cutRetakesCheck = nullptr;
+	QCheckBox *normalizeLoudnessCheck = nullptr;
 
 	// Section 5: Screen B-roll
 	QCheckBox *brollEnabledCheck = nullptr;

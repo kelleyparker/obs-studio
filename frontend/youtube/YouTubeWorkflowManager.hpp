@@ -41,6 +41,8 @@ struct YouTubeWorkflowConfig {
 	double minSilenceSec = 1.20;
 	double paddingSec = 0.25;
 	bool cutRetakes = true;
+	// Bring the voice to YouTube's -14 LUFS in the edit
+	bool normalizeLoudness = true;
 
 	// Screen B-roll: record this source alongside the webcam and cut to it
 	bool brollEnabled = false;

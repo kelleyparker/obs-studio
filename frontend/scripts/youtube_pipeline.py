@@ -966,16 +966,34 @@ def drop_edge_slivers(keep: list, segments: list, min_len: float = EDIT_FADE_SEC
     return keep
 
 
-def edit_fade_filter(duration: float) -> str:
+VOICE_TARGET_LUFS = -14.0  # YouTube's loudness; it turns louder videos down but never quieter ones up
+VOICE_PEAK_DB = -1.5  # the limiter's ceiling, so the boost can't clip
+VOICE_MAX_GAIN_DB = 30.0  # past this it would mostly be bringing up noise
+
+
+def voice_gain_db(lufs: float, target: float = VOICE_TARGET_LUFS, max_gain: float = VOICE_MAX_GAIN_DB) -> float:
+    """dB that brings a voice measured at `lufs` to `target`: 0 when it couldn't be measured (silent)."""
+    if not math.isfinite(lufs) or lufs < -70:
+        return 0.0
+    return round(max(-max_gain, min(max_gain, target - lufs)), 1)
+
+
+def edit_fade_filter(duration: float, gain_db: float = 0.0) -> str:
     """
     [cv][ca] -> [outv][outa]: the fade in from black and out to black (Premiere's Cross Dissolve at
     both ends) and the audio's exponential fade-out (Premiere's Exponential Fade). Short videos get
-    shorter fades.
+    shorter fades. `gain_db` turns the voice up (with a limiter so its peaks can't clip) or down.
     """
     d = min(EDIT_FADE_SEC, duration / 3)
     out = max(0.0, duration - d)
+    level = ""
+    if gain_db > 0.05:
+        level = (f"volume={gain_db:.1f}dB,"
+                 f"alimiter=limit={10 ** (VOICE_PEAK_DB / 20):.4f}:attack=5:release=50:level=false:latency=true,")
+    elif gain_db < -0.05:
+        level = f"volume={gain_db:.1f}dB,"
     return (f"[cv]fade=t=in:st=0:d={d:.3f},fade=t=out:st={out:.3f}:d={d:.3f}[outv];"
-            f"[ca]afade=t=out:st={out:.3f}:d={d:.3f}:curve=exp[outa]")
+            f"[ca]{level}afade=t=out:st={out:.3f}:d={d:.3f}:curve=exp[outa]")
 
 
 def render_edited_video(
@@ -983,12 +1001,14 @@ def render_edited_video(
     output_path: str,
     keep_intervals: list[tuple[float, float]],
     total_duration: float,
-    broll: dict | None = None
+    broll: dict | None = None,
+    gain_db: float = 0.0
 ) -> bool:
     """
     Uses FFmpeg filter_complex trim/atrim + concat to cut dead air and retakes
     accurately using NVIDIA NVENC hardware encoding (with x264 fallback), with the fades at both ends.
     `broll` = {"screen_path", "offset", "inserts": [(raw_start, raw_end)], "style"} adds screen B-roll.
+    `gain_db` brings the voice to YouTube's loudness (see voice_gain_db).
     """
     if not keep_intervals:
         return False
@@ -1012,7 +1032,7 @@ def render_edited_video(
         n = len(keep_intervals)
         filter_Parts_str = "".join(filter_parts) + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
     filter_Parts_str = (filter_Parts_str.replace("[outv]", "[cv]").replace("[outa]", "[ca]") + ";"
-                        + edit_fade_filter(kept_sum))
+                        + edit_fade_filter(kept_sum, gain_db))
 
     # Write filter script to temp file so long filter chains never exceed Windows CLI length limits
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
@@ -3665,15 +3685,28 @@ def stage_render(config: dict, ctx: dict) -> None:
         except (OSError, ValueError) as e:
             log_warn(f"Could not read the B-roll plan ({e}); rendering without B-roll.")
 
+    gain = 0.0
+    if config.get("normalize_loudness", True):
+        if ctx.get("source_lufs") is None:
+            update_step("edit", 62, "Measuring how loud your voice is...")
+            lufs = measure_lufs(input_video)
+            if math.isfinite(lufs):  # the state file must stay valid JSON for OBS (no -inf)
+                ctx["source_lufs"] = round(lufs, 2)
+        gain = voice_gain_db(ctx.get("source_lufs", float("-inf")))
+        if gain:
+            log_info(f"Your voice is at {ctx['source_lufs']:.1f} LUFS; the edit brings it to YouTube's "
+                     f"{VOICE_TARGET_LUFS:.0f} LUFS ({gain:+.1f} dB, peaks limited to {VOICE_PEAK_DB} dB).")
+    ctx["voice_gain_db"] = gain
+
     kept_duration = sum(b - a for a, b in keep_intervals) if keep_intervals else total_duration
     removed_sec = max(0.0, total_duration - kept_duration)
     with_broll = f" with {len(broll['inserts'])} B-roll inserts" if broll else ""
     update_step("edit", 65, f"Rendering edited MP4 via NVENC{with_broll} (removed {removed_sec:.1f}s of dead air/retakes)...")
 
-    rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, broll)
+    rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, broll, gain)
     if not rendered and broll:
         log_warn("B-roll render failed; rendering the plain edit instead.")
-        rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration)
+        rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, gain_db=gain)
 
     # A new edit needs its music made (and its voice measured) again
     for key in ("music", "voice_lufs"):
@@ -3687,6 +3720,7 @@ def stage_render(config: dict, ctx: dict) -> None:
         ctx["final_video"] = input_video
         ctx["rendered"] = False
         ctx["joins"] = []
+        ctx["voice_gain_db"] = 0.0
         log_warn("Using original remuxed MP4 for upload.")
 
     ctx["voice_video"] = ctx["final_video"]
@@ -3901,12 +3935,22 @@ def export_premiere_project(ctx: dict) -> str:
         at = sum(max(0.0, min(b, c["start"]) - a) for a, b in keep)
         cut_marks.append((at, f"Cut: {c['kind']} {c['end'] - c['start']:.1f}s", c.get("reason", "")))
 
-    # The music next to the project: on its own track as it sits in the upload, and the song at full level
+    # The music next to the project: on its own track as it sits in the upload, and the song at full level.
+    # The voice in Premiere is the recording as it was, before the edit turned it up, so the music is
+    # turned down by as much to keep the upload's balance.
     music = None
     chosen = ctx.get("music") or {}
     if chosen.get("ducked") and os.path.exists(chosen["ducked"]):
         on_timeline = os.path.join(out_dir, "music.wav")
-        shutil.copyfile(chosen["ducked"], on_timeline)
+        gain = float(ctx.get("voice_gain_db") or 0.0)
+        if gain:
+            res = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-i", chosen["ducked"], "-af", f"volume={-gain:.1f}dB",
+                                  "-c:a", "pcm_s24le", on_timeline],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if res.returncode != 0:
+                raise RuntimeError(f"Could not write the music for Premiere: {res.stderr.strip()[-300:]}")
+        else:
+            shutil.copyfile(chosen["ducked"], on_timeline)
         if os.path.exists(chosen.get("song", "")):
             shutil.copyfile(chosen["song"], os.path.join(out_dir, "music_full_level.wav"))
         music = {"path": on_timeline, "probe": premiere_export.probe_media(on_timeline)}
@@ -3930,6 +3974,9 @@ def export_premiere_project(ctx: dict) -> str:
                     f"DESCRIPTION\n{metadata.get('description', '')}\n\nTAGS\n{', '.join(metadata.get('tags', []))}\n")
     log_info(f"Premiere Pro sequence saved: {xml_path}. In Premiere use File > Import and pick this XML. "
              f"It uses the original recording, so keep {os.path.basename(ctx['input_video'])} where it is.")
+    if ctx.get("voice_gain_db"):
+        log_info(f"In Premiere your voice is as recorded; the upload has it {ctx['voice_gain_db']:+.1f} dB. To match "
+                 f"it, turn on Effects > Loudness Normalization at {VOICE_TARGET_LUFS:.0f} LUFS when you export.")
     emit("premiere_exported", xml_path=xml_path, folder=out_dir)
     return xml_path
 

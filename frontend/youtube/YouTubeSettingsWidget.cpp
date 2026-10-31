@@ -322,6 +322,14 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	cutRetakesCheck->setChecked(true);
 	editForm->addRow("Retake Trimming:", cutRetakesCheck);
 
+	normalizeLoudnessCheck = new QCheckBox("Bring my voice up to YouTube's loudness (-14 LUFS)", editGroup);
+	normalizeLoudnessCheck->setChecked(true);
+	normalizeLoudnessCheck->setToolTip(
+		"YouTube turns loud videos down but never turns quiet ones up. The edit measures your voice and\n"
+		"turns it up (or down) to -14 LUFS, with a limiter so the peaks can't clip. Background music is\n"
+		"mixed relative to the result. The Premiere project keeps the recording as it was.");
+	editForm->addRow("Voice Loudness:", normalizeLoudnessCheck);
+
 	mainLayout->addWidget(editGroup);
 
 	// =========================================================================
@@ -412,6 +420,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(minSilenceSecSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
 	connect(paddingSecSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
 	connect(cutRetakesCheck, &QCheckBox::toggled, this, notifyMod);
+	connect(normalizeLoudnessCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(brollEnabledCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(brollSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(brollStyleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
@@ -617,6 +626,7 @@ void YouTubeSettingsWidget::LoadFromManager()
 	minSilenceSecSpin->setValue(cfg.minSilenceSec);
 	paddingSecSpin->setValue(cfg.paddingSec);
 	cutRetakesCheck->setChecked(cfg.cutRetakes);
+	normalizeLoudnessCheck->setChecked(cfg.normalizeLoudness);
 
 	if (qFuzzyCompare(cfg.silenceDb, -42.0) && qFuzzyCompare(cfg.minSilenceSec, 1.20) &&
 	    qFuzzyCompare(cfg.paddingSec, 0.25) && cfg.cutRetakes) {
@@ -683,6 +693,7 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.minSilenceSec = minSilenceSecSpin->value();
 	cfg.paddingSec = paddingSecSpin->value();
 	cfg.cutRetakes = cutRetakesCheck->isChecked();
+	cfg.normalizeLoudness = normalizeLoudnessCheck->isChecked();
 	cfg.brollEnabled = brollEnabledCheck->isChecked();
 	cfg.brollSourceName = brollSourceCombo->currentData().toString();
 	cfg.brollStyle = brollStyleCombo->currentData().toString();

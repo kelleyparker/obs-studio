@@ -240,6 +240,20 @@ class RenderTests(unittest.TestCase):
             self.assertLess(center_rgb(out, end - 0.1)[0], 60)    # ends black
             self.assertLess(mean_volume(out, end - 0.25, 0.2), mean_volume(out, 3.0, 0.5) - 15)
 
+    def test_a_quiet_voice_is_brought_to_youtube_loudness(self):
+        quiet_main = os.path.join(self.tmp, "quiet.mp4")
+        ffmpeg("-i", self.main, "-c:v", "copy", "-af", "volume=-25dB", "-c:a", "aac", quiet_main)
+        gain = yp.voice_gain_db(yp.measure_lufs(quiet_main))
+        self.assertGreater(gain, 20)
+        out = os.path.join(self.tmp, "loud.mp4")
+        with quiet():
+            self.assertTrue(yp.render_edited_video(quiet_main, out, [(0.0, 6.0), (8.0, 20.0)], 20.0, gain_db=gain))
+        self.assertAlmostEqual(yp.measure_lufs(out), yp.VOICE_TARGET_LUFS, delta=1.0)
+        err = subprocess.run(["ffmpeg", "-i", out, "-vn", "-af", "volumedetect", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        self.assertLess(float(err.split("max_volume:")[1].split("dB")[0]), -0.5)  # the limiter caught the peaks
+        self.assertAlmostEqual(yp.get_video_duration(out), 18.0, delta=0.15)
+
     def test_pip(self):
         out = self.render("pip", "pip.mp4")
         self.assertGreater(center_rgb(out, 10.0)[2], 180)   # screen fills the frame

@@ -927,6 +927,15 @@ class StepRunTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(folder, "music.wav")))
         self.assertTrue(os.path.exists(os.path.join(folder, "music_full_level.wav")))
 
+        # The edit turned the voice (about -21 LUFS) up to YouTube's -14; Premiere keeps the recording as it
+        # was, so its music is turned down by as much
+        gain = yp.read_json_file(yp.pipeline_paths(video)["state_file"])["ctx"]["voice_gain_db"]
+        self.assertGreater(gain, 5)
+        self.assertAlmostEqual(yp.measure_lufs(yp.pipeline_paths(video)["edited_video"]), -14, delta=1.0)
+        ducked = os.path.join(yp.pipeline_paths(video)["music_dir"], "music_ducked.wav")
+        self.assertAlmostEqual(yp.measure_lufs(os.path.join(folder, "music.wav")), yp.measure_lufs(ducked) - gain,
+                               delta=0.3)
+
     def test_no_music_keeps_the_plain_edit(self):
         video, evs = self.run_to_end("nomusic.mp4", ["music"], music_enabled=True)
         ready = [e for e in evs if e["type"] == "review_ready"][0]
@@ -1052,6 +1061,24 @@ class EdgeSliverTests(unittest.TestCase):
     def test_without_a_transcript_only_tiny_ones_go(self):
         self.assertEqual(yp.drop_edge_slivers([[0.0, 0.3], [1.0, 9.0], [9.5, 10.3]], []), [(1.0, 9.0), (9.5, 10.3)])
         self.assertEqual(yp.drop_edge_slivers([[0.0, 0.3]], []), [(0.0, 0.3)])  # never everything
+
+
+class VoiceLoudnessTests(unittest.TestCase):
+    def test_gain_to_youtube_loudness(self):
+        self.assertEqual(yp.voice_gain_db(-35.7), 21.7)
+        self.assertEqual(yp.voice_gain_db(-9.0), -5.0)
+        self.assertEqual(yp.voice_gain_db(-60.0), 30.0)  # capped, it would mostly be noise
+        self.assertEqual(yp.voice_gain_db(float("-inf")), 0.0)
+        self.assertEqual(yp.voice_gain_db(-75.0), 0.0)
+
+    def test_a_boost_is_limited_and_a_cut_is_not(self):
+        up = yp.edit_fade_filter(30.0, 21.7)
+        self.assertIn("[ca]volume=21.7dB,alimiter=limit=0.8414:", up)
+        self.assertIn("level=false", up)
+        down = yp.edit_fade_filter(30.0, -5.0)
+        self.assertIn("[ca]volume=-5.0dB,afade", down)
+        self.assertNotIn("alimiter", down)
+        self.assertIn("[ca]afade", yp.edit_fade_filter(30.0))
 
 
 class MusicLmTests(unittest.TestCase):
