@@ -229,7 +229,7 @@ class RenderTests(unittest.TestCase):
         self.assertLess(r, 80)
         self.assertEqual(yp.probe_video_geometry(out)[:2], (640, 360))
 
-    def test_fades_in_and_out_even_without_cuts(self):
+    def test_picture_fades_in_and_out_even_without_cuts(self):
         for name, keep in (("fades.mp4", [(0.0, 6.0), (8.0, 20.0)]), ("uncut.mp4", [(0.0, 20.0)])):
             out = os.path.join(self.tmp, name)
             with quiet():
@@ -238,7 +238,8 @@ class RenderTests(unittest.TestCase):
             self.assertLess(center_rgb(out, 0.0)[0], 40)          # starts black
             self.assertGreater(center_rgb(out, 3.0)[0], 180)      # red in the middle
             self.assertLess(center_rgb(out, end - 0.1)[0], 60)    # ends black
-            self.assertLess(mean_volume(out, end - 0.25, 0.2), mean_volume(out, 3.0, 0.5) - 15)
+            # The sound keeps its level to the end (tapered by hand, if at all)
+            self.assertGreater(mean_volume(out, end - 0.25, 0.2), mean_volume(out, 3.0, 0.5) - 6)
 
     def test_a_quiet_voice_is_brought_to_youtube_loudness(self):
         quiet_main = os.path.join(self.tmp, "quiet.mp4")
