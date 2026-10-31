@@ -112,6 +112,7 @@ SystemMonitorDock::SystemMonitorDock(QWidget *parent) : QWidget(parent)
 	QScrollArea *scroll = new QScrollArea(this);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
+	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	outer->addWidget(scroll);
 
 	QWidget *content = new QWidget(scroll);
@@ -123,8 +124,8 @@ SystemMonitorDock::SystemMonitorDock(QWidget *parent) : QWidget(parent)
 	waitingLabel = new QLabel("Measuring…", content);
 	waitingLabel->setStyleSheet("color: #b8a8c8;");
 	contentLayout->addWidget(waitingLabel);
-	QLabel *legend = new QLabel(QString("Green under %1%, yellow under %2%, red from %2%. The line behind each bar "
-					    "is the last minute.")
+	QLabel *legend = new QLabel(QString("Green under %1%, yellow under %2%, red from %2%. Disks show how busy they "
+					    "are (active time); the line behind each bar is the last minute.")
 					    .arg(kBusyPercent)
 					    .arg(kCriticalPercent),
 				    content);
@@ -201,9 +202,12 @@ SystemMonitorDock::Row &SystemMonitorDock::RowFor(const UsageReading &reading)
 	row.name->setStyleSheet("font-weight: bold;");
 	row.detail = new QLabel(row.widget);
 	row.detail->setStyleSheet("color: #b8a8c8; font-size: 11px;");
-	header->addWidget(row.name);
-	header->addStretch();
-	header->addWidget(row.detail);
+	/* Long details give way to the meter instead of widening the dock (the tooltip has all of it) */
+	row.detail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	row.detail->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	row.name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	header->addWidget(row.name, 3);
+	header->addWidget(row.detail, 2);
 	row.meter = new UsageMeter(row.widget);
 	layout->addLayout(header);
 	layout->addWidget(row.meter);

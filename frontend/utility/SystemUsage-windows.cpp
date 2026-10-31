@@ -251,7 +251,7 @@ void SystemUsageSampler::SampleGpus(QList<UsageReading> &out)
 		}
 		QString id = QString::number(it.key(), 16);
 		out.append({"gpu:" + id, "gpu", "GPU · " + it->name, std::clamp(load, 0.0, 100.0),
-			    "Busiest engine (3D, video encode, compute…)"});
+			    "Busiest engine"});
 		/* Integrated graphics have next to no memory of their own, so a VRAM meter would mislead */
 		if (it->dedicatedBytes >= 512ull * 1024 * 1024) {
 			double used = vram.value(it.key());
@@ -283,7 +283,7 @@ void SystemUsageSampler::SampleDisks(QList<UsageReading> &out)
 		QString label = letters.isEmpty() ? QString("Disk %1").arg(number)
 						  : QString("Disk %1 (%2)").arg(number, letters);
 		out.append({"disk:" + instance, "disk", label, std::clamp(100.0 - value, 0.0, 100.0),
-			    QString("Active time · read %1 · write %2")
+			    QString("R %1 · W %2")
 				    .arg(ByteRate(reads.value(instance)), ByteRate(writes.value(instance)))});
 	}
 }
