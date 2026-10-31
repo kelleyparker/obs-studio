@@ -212,14 +212,31 @@ class PremiereXmlTests(unittest.TestCase):
             self.assertEqual(prev[1], cur[0])  # no gaps
         self.assertEqual(int(root.findtext("sequence/duration")), spans[-1][1])
 
-    def test_one_audio_track_per_stream_and_markers(self):
+    def test_main_mix_is_written_the_way_premiere_writes_stereo(self):
         root = self.build()
         tracks = root.findall("sequence/media/audio/track")
-        self.assertEqual([t.get("premiereTrackType") for t in tracks], ["Stereo", "Mono"])
-        self.assertEqual(tracks[1].find("clipitem/sourcetrack/trackindex").text, "2")
+        # Left and right of the first stream only, as two "exploded" tracks of one stereo clip
+        self.assertEqual([(t.get("premiereTrackType"), t.get("currentExplodedTrackIndex"),
+                           t.get("totalExplodedTrackCount"), t.findtext("outputchannelindex")) for t in tracks],
+                         [("Stereo", "0", "2", "1"), ("Stereo", "1", "2", "2")])
+        self.assertEqual([t.find("clipitem/sourcetrack/trackindex").text for t in tracks], ["1", "2"])
+        self.assertEqual(len(root.findall("sequence/media/audio/outputs/group")), 2)
+        v1_clip = root.find("sequence/media/video/track/clipitem")
+        self.assertEqual(v1_clip.findtext("masterclipid"), "masterclip-1")
+        self.assertEqual([(l.findtext("mediatype"), l.findtext("trackindex"), l.findtext("groupindex"))
+                          for l in v1_clip.findall("link")],
+                         [("video", "1", None), ("audio", "1", "1"), ("audio", "2", "1")])
+        self.assertEqual(len(v1_clip.findall("file/media/audio")), 1)
         self.assertEqual([m.findtext("name") for m in root.findall("sequence/marker")], ["Intro", "Setup", "Cut: silence 3.0s"])
         url = root.find(".//file/pathurl").text
         self.assertTrue(url.startswith("file://localhost/G%3A/obs%20rec/My%20Video.mp4"))
+
+    def test_mono_mix_is_one_track(self):
+        root = self.build(dict(self.PROBE, audio=[{"channels": 1, "sample_rate": 48000}]))
+        tracks = root.findall("sequence/media/audio/track")
+        self.assertEqual([(t.get("premiereTrackType"), t.get("totalExplodedTrackCount")) for t in tracks],
+                         [("Mono", None)])
+        self.assertEqual(tracks[0].find("clipitem").get("premiereChannelType"), "mono")
 
     def test_60fps_is_not_ntsc(self):
         root = self.build(dict(self.PROBE, fps=60.0))

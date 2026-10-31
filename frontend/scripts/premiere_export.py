@@ -8,8 +8,10 @@ widened or tightened in Premiere. Tracks:
   V1  the kept parts of the recording, back to back
   V2  screen B-roll at each accepted insert (if any)
   V3  the webcam bubble over the screen (picture-in-picture B-roll only)
-  A*  one stereo track per audio stream of the recording, linked to V1
-Markers show the chapters and every place the AI cut.
+  A1/A2  the recording's first audio track (OBS's main mix), linked to V1. Stereo is written the way
+         Premiere's own exports write it: one track per channel, which Premiere joins into a stereo clip.
+Markers show the chapters and every place the AI cut. OBS's other audio tracks are left out; they
+usually hold the same sound as the main mix, and stacking them would play it several times over.
 """
 
 import json
@@ -95,12 +97,12 @@ def _file(parent, file_id: str, path: str, probe: dict, fps: float, defined: set
     _sub(f, "duration", round(probe["duration"] * fps))
     media = _sub(f, "media")
     _video_characteristics(_sub(media, "video"), probe)
-    for stream in probe["audio"]:
+    if probe["audio"]:
         audio = _sub(media, "audio")
         sc = _sub(audio, "samplecharacteristics")
         _sub(sc, "depth", 16)
-        _sub(sc, "samplerate", stream["sample_rate"])
-        _sub(audio, "channelcount", stream["channels"])
+        _sub(sc, "samplerate", probe["audio"][0]["sample_rate"])
+        _sub(audio, "channelcount", probe["audio"][0]["channels"])
 
 
 def _motion(parent, scale: float, horiz: float = 0.0, vert: float = 0.0):
@@ -128,6 +130,7 @@ def _motion(parent, scale: float, horiz: float = 0.0, vert: float = 0.0):
 def _clipitem(track, clip_id: str, name: str, fps: float, start: int, end: int, src_in: int, src_out: int,
               file_id: str, path: str, probe: dict, defined: set, **attrs):
     clip = _sub(track, "clipitem", id=clip_id, **attrs)
+    _sub(clip, "masterclipid", file_id.replace("file", "masterclip"))
     _sub(clip, "name", name)
     _sub(clip, "enabled", "TRUE")
     _sub(clip, "duration", round(probe["duration"] * fps))
@@ -177,7 +180,9 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
     video = _sub(media, "video")
     _video_characteristics(_sub(video, "format"), probe)
     defined = set()
-    audio_count = len(probe["audio"])
+    # Audio tracks: one per channel of the main mix (stereo = left and right, mono = one)
+    stereo = bool(probe["audio"]) and probe["audio"][0]["channels"] >= 2
+    audio_count = (2 if stereo else 1) if probe["audio"] else 0
 
     def link_part(clip, i: int):
         """Link a part's picture and sound so they move together in Premiere."""
@@ -188,6 +193,8 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(link, "mediatype", kind)
             _sub(link, "trackindex", track_index)
             _sub(link, "clipindex", i + 1)
+            if kind == "audio":
+                _sub(link, "groupindex", 1)
 
     v1 = _sub(video, "track")
     for i, part in enumerate(parts):
@@ -222,14 +229,26 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
                     _motion(bubble, width * 100, 0.5 - margin - width / 2,
                             0.5 - margin * probe["width"] / probe["height"] - width / 2)
 
+    for track in video.findall("track"):
+        _sub(track, "enabled", "TRUE")
+        _sub(track, "locked", "FALSE")
+
     audio = _sub(media, "audio")
     _sub(audio, "numOutputChannels", 2)
     fmt = _sub(_sub(audio, "format"), "samplecharacteristics")
     _sub(fmt, "depth", 16)
     _sub(fmt, "samplerate", probe["audio"][0]["sample_rate"] if probe["audio"] else 48000)
-    for n, stream in enumerate(probe["audio"]):
-        stereo = stream["channels"] >= 2
-        track = _sub(audio, "track", premiereTrackType="Stereo" if stereo else "Mono")
+    outputs = _sub(audio, "outputs")
+    for n in (1, 2):
+        group = _sub(outputs, "group")
+        _sub(group, "index", n)
+        _sub(group, "numchannels", 1)
+        _sub(group, "downmix", 0)
+        _sub(_sub(group, "channel"), "index", n)
+    for n in range(audio_count):
+        # A stereo clip is one track per channel ("exploded"), each reading its channel of the file
+        attrs = {"currentExplodedTrackIndex": n, "totalExplodedTrackCount": 2} if stereo else {}
+        track = _sub(audio, "track", **attrs, premiereTrackType="Stereo" if stereo else "Mono")
         for i, part in enumerate(parts):
             clip = _clipitem(track, f"clipitem-a{n + 1}-{i + 1}", f"Part {i + 1}", fps, part["start"], part["end"],
                              part["in"], part["out"], "file-1", recording, probe, defined,
@@ -238,6 +257,9 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(source, "mediatype", "audio")
             _sub(source, "trackindex", n + 1)
             link_part(clip, i)
+        _sub(track, "enabled", "TRUE")
+        _sub(track, "locked", "FALSE")
+        _sub(track, "outputchannelindex", n + 1)
 
     for seconds, title in chapters:
         marker = _sub(seq, "marker")
