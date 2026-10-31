@@ -1118,25 +1118,24 @@ void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath, bool open)
 	for (int n = 2; QFileInfo::exists(project); n++) {
 		project = xml.absoluteDir().filePath(QString("%1 %2.prproj").arg(xml.completeBaseName()).arg(n));
 	}
-	/* Premiere converts the XML into %TEMP%\{its name}.prproj, so a copy with a new name each time keeps an
-	 * earlier conversion from getting in the way */
+	/* Premiere converts the XML into %TEMP%\{its name}.prproj (and makes an empty folder of the path it's
+	 * given), so a copy with a new name each time keeps an earlier conversion from getting in the way */
 	QDir temp(QDir::temp().filePath("obs_premiere"));
 	temp.mkpath(".");
-	QString xmlCopy = temp.filePath(QString("%1 %2.xml")
-						 .arg(xml.completeBaseName(),
-						      QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")));
+	QString name = QString("%1 %2").arg(xml.completeBaseName(),
+					    QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
+	QString xmlCopy = temp.filePath(name + ".xml");
 	QString scriptPath = temp.filePath("open_in_premiere.jsx");
 	QString script = QString("// Written by OBS: opens the exported sequence on Premiere Pro's timeline\n"
-				 "var xml = %1;\n"
-				 "var project = %2;\n"
-				 "if (app.openFCPXML(xml, project)) {\n"
+				 "if (app.openFCPXML(%1, %2)) {\n"
 				 "\tvar sequences = app.project.sequences;\n"
 				 "\tif (sequences.numSequences > 0) {\n"
 				 "\t\tapp.project.openSequence(sequences[0].sequenceID);\n"
 				 "\t}\n"
-				 "\tapp.project.saveAs(project);\n"
+				 "\tapp.project.saveAs(%3);\n"
 				 "}\n")
 				 .arg(JsString(QDir::toNativeSeparators(xmlCopy)),
+				      JsString(QDir::toNativeSeparators(temp.filePath(name + ".prproj"))),
 				      JsString(QDir::toNativeSeparators(project)));
 	QFile scriptFile(scriptPath);
 	/* With a BOM, ExtendScript reads it as UTF-8 rather than the ANSI code page */
