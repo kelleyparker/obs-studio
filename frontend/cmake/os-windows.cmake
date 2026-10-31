@@ -16,6 +16,8 @@ target_sources(
   obs-studio
   PRIVATE
     cmake/windows/obs.manifest
+    docks/SystemMonitorDock.cpp
+    docks/SystemMonitorDock.hpp
     dialogs/OBSUpdate.cpp
     dialogs/OBSUpdate.hpp
     forms/OBSUpdate.ui
@@ -24,6 +26,8 @@ target_sources(
     utility/AutoUpdateThread.hpp
     utility/CrashHandler_Windows.cpp
     utility/NativeEventFilter_Windows.cpp
+    utility/SystemUsage-windows.cpp
+    utility/SystemUsage-windows.hpp
     utility/WhatsNewBrowserInitThread.cpp
     utility/WhatsNewBrowserInitThread.hpp
     utility/WhatsNewInfoThread.cpp
@@ -48,6 +52,9 @@ target_link_libraries(
   obs-studio
   PRIVATE
     crypt32
+    dxgi
+    iphlpapi
+    pdh
     OBS::blake2
     OBS::updater-manifest
     OBS::w32-pthreads

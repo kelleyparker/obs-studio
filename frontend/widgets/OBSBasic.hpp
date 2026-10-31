@@ -472,6 +472,8 @@ private:
 	QPointer<QDockWidget> statsDock;
 	QPointer<QDockWidget> multistreamDock;
 	QPointer<QDockWidget> notepadDock;
+	/* CPU, memory, GPU, disk and network meters (Windows only, so it may be null) */
+	QPointer<QDockWidget> systemMonitorDock;
 
 	/* Puts a dock in the bottom row as a tab beside Scene Transitions */
 	void TabifyBesideTransitions(QDockWidget *dock);

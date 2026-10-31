@@ -35,6 +35,9 @@
 #endif
 #include <docks/MultistreamDock.hpp>
 #include <docks/NotepadDock.hpp>
+#ifdef _WIN32
+#include <docks/SystemMonitorDock.hpp>
+#endif
 #include <docks/CanvasDocks.hpp>
 #include <youtube/YouTubePipelineDock.hpp>
 #include <dialogs/OBSCanvasSettings.hpp>
@@ -282,6 +285,16 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	addDockWidget(Qt::BottomDockWidgetArea, notepadDock);
 	notepadDock->setVisible(false);
 
+#ifdef _WIN32
+	systemMonitorDock = new OBSDock();
+	systemMonitorDock->setObjectName(QStringLiteral("systemMonitorDock"));
+	systemMonitorDock->setWindowTitle(QStringLiteral("System Monitor"));
+	addDockWidget(Qt::BottomDockWidgetArea, systemMonitorDock);
+	systemMonitorDock->setVisible(false);
+	systemMonitorDock->setFloating(true);
+	systemMonitorDock->resize(420, 420);
+#endif
+
 	youtubePipelineDock = new OBSDock();
 	youtubePipelineDock->setObjectName(QStringLiteral("youtubePipelineDock"));
 	youtubePipelineDock->setWindowTitle(QStringLiteral("YouTube Pipeline"));
@@ -452,6 +465,9 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(statsDock);
 	SETUP_DOCK(multistreamDock);
 	SETUP_DOCK(notepadDock);
+	if (systemMonitorDock) {
+		SETUP_DOCK(systemMonitorDock);
+	}
 	SETUP_DOCK(youtubePipelineDock);
 	for (const auto &slot : canvasSlots) {
 		SETUP_DOCK(slot->previewDock);
@@ -1145,6 +1161,9 @@ void OBSBasic::OBSInit()
 	multistreamDock->setWidget(multistreamWidget);
 
 	notepadDock->setWidget(new NotepadDock(notepadDock));
+#ifdef _WIN32
+	systemMonitorDock->setWidget(new SystemMonitorDock(systemMonitorDock));
+#endif
 
 	YouTubePipelineDock *ytDockWidget = new YouTubePipelineDock(youtubePipelineDock);
 	youtubePipelineDock->setWidget(ytDockWidget);

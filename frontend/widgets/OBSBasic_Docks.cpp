@@ -95,6 +95,10 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	statsDock->setFloating(true);
 	multistreamDock->setVisible(false);
 	multistreamDock->setFloating(true);
+	if (systemMonitorDock) {
+		systemMonitorDock->setVisible(false);
+		systemMonitorDock->setFloating(true);
+	}
 	if (youtubePipelineDock) {
 		youtubePipelineDock->setFloating(false);
 		addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
@@ -163,6 +167,9 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	statsDock->setFeatures(features);
 	multistreamDock->setFeatures(features);
 	notepadDock->setFeatures(features);
+	if (systemMonitorDock) {
+		systemMonitorDock->setFeatures(features);
+	}
 	if (youtubePipelineDock) {
 		youtubePipelineDock->setFeatures(features);
 	}
@@ -275,6 +282,7 @@ bool OBSBasic::IsDockObjectNameUsed(const QString &name)
 	     << "statsDock"
 	     << "multistreamDock"
 	     << "notepadDock"
+	     << "systemMonitorDock"
 	     << "youtubePipelineDock";
 	for (const CanvasSlotId &id : CanvasSlotId::All()) {
 		list << id.DockName("Preview") << id.DockName("Scenes") << id.DockName("Sources");
