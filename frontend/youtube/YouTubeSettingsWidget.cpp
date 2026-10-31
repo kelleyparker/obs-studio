@@ -117,6 +117,15 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"Each image you get is billed by the model that made it.");
 	modelForm->addRow("Cloud fallback:", cloudImageFallbackCheck);
 
+	musicEnabledCheck = new QCheckBox("Make background music on this PC (ACE-Step) and mix it under my voice",
+					  prioGroup);
+	musicEnabledCheck->setChecked(true);
+	musicEnabledCheck->setToolTip(
+		"Your local LLM writes a style for the video, ACE-Step makes the songs on your GPU (nothing is uploaded)\n"
+		"and the one you pick plays about 20 dB under your voice, dipping further while you talk.\n"
+		"Step mode offers 3 songs to choose from; Auto mode makes one. Needs ACE-Step in %USERPROFILE%\\OBSYouTubeMusicGen.");
+	modelForm->addRow("Background music:", musicEnabledCheck);
+
 	thumbnailImageModelCombo = new QComboBox(prioGroup);
 	thumbnailImageModelCombo->setEditable(true);
 	thumbnailImageModelCombo->addItem("x/z-image-turbo");
@@ -392,6 +401,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(thumbnailImageSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(thumbnailImageModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
 	connect(cloudImageFallbackCheck, &QCheckBox::toggled, this, notifyMod);
+	connect(musicEnabledCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(autoFinishCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(ollamaModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
@@ -568,6 +578,7 @@ void YouTubeSettingsWidget::LoadFromManager()
 		thumbnailImageSourceCombo->setCurrentIndex(sourceIdx);
 	thumbnailImageModelCombo->setCurrentText(cfg.thumbnailImageModel);
 	cloudImageFallbackCheck->setChecked(cfg.cloudImageFallback);
+	musicEnabledCheck->setChecked(cfg.musicEnabled);
 	autoFinishCombo->setCurrentIndex(std::max(0, autoFinishCombo->findData(cfg.autoFinish)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
@@ -660,6 +671,7 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.thumbnailImageSource = thumbnailImageSourceCombo->currentData().toString();
 	cfg.thumbnailImageModel = thumbnailImageModelCombo->currentText().trimmed();
 	cfg.cloudImageFallback = cloudImageFallbackCheck->isChecked();
+	cfg.musicEnabled = musicEnabledCheck->isChecked();
 	cfg.autoFinish = autoFinishCombo->currentData().toString();
 	cfg.whisperModel = whisperModelCombo->currentData().toString();
 	cfg.ollamaModel = ollamaModelCombo->currentText().trimmed();

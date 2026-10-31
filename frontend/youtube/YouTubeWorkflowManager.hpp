@@ -26,6 +26,8 @@ struct YouTubeWorkflowConfig {
 	QString thumbnailImageModel = "x/z-image-turbo";
 	// When a cloud image source is out of quota or refuses the key, try the other cloud sources that have a key
 	bool cloudImageFallback = true;
+	// Background music made on this PC with ACE-Step, mixed under the voice
+	bool musicEnabled = true;
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
@@ -57,7 +59,7 @@ struct YouTubeWorkflowConfig {
 	QString autoFinish = "upload";
 
 	// A run paused at a review gate, so the dock can show it again after OBS restarts
-	QString pendingReviewGate; // "cuts", "broll", "metadata", "thumbnail" or "publish"
+	QString pendingReviewGate; // "cuts", "broll", "metadata", "music", "thumbnail" or "publish"
 	QString pendingReviewState;
 	QString pendingReviewData;
 };
@@ -94,13 +96,17 @@ public:
 	void OnRemuxFinished(const QString &remuxedMp4Path, bool success);
 
 	void StartPipelineForVideo(const QString &videoPath);
-	/* Continues a run paused at a review gate (the gate's file has been updated); eview carries
+	/* Continues a run paused at a review gate (the gate's file has been updated); 
+eview carries
 	 * choices that have no file, such as the publish gate's {"action": "upload"|"upload_file"|"finish"} */
 	void ResumePipeline(const QString &statePath, const QJsonObject &review = QJsonObject());
 	/* At the thumbnail gate: "generate" new AI images, "refine" one, or "recompose" text and photo */
 	void RegenerateThumbnails(const QString &action, const QJsonObject &options);
 	bool IsRegeneratingThumbnails() const { return thumbRegenActive; }
-	/* Starts the last video over from "transcribe", "cuts", "metadata" or "thumbnails", keeping the
+	/* At the music gate: make new songs from {"style", "base_id"} */
+	void RegenerateMusic(const QJsonObject &options);
+	bool IsRegeneratingMusic() const { return musicRegenActive; }
+	/* Starts the last video over from "transcribe", "cuts", "metadata", "music" or "thumbnails", keeping the
 	 * recording; optionally deletes its YouTube upload first */
 	void RedoPipeline(const QString &from, bool deleteFromYouTube);
 	/* Permanently deletes the last uploaded video from YouTube */
@@ -158,6 +164,8 @@ signals:
 	void PremiereExported(const QString &xmlPath);
 	void ThumbnailRegenStarted();
 	void ThumbnailRegenFinished();
+	void MusicRegenStarted();
+	void MusicRegenFinished();
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
 
@@ -180,6 +188,7 @@ private:
 	bool workflowArmed = false;
 	bool waitingForRemux = false;
 	bool thumbRegenActive = false;
+	bool musicRegenActive = false;
 	QString lastVideoPath;
 	QString lastVideoId;
 	QString lastVideoUrl;

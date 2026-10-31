@@ -48,6 +48,7 @@ private:
 	QComboBox *thumbnailImageSourceCombo = nullptr;
 	QComboBox *thumbnailImageModelCombo = nullptr;
 	QCheckBox *cloudImageFallbackCheck = nullptr;
+	QCheckBox *musicEnabledCheck = nullptr;
 	QComboBox *autoFinishCombo = nullptr;
 	QComboBox *whisperModelCombo = nullptr;
 	QComboBox *ollamaModelCombo = nullptr;

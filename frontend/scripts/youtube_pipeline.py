@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -942,6 +943,41 @@ def build_broll_filter(keep_intervals: list[tuple], broll: dict, width: int, hei
     )
 
 
+EDIT_FADE_SEC = 1.0  # every edit fades in from black and out to black, with an exponential audio fade-out
+
+
+def drop_edge_slivers(keep: list, segments: list, min_len: float = EDIT_FADE_SEC) -> list:
+    """
+    Leaves out a first or last kept part that is only a moment of sound before or after a cut (shorter
+    than the fade and without words; under 0.5 s when there's no transcript). It would hide under the
+    fade anyway, and in Premiere a dissolve can't be longer than the clip it sits on.
+    """
+    keep = [tuple(k) for k in keep]
+
+    def sliver(a: float, b: float) -> bool:
+        if not segments:
+            return b - a < 0.5
+        return b - a < min_len and not any(min(b, s["end"]) - max(a, s["start"]) > 0.05 for s in segments)
+
+    while len(keep) > 1 and sliver(*keep[0]):
+        keep.pop(0)
+    while len(keep) > 1 and sliver(*keep[-1]):
+        keep.pop()
+    return keep
+
+
+def edit_fade_filter(duration: float) -> str:
+    """
+    [cv][ca] -> [outv][outa]: the fade in from black and out to black (Premiere's Cross Dissolve at
+    both ends) and the audio's exponential fade-out (Premiere's Exponential Fade). Short videos get
+    shorter fades.
+    """
+    d = min(EDIT_FADE_SEC, duration / 3)
+    out = max(0.0, duration - d)
+    return (f"[cv]fade=t=in:st=0:d={d:.3f},fade=t=out:st={out:.3f}:d={d:.3f}[outv];"
+            f"[ca]afade=t=out:st={out:.3f}:d={d:.3f}:curve=exp[outa]")
+
+
 def render_edited_video(
     input_path: str,
     output_path: str,
@@ -951,21 +987,14 @@ def render_edited_video(
 ) -> bool:
     """
     Uses FFmpeg filter_complex trim/atrim + concat to cut dead air and retakes
-    accurately using NVIDIA NVENC hardware encoding (with x264 fallback).
+    accurately using NVIDIA NVENC hardware encoding (with x264 fallback), with the fades at both ends.
     `broll` = {"screen_path", "offset", "inserts": [(raw_start, raw_end)], "style"} adds screen B-roll.
     """
     if not keep_intervals:
         return False
 
     use_broll = bool(broll and broll.get("inserts") and broll.get("screen_path"))
-
-    # If the whole video is kept with negligible trimming (< 0.4s difference), copy directly
     kept_sum = sum(b - a for a, b in keep_intervals)
-    if not use_broll and len(keep_intervals) == 1 and abs(kept_sum - total_duration) < 0.4:
-        log_info("No significant dead air or retakes found; preserving original stream.")
-        if os.path.abspath(input_path) != os.path.abspath(output_path):
-            subprocess.run(["ffmpeg", "-y", "-i", input_path, "-c", "copy", output_path], capture_output=True)
-        return True
 
     inputs = ["-i", input_path]
     if use_broll:
@@ -982,6 +1011,8 @@ def render_edited_video(
 
         n = len(keep_intervals)
         filter_Parts_str = "".join(filter_parts) + "".join(concat_inputs) + f"concat=n={n}:v=1:a=1[outv][outa]"
+    filter_Parts_str = (filter_Parts_str.replace("[outv]", "[cv]").replace("[outa]", "[ca]") + ";"
+                        + edit_fade_filter(kept_sum))
 
     # Write filter script to temp file so long filter chains never exceed Windows CLI length limits
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
@@ -2587,6 +2618,553 @@ def chosen_thumbnail_path(thumbs: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Background music: ACE-Step 1.5 on this PC, fitted to the edit and mixed under the voice
+# ---------------------------------------------------------------------------
+
+# ACE-Step runs youtube_musicgen.py with the Python of its own venv (PyTorch for CUDA 12.8, which the
+# RTX 50 series needs): ~/OBSYouTubeMusicGen/{venv, ACE-Step-1.5 (the code, models in checkpoints/)}
+MUSIC_HOME = os.path.join(os.path.expanduser("~"), "OBSYouTubeMusicGen")
+DEFAULT_MUSIC_PYTHON = os.path.join(MUSIC_HOME, "venv", "Scripts" if os.name == "nt" else "bin",
+                                    "python.exe" if os.name == "nt" else "python")
+MUSIC_ACE_DIR = os.path.join(MUSIC_HOME, "ACE-Step-1.5")
+MUSIC_DIT_MODEL = "acestep-v15-turbo"
+MUSIC_LM_MODEL = "acestep-5Hz-lm-0.6B"  # the song-planning LM that fits next to the DiT on a 12 GB card
+MUSIC_MIN_SECTION = 10.0  # ACE-Step's shortest song
+MUSIC_MAX_SECTION = 240.0  # longer videos get several sections (ACE-Step can do 480 s here, but long songs wander)
+MUSIC_CROSSFADE = 6.0  # between sections
+MUSIC_TAIL = 10.0  # made past the end of the video, so the cut lands inside the music and not in its ending
+MUSIC_FADE_OUT = 3.0  # exponential fade-out that ends on the last frame
+MUSIC_UNDER_VOICE_DB = 20.0  # the music's loudness below the voice's
+MUSIC_DUCK_DB = 6.0  # how much further it dips while you talk
+MUSIC_DUCK_HEADROOM_DB = 12.0  # how far below your average talking level the dip starts
+STEP_MUSIC_OPTIONS = 3
+REGEN_MUSIC_OPTIONS = 2
+# Seconds to load the models, and seconds of work per second of music; replaced by this PC's own after a run
+MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0}
+
+MUSIC_BRIEF_PROMPT = """You choose background music for a YouTube video. It plays quietly under the creator's voice
+for the whole video. Return ONLY a JSON object:
+{"options": [{"name": "...", "style": "...", "bpm": 90, "key": "C major", "instrumental": true, "lyrics": ""}]}
+with exactly {count} options that each suit the video's topic and mood in a different way.
+- name: 2 to 4 words, e.g. "Warm lo-fi focus"
+- style: a music style prompt of 15 to 40 words with the genre, mood, tempo feel and main instruments, e.g.
+  "chill lo-fi hip hop, warm and calm, soft Rhodes piano, mellow bass, brushed drums, light vinyl crackle"
+- bpm: a whole number from 60 to 140
+- key: like "C major" or "A minor"
+- instrumental: true, unless the video is about music and a sung part clearly fits (vocals fight the voice)
+- lyrics: "" when instrumental, else short lyrics with [verse] and [chorus] tags
+Nothing harsh, distorted or busy: it has to sit under speech without competing with it."""
+
+FALLBACK_MUSIC_BRIEFS = (
+    {"name": "Warm lo-fi", "bpm": 80, "key": "F major",
+     "style": "chill lo-fi hip hop, warm and relaxed, soft Rhodes piano, mellow bass, brushed drums, light vinyl crackle"},
+    {"name": "Bright tech pulse", "bpm": 110, "key": "C major",
+     "style": "light modern electronic background, optimistic, soft synth plucks, gentle pads, steady minimal beat"},
+    {"name": "Calm acoustic", "bpm": 90, "key": "G major",
+     "style": "calm acoustic background, warm and hopeful, fingerpicked guitar, soft piano, light percussion"},
+)
+
+
+def plan_music_sections(duration: float, max_len: float = MUSIC_MAX_SECTION, crossfade: float = MUSIC_CROSSFADE,
+                        tail: float = MUSIC_TAIL, min_len: float = MUSIC_MIN_SECTION) -> list[float]:
+    """
+    Lengths of the songs to make for a video of `duration` seconds: one when it fits in a single
+    generation, else equal sections that, joined with `crossfade`, still run `tail` past the end.
+    """
+    target = max(duration + tail, min_len)
+    if target <= max_len:
+        return [round(target, 1)]
+    n = math.ceil((target - crossfade) / (max_len - crossfade))
+    each = min(max_len, math.ceil((target + crossfade * (n - 1)) / n * 10) / 10)
+    return [each] * n
+
+
+def joined_music_length(lengths: list[float], crossfade: float = MUSIC_CROSSFADE) -> float:
+    return sum(lengths) - crossfade * max(0, len(lengths) - 1)
+
+
+def music_mix_settings(voice_lufs: float, music_lufs: float, under_db: float = MUSIC_UNDER_VOICE_DB,
+                       duck_db: float = MUSIC_DUCK_DB, headroom_db: float = MUSIC_DUCK_HEADROOM_DB) -> dict:
+    """
+    The gain that puts the music `under_db` below the voice, and the sidechain compressor that dips it
+    `duck_db` more while you talk. The compressor starts `headroom_db` below your average talking level,
+    so at that level it takes off headroom_db * (1 - 1/ratio) = duck_db, and lets go in the pauses.
+    """
+    if not math.isfinite(voice_lufs) or voice_lufs < -60:
+        voice_lufs = -16.0  # a typical voice-over, when the voice couldn't be measured
+    gain = (voice_lufs - under_db) - music_lufs if math.isfinite(music_lufs) else 0.0
+    threshold_db = max(-60.0, voice_lufs - headroom_db)
+    ratio = 1.0 / (1.0 - duck_db / headroom_db) if duck_db < headroom_db else 20.0
+    return {
+        "gain_db": round(max(-60.0, min(30.0, gain)), 2),
+        "threshold_db": round(threshold_db, 2),
+        "threshold": round(max(0.000976563, 10 ** (threshold_db / 20)), 6),
+        "ratio": round(max(1.0, min(20.0, ratio)), 3),
+        "music_lufs": round(voice_lufs - under_db, 2),
+    }
+
+
+def measure_lufs(path: str) -> float:
+    """Integrated loudness (LUFS) of a file's first audio track; -inf when it's silent or unreadable."""
+    res = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-map", "0:a:0",
+                          "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    found = re.findall(r"\bI:\s+(-?[\d.]+|-inf) LUFS", res.stderr)
+    try:
+        value = float(found[-1])
+    except (IndexError, ValueError):
+        return float("-inf")
+    return value if value > -70 else float("-inf")
+
+
+def strip_music_silence(src: str, dst: str) -> float:
+    """A copy of a song without silence at its start and end (48 kHz stereo WAV). Returns its length."""
+    trim = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05"
+    res = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-i", src, "-af",
+                          f"{trim},areverse,{trim},areverse,aformat=sample_rates=48000:channel_layouts=stereo",
+                          "-c:a", "pcm_s16le", dst], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if res.returncode != 0:
+        raise RuntimeError((res.stderr or "").strip()[-300:])
+    return get_video_duration(dst)
+
+
+def fit_music(parts: list[str], duration: float, out_path: str, crossfade: float = MUSIC_CROSSFADE,
+              fade_in: float = EDIT_FADE_SEC, fade_out: float = MUSIC_FADE_OUT) -> None:
+    """
+    Joins the sections of one song (silence removed) with crossfades into exactly `duration` seconds: it
+    fades in with the video's dissolve and fades out exponentially, ending on the last frame. If it
+    still falls short, its sections play again, so it never stops before the video does.
+    """
+    clean, lengths = [], []
+    for i, part in enumerate(parts):
+        dst = f"{os.path.splitext(out_path)[0]}_clean{i + 1}.wav"
+        length = strip_music_silence(part, dst)
+        if length >= 1.0:
+            clean.append(dst)
+            lengths.append(length)
+    if not clean:
+        raise RuntimeError("the music came out silent")
+    xf = min(crossfade, min(lengths) / 2)
+    order = list(range(len(clean)))
+    while joined_music_length([lengths[i] for i in order], xf) < duration:
+        order.append(order[len(order) % len(clean)])
+
+    chain, graph = "[0:a]", []
+    for k in range(1, len(order)):
+        graph.append(f"{chain}[{k}:a]acrossfade=d={xf:.3f}:c1=qsin:c2=qsin[x{k}]")
+        chain = f"[x{k}]"
+    fi, fo = min(fade_in, duration / 4), min(fade_out, duration / 4)
+    graph.append(f"{chain}atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,afade=t=in:d={fi:.3f},"
+                 f"afade=t=out:st={duration - fo:.3f}:d={fo:.3f}:curve=exp[out]")
+    cmd = ["ffmpeg", "-y", "-hide_banner"]
+    for i in order:
+        cmd += ["-i", clean[i]]
+    cmd += ["-filter_complex", ";".join(graph), "-map", "[out]", "-ar", "48000", "-ac", "2",
+            "-c:a", "pcm_s16le", out_path]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res.returncode != 0:
+            raise RuntimeError((res.stderr or "").strip()[-300:])
+    finally:
+        for path in clean:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def mix_music(voice_video: str, music: str, out_path: str, settings: dict, stem_path: str = "",
+              audio_only: bool = False) -> None:
+    """
+    The voice with the music under it: the music at settings' gain, ducked further by the voice (ffmpeg
+    sidechaincompress). Writes the video (or, with audio_only, just the sound as M4A) and, with stem_path,
+    the ducked music on its own as a WAV, as it sits in the mix.
+    """
+    fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+    graph = (f"[0:a]{fmt},asplit=2[voice][sc];"
+             f"[1:a]{fmt},volume={settings['gain_db']}dB[music];"
+             f"[music][sc]sidechaincompress=threshold={settings['threshold']}:ratio={settings['ratio']}:"
+             "attack=20:release=600:knee=4:detection=rms:link=maximum[ducked];")
+    graph += "[ducked]asplit=2[bed][stem];" if stem_path else "[ducked]anull[bed];"
+    graph += "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]"
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-i", voice_video, "-i", music, "-filter_complex", graph]
+    if audio_only:
+        cmd += ["-map", "[mix]", "-c:a", "aac", "-b:a", "160k", out_path]
+    else:
+        cmd += ["-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", out_path]
+    if stem_path:
+        cmd += ["-map", "[stem]", "-c:a", "pcm_s16le", stem_path]
+    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if res.returncode != 0 or not os.path.exists(out_path):
+        raise RuntimeError((res.stderr or "").strip()[-400:])
+
+
+def unload_ollama_models():
+    """Frees the GPU memory of local Ollama models (they stay loaded for minutes after answering)."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=5) as resp:
+            loaded = [m.get("name") or m.get("model") for m in json.loads(resp.read().decode("utf-8")).get("models", [])]
+        for name in filter(None, loaded):
+            req = urllib.request.Request(f"{OLLAMA_URL}/api/generate",
+                                         data=json.dumps({"model": name, "keep_alive": 0}).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+    except Exception:
+        pass
+
+
+def clean_music_brief(brief: dict, fallback: dict) -> dict:
+    """One song idea with every field present and sane."""
+    style = str(brief.get("style") or "").strip()[:450] or fallback["style"]
+    try:
+        bpm = int(round(float(brief.get("bpm"))))
+    except (TypeError, ValueError):
+        bpm = fallback["bpm"]
+    key = str(brief.get("key") or "").strip()
+    if not re.fullmatch(r"[A-Ga-g][#b]? (major|minor)", key, re.IGNORECASE):
+        key = fallback["key"]
+    instrumental = brief.get("instrumental") is not False
+    lyrics = "" if instrumental else str(brief.get("lyrics") or "").strip()[:2000]
+    return {"name": str(brief.get("name") or "").strip()[:40] or fallback["name"], "style": style,
+            "bpm": max(50, min(160, bpm)), "key": key[0].upper() + key[1:], "instrumental": instrumental or not lyrics,
+            "lyrics": lyrics}
+
+
+def music_briefs(config: dict, ctx: dict, count: int) -> tuple[list[dict], str]:
+    """`count` song ideas from your local LLM (title and transcript), or default styles if it isn't available."""
+    title = (ctx.get("metadata") or {}).get("title", "")
+    transcript = " ".join(s.get("text", "") for s in ctx.get("segments") or [])[:5000]
+    model = config.get("ollama_model", "gemma4:12b")
+    try:
+        res = call_local_ollama_json(model, MUSIC_BRIEF_PROMPT.replace("{count}", str(count)),
+                                     f"Title: {title}\n\nTranscript:\n{transcript}")
+        raw = [b for b in res.get("options") or [] if isinstance(b, dict)]
+        source = res.get("_model_used", model)
+    except Exception as e:
+        log_warn(f"Your local LLM couldn't write the music brief ({str(e)[:160]}); using default styles.")
+        raw, source = [], "default styles"
+    briefs = [clean_music_brief(b, FALLBACK_MUSIC_BRIEFS[i % len(FALLBACK_MUSIC_BRIEFS)])
+              for i, b in enumerate(raw[:count])]
+    while len(briefs) < count:
+        briefs.append(clean_music_brief({}, FALLBACK_MUSIC_BRIEFS[len(briefs) % len(FALLBACK_MUSIC_BRIEFS)]))
+    return briefs, source
+
+
+def largest_gpu_index() -> str:
+    """nvidia-smi index (PCI bus order) of the GPU with the most memory, e.g. an RTX 5070 next to a smaller card."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=15).stdout
+        rows = [(int(a), float(b)) for a, b in (line.split(",") for line in out.strip().splitlines())]
+        return str(max(rows, key=lambda r: r[1])[0])
+    except Exception:
+        return ""
+
+
+def musicgen_command(config: dict) -> tuple[list, dict, int, str]:
+    """Command line, environment, creation flags and folder for youtube_musicgen.py in the ACE-Step venv."""
+    python = config.get("music_python") or DEFAULT_MUSIC_PYTHON
+    ace_dir = config.get("music_ace_dir") or MUSIC_ACE_DIR
+    if not os.path.exists(python) or not os.path.isdir(ace_dir):
+        raise RuntimeError(
+            f"ACE-Step isn't installed (no {python} or {ace_dir}). To install it: git clone "
+            f"https://github.com/ACE-Step/ACE-Step-1.5 \"{ace_dir}\", then in that folder run "
+            f"\"uv sync --python 3.12\" with UV_PROJECT_ENVIRONMENT={os.path.join(MUSIC_HOME, 'venv')} "
+            "(it installs PyTorch for CUDA 12.8; the models download on the first song).")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_musicgen.py")
+    env = dict(os.environ, HF_HUB_DISABLE_TELEMETRY="1", PYTHONIOENCODING="utf-8", TOKENIZERS_PARALLELISM="false",
+               PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", CUDA_DEVICE_ORDER="PCI_BUS_ID")
+    gpu = largest_gpu_index()
+    if gpu:
+        env["CUDA_VISIBLE_DEVICES"] = gpu
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    return [python, script], env, flags, ace_dir
+
+
+def load_music_timings() -> dict:
+    try:
+        saved = read_json_file(os.path.join(MUSIC_HOME, "timings.json"))
+        return {k: float(saved.get(k, v)) for k, v in MUSIC_TIMINGS_DEFAULT.items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return dict(MUSIC_TIMINGS_DEFAULT)
+
+
+def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int = 86) -> set:
+    """
+    Makes the songs ({caption, lyrics, instrumental, bpm, keyscale, duration, seed, out, label}) with
+    ACE-Step, counting down in the music step. Returns the paths it wrote.
+    """
+    import queue
+    import threading
+
+    cmd, env, flags, ace_dir = musicgen_command(config)
+    job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL, "offload": True,
+           "parent_pid": os.getpid(), "songs": [{k: v for k, v in s.items() if k != "label"} for s in songs]}
+    timings = load_music_timings()
+    total = sum(s["duration"] for s in songs) or 1.0
+    unload_ollama_models()
+
+    made = set()
+    done_audio, current, fraction = 0.0, 0, 0.0
+    phase_started, gen_started, load_s = time.time(), None, None
+    err_path = os.path.join(os.path.dirname(songs[0]["out"]), "musicgen_log.txt")
+    with open(err_path, "w", encoding="utf-8") as err_file:
+        proc = subprocess.Popen(cmd, cwd=ace_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_file,
+                                env=env, creationflags=flags, text=True, encoding="utf-8", errors="replace")
+        proc.stdin.write(json.dumps(job))
+        proc.stdin.close()
+        lines = queue.Queue()
+
+        def pump():
+            for raw in proc.stdout:
+                lines.put(raw)
+            lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        def show():
+            if gen_started is None:
+                left = max(0.0, timings["load_s"] - (time.time() - phase_started)) + total * timings["rate"]
+                update_step("music", lo, f"Loading ACE-Step… ~{_fmt_clock(left)} left")
+                return
+            audio_done = done_audio + fraction * songs[current]["duration"]
+            rate = (time.time() - gen_started) / done_audio if done_audio > 0 else timings["rate"]
+            left = max(0.0, total - audio_done) * rate
+            update_step("music", lo + int((hi - lo) * audio_done / total),
+                        f"Making {songs[current]['label']} · ~{_fmt_clock(left)} left")
+
+        show()
+        while True:
+            try:
+                raw = lines.get(timeout=1.0)
+            except queue.Empty:
+                show()
+                continue
+            if raw is None:
+                break
+            try:
+                ev = json.loads(raw)
+            except ValueError:
+                continue
+            kind = ev.get("type")
+            if kind == "loaded":
+                load_s, gen_started = float(ev.get("seconds", 0.0)), time.time()
+                if not ev.get("lm"):
+                    log_warn("ACE-Step is making the songs without its song-planning LM.")
+            elif kind == "progress":
+                current = min(int(ev.get("index", 0)), len(songs) - 1)
+                fraction = float(ev.get("fraction", 0.0))
+            elif kind == "song":
+                index = int(ev.get("index", 0))
+                made.add(songs[index]["out"])
+                done_audio += songs[index]["duration"]
+                current, fraction = min(index + 1, len(songs) - 1), 0.0
+            elif kind == "warning":
+                log_warn(ev.get("message", ""))
+            elif kind == "error":
+                if "index" in ev:
+                    index = int(ev["index"])
+                    done_audio += songs[index]["duration"]
+                    notes.append(f"Making {songs[index]['label']} failed: {ev.get('message', '')}")
+                else:
+                    notes.append(f"ACE-Step failed: {ev.get('message', '')}")
+            show()
+        proc.wait()
+
+    if made and load_s is not None and gen_started is not None:
+        try:
+            write_json_file(os.path.join(MUSIC_HOME, "timings.json"), {
+                "load_s": round(load_s, 1), "rate": round((time.time() - gen_started) / max(1.0, done_audio), 3)})
+        except OSError:
+            pass
+    if not made:
+        try:
+            with open(err_path, encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-400:].strip()
+            if tail:
+                notes.append(f"ACE-Step log: {tail}")
+        except OSError:
+            pass
+    return made
+
+
+def make_music_options(config: dict, ctx: dict, briefs: list[dict], first: int = 1) -> tuple[list[dict], list[str]]:
+    """
+    One song per brief with ACE-Step, fitted to the edit's length, and a preview of it mixed under your
+    voice. Returns (options, notes); an option without "path" failed.
+    """
+    paths = pipeline_paths(ctx["input_video"])
+    out_dir = paths["music_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    voice = ctx["voice_video"]
+    duration = get_video_duration(voice)
+    if duration <= 0:
+        raise RuntimeError(f"Could not read the length of {voice}")
+    sections = plan_music_sections(duration)
+
+    songs, options = [], []
+    for i, brief in enumerate(briefs):
+        n = first + i
+        seed = random.randint(1, 2 ** 31 - 1)
+        option = {"id": f"song_{n}", "label": f"Song {n}", **brief, "seed": seed, "parts": []}
+        for k, length in enumerate(sections):
+            part = os.path.join(out_dir, f"song_{n}_part{k + 1}.wav")
+            label = f"song {i + 1}/{len(briefs)}" + (f", part {k + 1}/{len(sections)}" if len(sections) > 1 else "")
+            songs.append({"caption": brief["style"], "lyrics": brief["lyrics"], "instrumental": brief["instrumental"],
+                          "bpm": brief["bpm"], "keyscale": brief["key"], "duration": length, "seed": seed + k,
+                          "out": part, "label": label})
+            option["parts"].append(part)
+        options.append(option)
+
+    notes = []
+    made = generate_songs(config, songs, notes)
+    if made and ctx.get("voice_lufs") is None:
+        lufs = measure_lufs(voice)
+        # Stored in the state file, which must stay valid JSON for OBS (no -inf)
+        ctx["voice_lufs"] = lufs if math.isfinite(lufs) else -16.0
+    for i, option in enumerate(options):
+        parts = option.pop("parts")
+        try:
+            if made and all(p in made for p in parts):
+                update_step("music", 88 + 10 * i // len(options), f"Fitting {option['label']} to the video...")
+                song = os.path.join(out_dir, f"{option['id']}.wav")
+                fit_music(parts, duration, song)
+                settings = music_mix_settings(ctx["voice_lufs"], measure_lufs(song))
+                preview = os.path.join(out_dir, f"{option['id']}_preview.m4a")
+                mix_music(voice, song, preview, settings, audio_only=True)
+                option.update(path=song, preview=preview, mix=settings)
+        except Exception as e:
+            notes.append(f"{option['label']} couldn't be fitted to the video: {str(e)[:200]}")
+        finally:
+            for part in parts:
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+    for note in notes:
+        log_warn(note)
+    return options, notes
+
+
+def use_chosen_music(ctx: dict):
+    """Mixes the chosen song under your voice into {stem}_yt_final.mp4, or keeps the plain edit for no music."""
+    paths = pipeline_paths(ctx["input_video"])
+    voice = ctx.get("voice_video") or ctx["final_video"]
+    ctx["final_video"] = voice
+    ctx.pop("music", None)
+    music = read_json_file(paths["music_file"]) if os.path.exists(paths["music_file"]) else {}
+    chosen = next((o for o in music.get("options", []) if o.get("id") == music.get("chosen")
+                   and o.get("path") and os.path.exists(o["path"])), None)
+    if not chosen:
+        update_step("music", 100, "No music.")
+        log_info("This video has no background music.")
+    else:
+        update_step("music", 60, f"Mixing {chosen['label']} under your voice...")
+        stem = os.path.join(paths["music_dir"], "music_ducked.wav")
+        try:
+            lufs = ctx.get("voice_lufs")
+            settings = chosen.get("mix") or music_mix_settings(
+                measure_lufs(voice) if lufs is None else lufs, measure_lufs(chosen["path"]))
+            mix_music(voice, chosen["path"], paths["music_video"], settings, stem_path=stem)
+            ctx["final_video"] = paths["music_video"]
+            ctx["music"] = {"id": chosen["id"], "name": chosen.get("name", ""), "style": chosen.get("style", ""),
+                            "song": chosen["path"], "ducked": stem, "gain_db": settings["gain_db"]}
+            update_step("music", 100, f"{chosen['label']}: {chosen.get('name', '')}, "
+                                      f"{MUSIC_UNDER_VOICE_DB:.0f} dB under your voice.")
+            log_info(f"Mixed {chosen['label']} ({chosen.get('name', '')}) under your voice "
+                     f"({settings['gain_db']:+.1f} dB, ducked while you talk): {os.path.basename(paths['music_video'])}")
+        except Exception as e:
+            log_error(f"Mixing the music failed ({str(e)[:300]}); the video has no music.")
+            update_step("music", 100, "No music (mixing failed; see the log).")
+    emit("render_ready", video=ctx["final_video"], duration=round(get_video_duration(ctx["final_video"]), 3),
+         joins=ctx.get("joins", []))
+
+
+def write_music_choices(ctx: dict, options: list, notes: list, source: str, chosen: str = "") -> int:
+    """Writes {stem}_yt_music.json for the music gate. Returns how many songs there are to pick from."""
+    made = [o for o in options if o.get("path")]
+    write_json_file(pipeline_paths(ctx["input_video"])["music_file"], {
+        "version": 1, "options": options, "chosen": chosen or (made[0]["id"] if made else "none"),
+        "notes": notes, "brief_by": source, "duration": round(get_video_duration(ctx["voice_video"]), 2),
+        "regen_count": REGEN_MUSIC_OPTIONS,
+    })
+    return len(made)
+
+
+def stage_music(config: dict, ctx: dict, gates: set) -> str | None:
+    """Background music. Step mode: 3 songs to choose from (or none). Auto: one, mixed in right away."""
+    ctx["next_stage"] = "thumbnails"
+    ctx.setdefault("voice_video", ctx["final_video"])
+    ctx["final_video"] = ctx["voice_video"]
+    ctx.pop("music", None)
+    if not config.get("music_enabled", True):
+        update_step("music", 100, "Skipped (music is off).")
+        return None
+
+    step_mode = "music" in gates
+    update_step("music", 2, "Writing the music brief with your local LLM...")
+    briefs, source = music_briefs(config, ctx, STEP_MUSIC_OPTIONS if step_mode else 1)
+    try:
+        options, notes = make_music_options(config, ctx, briefs)
+    except Exception as e:
+        log_error(f"Background music failed: {e}")
+        update_step("music", 100, "No music (it couldn't be made; see the log).")
+        return None
+    count = write_music_choices(ctx, options, notes, source)
+    if not count:
+        update_step("music", 100, "No music (every song failed; see the log).")
+        return None
+    if step_mode:
+        update_step("music", 100, f"Pick the music ({count} songs).")
+        return "music"
+    use_chosen_music(ctx)
+    return None
+
+
+def regenerate_music(state_path: str, secrets: dict, options: dict) -> int:
+    """At the music gate: make new songs from your edited style prompt, then wait at the music gate again."""
+    state = load_state(state_path)
+    if state is None:
+        return 1
+    config = dict(state.get("config", {}))
+    config["secrets"] = secrets or {}
+    ctx = state.get("ctx", {})
+    if ctx.get("pending_gate") != "music":
+        emit("error", message="This job isn't waiting at the music step.")
+        return 1
+    paths = pipeline_paths(ctx["input_video"])
+    music = read_json_file(paths["music_file"]) if os.path.exists(paths["music_file"]) else {"options": []}
+    existing = music.get("options", [])
+    base = next((o for o in existing if o.get("id") == options.get("base_id")), existing[0] if existing else {})
+    style = (options.get("style") or base.get("style") or "").strip()
+    stated_bpm = re.search(r"\b(\d{2,3})\s*bpm\b", style, re.IGNORECASE)
+    brief = clean_music_brief({
+        "name": style.split(",")[0].strip().capitalize()[:40], "style": style,
+        "bpm": int(stated_bpm.group(1)) if stated_bpm else base.get("bpm"), "key": base.get("key"),
+        "instrumental": options.get("instrumental", base.get("instrumental", True)), "lyrics": base.get("lyrics", ""),
+    }, FALLBACK_MUSIC_BRIEFS[0])
+    first = 1 + max([int(o["id"].split("_")[-1]) for o in existing if o.get("id", "").startswith("song_")] or [0])
+
+    update_step("music", 2, "Getting ready...")
+    try:
+        new, notes = make_music_options(config, ctx, [dict(brief) for _ in range(REGEN_MUSIC_OPTIONS)], first)
+    except Exception as e:
+        log_error(f"Making new songs failed: {e}")
+        new, notes = [], [f"Making new songs failed: {str(e)[:200]}"]
+    made = [o for o in new if o.get("path")]
+    count = write_music_choices(ctx, existing + new, notes, music.get("brief_by", ""),
+                                made[0]["id"] if made else music.get("chosen", ""))
+    state_file = pause_for_review(config, ctx, "music")
+    update_step("music", 100, f"Pick the music ({count} songs).")
+    emit("review_ready", gate="music", state_path=state_file, data_path=paths["music_file"])
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 5. YouTube Data API v3 OAuth 2.0 & Resumable Upload (Video + Thumbnail)
 # ---------------------------------------------------------------------------
 
@@ -2930,11 +3508,14 @@ def pipeline_paths(input_video: str) -> dict:
         "broll_thumbs": os.path.join(base_dir, f"{stem}_broll"),
         "state_file": os.path.join(base_dir, f"{stem}_yt_state.json"),
         "premiere_dir": os.path.join(base_dir, f"{stem}_premiere"),
+        "music_dir": os.path.join(base_dir, f"{stem}_yt_music"),
+        "music_file": os.path.join(base_dir, f"{stem}_yt_music.json"),
+        "music_video": os.path.join(base_dir, f"{stem}_yt_final.mp4"),
     }
 
 
 # Step mode pauses at these gates; Auto mode runs straight through.
-REVIEW_GATES = ("cuts", "broll", "metadata", "thumbnail", "publish")
+REVIEW_GATES = ("cuts", "broll", "metadata", "music", "thumbnail", "publish")
 STEP_FRAME_THUMBNAILS = 4
 STEP_AI_THUMBNAILS = 4
 
@@ -3058,7 +3639,11 @@ def stage_render(config: dict, ctx: dict) -> None:
     """Render the edit (with accepted B-roll)."""
     input_video = ctx["input_video"]
     total_duration = float(ctx["total_duration"])
-    keep_intervals = [tuple(k) for k in ctx["keep_intervals"]]
+    keep_intervals = drop_edge_slivers(ctx["keep_intervals"], ctx.get("segments") or [])
+    if len(keep_intervals) < len(ctx["keep_intervals"]):
+        log_info(f"Left out {len(ctx['keep_intervals']) - len(keep_intervals)} wordless sliver(s) at the start or "
+                 "end of the edit; they would only hide under the fade.")
+        ctx["keep_intervals"] = [list(k) for k in keep_intervals]
     edited_video = pipeline_paths(input_video)["edited_video"]
 
     broll = None
@@ -3090,6 +3675,9 @@ def stage_render(config: dict, ctx: dict) -> None:
         log_warn("B-roll render failed; rendering the plain edit instead.")
         rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration)
 
+    # A new edit needs its music made (and its voice measured) again
+    for key in ("music", "voice_lufs"):
+        ctx.pop(key, None)
     if rendered:
         ctx["final_video"] = edited_video
         ctx["rendered"] = True
@@ -3101,6 +3689,7 @@ def stage_render(config: dict, ctx: dict) -> None:
         ctx["joins"] = []
         log_warn("Using original remuxed MP4 for upload.")
 
+    ctx["voice_video"] = ctx["final_video"]
     update_step("edit", 100, f"Video edit complete (-{removed_sec:.1f}s trimmed).")
     emit("render_ready", video=ctx["final_video"], duration=round(kept_duration, 3), joins=ctx["joins"])
     ctx["next_stage"] = "metadata"
@@ -3147,7 +3736,7 @@ def stage_metadata(config: dict, ctx: dict, gates: set) -> str | None:
     metadata["description"] = append_social_footer(metadata.get("description", ""))
     ctx["metadata"] = metadata
     ctx["llm_provider"] = llm_provider_used
-    ctx["next_stage"] = "thumbnails"
+    ctx["next_stage"] = "music"
     write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
     emit_metadata(ctx)
 
@@ -3292,7 +3881,8 @@ def export_premiere_project(ctx: dict) -> str:
     out_dir = paths["premiere_dir"]
     os.makedirs(out_dir, exist_ok=True)
     total = float(ctx["total_duration"])
-    keep = [tuple(k) for k in ctx.get("keep_intervals") or [[0.0, total]]]
+    # Edits rendered before slivers were left out still have them; a dissolve couldn't fit on them
+    keep = drop_edge_slivers(ctx.get("keep_intervals") or [[0.0, total]], ctx.get("segments") or [])
 
     broll = None
     if ctx.get("broll_plan_path") and os.path.exists(ctx["broll_plan_path"]):
@@ -3311,12 +3901,22 @@ def export_premiere_project(ctx: dict) -> str:
         at = sum(max(0.0, min(b, c["start"]) - a) for a, b in keep)
         cut_marks.append((at, f"Cut: {c['kind']} {c['end'] - c['start']:.1f}s", c.get("reason", "")))
 
+    # The music next to the project: on its own track as it sits in the upload, and the song at full level
+    music = None
+    chosen = ctx.get("music") or {}
+    if chosen.get("ducked") and os.path.exists(chosen["ducked"]):
+        on_timeline = os.path.join(out_dir, "music.wav")
+        shutil.copyfile(chosen["ducked"], on_timeline)
+        if os.path.exists(chosen.get("song", "")):
+            shutil.copyfile(chosen["song"], os.path.join(out_dir, "music_full_level.wav"))
+        music = {"path": on_timeline, "probe": premiere_export.probe_media(on_timeline)}
+
     metadata = ctx.get("metadata") or {}
     stem = Path(ctx["input_video"]).stem
     xml = premiere_export.build_premiere_xml(
         ctx["input_video"], premiere_export.probe_media(ctx["input_video"]), keep, broll,
         parse_chapters(metadata.get("description", "")) if ctx.get("rendered") else [], cut_marks,
-        name=f"{stem} (AI edit)")
+        name=f"{stem} (AI edit)", music=music)
     xml_path = os.path.join(out_dir, f"{stem}.xml")
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml)
@@ -3358,6 +3958,8 @@ def apply_review(ctx: dict, review: dict | None = None) -> None:
         emit_metadata(ctx)
         update_step("llm", 100, f"Approved: {metadata.get('title', '')}")
         log_info(f"Using your approved title: {metadata.get('title', '')}")
+    elif gate == "music":
+        use_chosen_music(ctx)
     elif gate == "thumbnail":
         use_chosen_thumbnail(ctx)
     elif gate == "publish":
@@ -3422,6 +4024,12 @@ def run_stages(config: dict, ctx: dict) -> int:
             if stage_metadata(config, ctx, gates) == "metadata":
                 state_file = pause_for_review(config, ctx, "metadata")
                 emit("review_ready", gate="metadata", state_path=state_file, data_path=paths["metadata_file"])
+                return 0
+            save_checkpoint(config, ctx)
+        elif stage == "music":
+            if stage_music(config, ctx, gates) == "music":
+                state_file = pause_for_review(config, ctx, "music")
+                emit("review_ready", gate="music", state_path=state_file, data_path=paths["music_file"])
                 return 0
             save_checkpoint(config, ctx)
         elif stage == "thumbnails":
@@ -3587,10 +4195,12 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
     return 0
 
 
-REDO_STAGES = {"cuts": "cuts_review", "metadata": "metadata", "thumbnails": "thumbnails"}
+REDO_STAGES = {"cuts": "cuts_review", "metadata": "metadata", "music": "music", "thumbnails": "thumbnails"}
 REDO_DROPS = {
-    "cuts": ("rendered", "final_video", "joins", "metadata", "llm_provider", "thumb_provider"),
-    "metadata": ("metadata", "llm_provider", "thumb_provider"),
+    "cuts": ("rendered", "final_video", "voice_video", "voice_lufs", "joins", "metadata", "llm_provider", "music",
+             "thumb_provider"),
+    "metadata": ("metadata", "llm_provider", "music", "thumb_provider"),
+    "music": ("music", "thumb_provider"),
     "thumbnails": ("thumb_provider",),
 }
 
@@ -3607,7 +4217,7 @@ def redo_pipeline(cfg: dict) -> int:
     ctx = state.get("ctx", {})
     ctx.pop("pending_gate", None)
     needs = {"transcribe": "input_video", "cuts": "keep_intervals", "metadata": "final_video",
-             "thumbnails": "metadata"}[start]
+             "music": "metadata", "thumbnails": "metadata"}[start]
     if not ctx.get(needs) or (needs == "final_video" and not os.path.exists(ctx["final_video"])):
         emit("error", message="This video never got that far; start over from an earlier step.")
         return 1
@@ -3715,6 +4325,8 @@ def main():
         if mode == "thumbnail_regen":
             return regenerate_thumbnails(cfg.get("state_path", ""), cfg.get("secrets", {}),
                                          cfg.get("action", "generate"), cfg.get("options") or {})
+        if mode == "music_regen":
+            return regenerate_music(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("options") or {})
         if mode == "redo_pipeline":
             return redo_pipeline(cfg)
         if mode == "export_premiere":

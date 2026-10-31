@@ -192,12 +192,12 @@ class PremiereXmlTests(unittest.TestCase):
     PROBE = {"duration": 20.0, "fps": 30000 / 1001, "width": 1920, "height": 1080,
              "audio": [{"channels": 2, "sample_rate": 48000}, {"channels": 1, "sample_rate": 48000}]}
 
-    def build(self, probe=None, broll=None):
+    def build(self, probe=None, broll=None, keep=None, music=None):
         import xml.etree.ElementTree as ET
 
         xml = pe.build_premiere_xml(
-            r"G:\obs rec\My Video.mp4", probe or self.PROBE, [(0.0, 5.0), (8.0, 12.0), (15.0, 18.0)], broll,
-            [(0.0, "Intro"), (6.0, "Setup")], [(5.0, "Cut: silence 3.0s", "")])
+            r"G:\obs rec\My Video.mp4", probe or self.PROBE, keep or [(0.0, 5.0), (8.0, 12.0), (15.0, 18.0)], broll,
+            [(0.0, "Intro"), (6.0, "Setup")], [(5.0, "Cut: silence 3.0s", "")], music=music)
         return ET.fromstring(xml.split("\n", 2)[2])
 
     def test_cuts_are_back_to_back_clips(self):
@@ -223,13 +223,67 @@ class PremiereXmlTests(unittest.TestCase):
         self.assertEqual(len(root.findall("sequence/media/audio/outputs/group")), 2)
         v1_clip = root.find("sequence/media/video/track/clipitem")
         self.assertEqual(v1_clip.findtext("masterclipid"), "masterclip-1")
-        self.assertEqual([(l.findtext("mediatype"), l.findtext("trackindex"), l.findtext("groupindex"))
-                          for l in v1_clip.findall("link")],
-                         [("video", "1", None), ("audio", "1", "1"), ("audio", "2", "1")])
+        self.assertEqual([(l.findtext("mediatype"), l.findtext("trackindex"), l.findtext("clipindex"),
+                           l.findtext("groupindex")) for l in v1_clip.findall("link")],
+                         [("video", "1", "2", None), ("audio", "1", "1", "1"), ("audio", "2", "1", "1")])
         self.assertEqual(len(v1_clip.findall("file/media/audio")), 1)
         self.assertEqual([m.findtext("name") for m in root.findall("sequence/marker")], ["Intro", "Setup", "Cut: silence 3.0s"])
         url = root.find(".//file/pathurl").text
         self.assertTrue(url.startswith("file://localhost/G%3A/obs%20rec/My%20Video.mp4"))
+
+    def test_fades_at_both_ends(self):
+        root = self.build()
+        total = int(root.findtext("sequence/duration"))
+        v1 = root.find("sequence/media/video/track")
+        self.assertEqual([c.tag for c in v1][:2], ["transitionitem", "clipitem"])
+        self.assertEqual(v1.findall("*")[-3].tag, "transitionitem")  # before enabled/locked
+        dissolves = [(int(t.findtext("start")), int(t.findtext("end")), t.findtext("alignment"),
+                      t.findtext("effect/name")) for t in v1.findall("transitionitem")]
+        self.assertEqual(dissolves, [(0, 30, "start-black", "Cross Dissolve"),
+                                     (total - 30, total, "end-black", "Cross Dissolve")])
+        self.assertEqual(v1.find("transitionitem").findtext("cutPointTicks"), "0")
+        for track in root.findall("sequence/media/audio/track"):
+            fades = track.findall("transitionitem")
+            self.assertEqual([(int(t.findtext("start")), t.findtext("alignment"), t.findtext("effect/name"),
+                               t.findtext("effect/mediatype")) for t in fades],
+                             [(total - 30, "end-black", "Exponential Fade", "audio")])
+
+    def test_short_edge_clips_get_shorter_dissolves(self):
+        root = self.build(keep=[(0.0, 0.5), (1.0, 10.0), (12.0, 12.4)])
+        total = int(root.findtext("sequence/duration"))
+        v1 = root.find("sequence/media/video/track")
+        self.assertEqual([(int(t.findtext("start")), int(t.findtext("end"))) for t in v1.findall("transitionitem")],
+                         [(0, 15), (total - 12, total)])
+        audio_fade = root.find("sequence/media/audio/track/transitionitem")
+        self.assertEqual(int(audio_fade.findtext("start")), total - 12)
+
+    def test_music_gets_its_own_stereo_tracks(self):
+        music = {"path": r"G:\obs rec\My Video_premiere\music.wav",
+                 "probe": {"has_video": False, "duration": 60.0, "fps": 30.0, "width": 1920, "height": 1080,
+                           "audio": [{"channels": 2, "sample_rate": 48000}]}}
+        root = self.build(music=music)
+        total = int(root.findtext("sequence/duration"))
+        tracks = root.findall("sequence/media/audio/track")
+        self.assertEqual(len(tracks), 4)
+        clips = [t.find("clipitem") for t in tracks[2:]]
+        self.assertEqual([(c.findtext("name"), int(c.findtext("start")), int(c.findtext("end"))) for c in clips],
+                         [("Music", 0, total), ("Music", 0, total)])
+        self.assertEqual([c.findtext("sourcetrack/trackindex") for c in clips], ["1", "2"])
+        self.assertEqual([l.findtext("trackindex") for l in clips[0].findall("link")], ["3", "4"])
+        self.assertEqual([t.findtext("outputchannelindex") for t in tracks[2:]], ["1", "2"])
+        music_file = clips[0].find("file")
+        self.assertIsNone(music_file.find("media/video"))
+        self.assertEqual(music_file.findtext("media/audio/channelcount"), "2")
+        self.assertEqual(clips[0].findtext("masterclipid"), "masterclip-3")
+        self.assertEqual(tracks[2].findall("transitionitem"), [])  # the fade is in the music itself
+
+    def test_no_fades_when_turned_off(self):
+        import xml.etree.ElementTree as ET
+
+        xml = pe.build_premiere_xml(r"G:\v.mp4", self.PROBE, [(0.0, 5.0)], None, [], [], fade_sec=0)
+        self.assertNotIn("transitionitem", xml)
+        link = ET.fromstring(xml.split("\n", 2)[2]).find(".//clipitem/link")
+        self.assertEqual(link.findtext("clipindex"), "1")
 
     def test_mono_mix_is_one_track(self):
         root = self.build(dict(self.PROBE, audio=[{"channels": 1, "sample_rate": 48000}]))
@@ -516,6 +570,20 @@ def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-y", "-v", "error", *args], check=True)
 
 
+def make_tone(path, seconds, lead=1.0, tail=2.0, freq=330):
+    """A stereo tone with silence before and after it, like a generated song's start and ending."""
+    ffmpeg("-f", "lavfi", "-i", f"sine=f={freq}:d={seconds}:r=48000",
+           "-af", f"adelay={int(lead * 1000)}:all=1,apad=pad_dur={tail}",
+           "-ac", "2", "-c:a", "pcm_s16le", path)
+
+
+def fake_songs(config, songs, notes, lo=8, hi=86):
+    """Stands in for ACE-Step: a tone per song, at the requested length."""
+    for i, s in enumerate(songs):
+        make_tone(s["out"], s["duration"] - 3.0, freq=220 + 40 * i)
+    return {s["out"] for s in songs}
+
+
 def run_events(fn, *args):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -628,6 +696,7 @@ class StepRunTests(unittest.TestCase):
         return {
             "mode": "pipeline", "input_video": video, "priority_list": ["local"], "skip_upload": True,
             "review_gates": gates, "thumbnail_image_source": "local", "secrets": {"gemini_key": "SECRET"},
+            "music_enabled": False,
         }
 
     def patches(self):
@@ -637,11 +706,15 @@ class StepRunTests(unittest.TestCase):
             mock.patch.object(yp, "generate_metadata_with_priority", side_effect=lambda **kw: (dict(FAKE_METADATA), "test")),
             mock.patch.object(yp, "generate_ollama_image", side_effect=RuntimeError("no image model")),
             mock.patch.object(yp, "call_local_ollama_json", side_effect=RuntimeError("offline")),
+            # Tones instead of ACE-Step, so the fitting and mixing still run for real
+            mock.patch.object(yp, "generate_songs", side_effect=fake_songs),
+            mock.patch.object(yp, "unload_ollama_models"),
         )
 
     def run_with_patches(self, fn, *args):
-        p = self.patches()
-        with p[0], p[1], p[2], p[3]:
+        with contextlib.ExitStack() as stack:
+            for p in self.patches():
+                stack.enter_context(p)
             return run_events(fn, *args)
 
     def test_step_mode_pauses_at_each_gate(self):
@@ -812,6 +885,68 @@ class StepRunTests(unittest.TestCase):
         self.assertEqual(state["ctx"]["pending_gate"], "thumbnail")
         self.assertEqual(state["ctx"]["thumb_options"], {"hook": "", "avoid": "hands"})
 
+    def test_step_mode_music_gate(self):
+        import xml.etree.ElementTree as ET
+
+        video, evs = self.run_to_end("music.mp4", ["music"], music_enabled=True)
+        ready = [e for e in evs if e["type"] == "review_ready"]
+        self.assertEqual([e["gate"] for e in ready], ["music"])
+        music = yp.read_json_file(ready[0]["data_path"])
+        self.assertEqual([o["id"] for o in music["options"]], ["song_1", "song_2", "song_3"])
+        self.assertEqual(music["brief_by"], "default styles")  # Ollama is offline in these tests
+        edited = yp.get_video_duration(yp.pipeline_paths(video)["edited_video"])
+        for o in music["options"]:
+            self.assertAlmostEqual(yp.get_video_duration(o["path"]), edited, delta=0.05)
+            self.assertTrue(os.path.exists(o["preview"]))
+            self.assertFalse(any(os.path.exists(o["path"].replace(".wav", f"_part{k}.wav")) for k in (1, 2)))
+
+        # New songs from an edited style prompt are added, and the job keeps waiting
+        rc, evs = self.run_with_patches(yp.regenerate_music, ready[0]["state_path"], {},
+                                        {"style": "dreamy synthwave, 100 bpm, warm pads", "base_id": "song_2"})
+        music = yp.read_json_file(ready[0]["data_path"])
+        self.assertEqual([e["gate"] for e in evs if e["type"] == "review_ready"], ["music"])
+        self.assertEqual([o["id"] for o in music["options"]][3:], ["song_4", "song_5"])
+        self.assertEqual((music["options"][3]["style"], music["options"][3]["bpm"], music["chosen"]),
+                         ("dreamy synthwave, 100 bpm, warm pads", 100, "song_4"))
+
+        music["chosen"] = "song_2"
+        yp.write_json_file(ready[0]["data_path"], music)
+        rc, evs = self.run_with_patches(yp.resume_pipeline, ready[0]["state_path"], {})
+        final = [e["edited_video"] for e in evs if e["type"] == "complete"]
+        self.assertEqual(final, [yp.pipeline_paths(video)["music_video"]])
+        self.assertAlmostEqual(yp.get_video_duration(final[0]), edited, delta=0.1)
+
+        rc, evs = run_events(yp.export_premiere_from_state, yp.pipeline_paths(video)["state_file"])
+        xml_path = [e["xml_path"] for e in evs if e["type"] == "premiere_exported"][0]
+        with open(xml_path, encoding="utf-8") as f:
+            root = ET.fromstring(f.read().split("\n", 2)[2])
+        tracks = root.findall("sequence/media/audio/track")
+        # The test recording's voice is mono (one track); the music is stereo (two)
+        self.assertEqual([t.find("clipitem/name").text for t in tracks], ["Part 1", "Music", "Music"])
+        folder = yp.pipeline_paths(video)["premiere_dir"]
+        self.assertTrue(os.path.exists(os.path.join(folder, "music.wav")))
+        self.assertTrue(os.path.exists(os.path.join(folder, "music_full_level.wav")))
+
+    def test_no_music_keeps_the_plain_edit(self):
+        video, evs = self.run_to_end("nomusic.mp4", ["music"], music_enabled=True)
+        ready = [e for e in evs if e["type"] == "review_ready"][0]
+        music = yp.read_json_file(ready["data_path"])
+        music["chosen"] = "none"
+        yp.write_json_file(ready["data_path"], music)
+        rc, evs = self.run_with_patches(yp.resume_pipeline, ready["state_path"], {})
+        self.assertEqual([e["edited_video"] for e in evs if e["type"] == "complete"],
+                         [yp.pipeline_paths(video)["edited_video"]])
+
+    def test_auto_mode_mixes_one_song(self):
+        video, evs = self.run_to_end("automusic.mp4", [], music_enabled=True)
+        music = yp.read_json_file(yp.pipeline_paths(video)["music_file"])
+        self.assertEqual(len(music["options"]), 1)
+        self.assertEqual([e["edited_video"] for e in evs if e["type"] == "complete"],
+                         [yp.pipeline_paths(video)["music_video"]])
+        # The Watch Edit player is pointed at the version with music
+        self.assertEqual([e["video"] for e in evs if e["type"] == "render_ready"][-1],
+                         yp.pipeline_paths(video)["music_video"])
+
     def test_version_1_state_still_resumes(self):
         video = self.video_copy("v1.mp4")
         duration = yp.get_video_duration(video)
@@ -825,6 +960,165 @@ class StepRunTests(unittest.TestCase):
         rc, evs = self.run_with_patches(yp.resume_pipeline, state_path, {})
         self.assertEqual(rc, 0)
         self.assertEqual(len([e for e in evs if e["type"] == "complete"]), 1)
+
+
+class MusicPlanTests(unittest.TestCase):
+    def test_short_video_is_one_song_past_the_end(self):
+        self.assertEqual(yp.plan_music_sections(20.0), [30.0])
+        self.assertEqual(yp.plan_music_sections(0.5), [10.5])
+        self.assertEqual(yp.plan_music_sections(230.0), [240.0])
+
+    def test_long_videos_get_equal_sections_that_cover_it(self):
+        for duration in (231.0, 400.0, 600.0, 1234.5, 3600.0):
+            sections = yp.plan_music_sections(duration)
+            n = len(sections)
+            self.assertGreater(n, 1)
+            self.assertEqual(len(set(sections)), 1)
+            self.assertLessEqual(sections[0], yp.MUSIC_MAX_SECTION)
+            self.assertGreaterEqual(sections[0], yp.MUSIC_MIN_SECTION)
+            self.assertGreaterEqual(yp.joined_music_length(sections), duration + yp.MUSIC_TAIL - 0.05)
+            # As few generations as possible
+            fewer = [yp.MUSIC_MAX_SECTION] * (n - 1)
+            self.assertLess(yp.joined_music_length(fewer), duration + yp.MUSIC_TAIL)
+        self.assertEqual(yp.plan_music_sections(600.0), [207.4, 207.4, 207.4])
+
+    def test_joined_length_counts_each_crossfade_once(self):
+        self.assertEqual(yp.joined_music_length([100.0, 100.0, 100.0], 6.0), 288.0)
+        self.assertEqual(yp.joined_music_length([42.0], 6.0), 42.0)
+
+
+class MusicMixMathTests(unittest.TestCase):
+    def test_music_sits_20_db_under_the_voice(self):
+        s = yp.music_mix_settings(-16.0, -12.0)
+        self.assertEqual((s["gain_db"], s["music_lufs"]), (-24.0, -36.0))
+        s = yp.music_mix_settings(-20.0, -30.0)
+        self.assertEqual((s["gain_db"], s["music_lufs"]), (-10.0, -40.0))
+
+    def test_ducking_takes_off_6_db_at_your_talking_level(self):
+        s = yp.music_mix_settings(-16.0, -12.0)
+        self.assertEqual(s["threshold_db"], -28.0)
+        self.assertAlmostEqual(s["threshold"], 10 ** (-28 / 20), places=5)
+        self.assertEqual(s["ratio"], 2.0)
+        reduction = (-16.0 - s["threshold_db"]) * (1 - 1 / s["ratio"])
+        self.assertAlmostEqual(reduction, yp.MUSIC_DUCK_DB)
+        self.assertAlmostEqual(yp.music_mix_settings(-16.0, -12.0, duck_db=9.0)["ratio"], 4.0)
+
+    def test_unmeasurable_levels_stay_sane(self):
+        inf = float("-inf")
+        self.assertEqual(yp.music_mix_settings(inf, -12.0)["gain_db"], -24.0)  # assumes a -16 LUFS voice
+        self.assertEqual(yp.music_mix_settings(-16.0, inf)["gain_db"], 0.0)
+        self.assertEqual(yp.music_mix_settings(-16.0, -100.0)["gain_db"], 30.0)
+        self.assertEqual(yp.music_mix_settings(-16.0, -12.0, duck_db=20.0)["ratio"], 20.0)
+        self.assertGreaterEqual(yp.music_mix_settings(-55.0, -12.0)["threshold"], 0.000976563)
+        self.assertTrue(all(isinstance(v, float) for v in yp.music_mix_settings(inf, inf).values()))
+
+
+class MusicBriefTests(unittest.TestCase):
+    def test_llm_ideas_are_cleaned_up(self):
+        reply = {"options": [
+            {"name": "Neon drive", "style": "synthwave, driving, warm pads", "bpm": "300", "key": "f# minor",
+             "instrumental": False, "lyrics": "[verse] la la"},
+            {"style": "", "bpm": None, "key": "H major", "instrumental": False, "lyrics": ""},
+            "junk"]}
+        with mock.patch.object(yp, "call_local_ollama_json", return_value=dict(reply, _model_used="Local (m)")):
+            briefs, source = yp.music_briefs({"ollama_model": "m"}, {"metadata": {"title": "T"}, "segments": []}, 3)
+        self.assertEqual(source, "Local (m)")
+        self.assertEqual((briefs[0]["bpm"], briefs[0]["key"], briefs[0]["instrumental"]), (160, "F# minor", False))
+        fallback = yp.FALLBACK_MUSIC_BRIEFS[1]
+        self.assertEqual((briefs[1]["style"], briefs[1]["bpm"], briefs[1]["key"], briefs[1]["instrumental"]),
+                         (fallback["style"], fallback["bpm"], fallback["key"], True))
+        self.assertEqual(briefs[2]["name"], yp.FALLBACK_MUSIC_BRIEFS[2]["name"])
+
+    def test_default_styles_without_ollama(self):
+        with mock.patch.object(yp, "call_local_ollama_json", side_effect=RuntimeError("offline")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            briefs, source = yp.music_briefs({}, {}, 2)
+        self.assertEqual(source, "default styles")
+        self.assertEqual([b["name"] for b in briefs], [b["name"] for b in yp.FALLBACK_MUSIC_BRIEFS[:2]])
+
+
+class EdgeSliverTests(unittest.TestCase):
+    WORDS = [{"start": 1.07, "end": 5.9, "text": "hi"}, {"start": 15.0, "end": 19.5, "text": "bye"}]
+
+    def test_wordless_slivers_at_the_ends_are_left_out(self):
+        keep = [[0.0, 0.15], [0.92, 19.62], [20.22, 20.43]]
+        self.assertEqual(yp.drop_edge_slivers(keep, self.WORDS), [(0.92, 19.62)])
+
+    def test_short_parts_with_words_stay(self):
+        words = self.WORDS + [{"start": 20.0, "end": 20.4, "text": "so"}]
+        keep = [[0.0, 0.15], [0.92, 19.62], [20.22, 20.43]]
+        self.assertEqual(yp.drop_edge_slivers(keep, words), [(0.92, 19.62), (20.22, 20.43)])
+
+    def test_without_a_transcript_only_tiny_ones_go(self):
+        self.assertEqual(yp.drop_edge_slivers([[0.0, 0.3], [1.0, 9.0], [9.5, 10.3]], []), [(1.0, 9.0), (9.5, 10.3)])
+        self.assertEqual(yp.drop_edge_slivers([[0.0, 0.3]], []), [(0.0, 0.3)])  # never everything
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
+class MusicAudioTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yt_music_test_")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def tone(self, name, seconds, lead=1.0, tail=2.0, freq=330):
+        path = os.path.join(self.tmp, name)
+        make_tone(path, seconds, lead, tail, freq)
+        return path
+
+    def level(self, path, start, length):
+        out = subprocess.run(["ffmpeg", "-ss", str(start), "-t", str(length), "-i", path, "-af", "volumedetect",
+                              "-f", "null", "-"], capture_output=True, text=True).stderr
+        return float(out.split("mean_volume:")[1].split("dB")[0])
+
+    def test_sections_are_joined_into_exactly_the_video_length(self):
+        parts = [self.tone("a.wav", 20), self.tone("b.wav", 20, freq=440)]
+        out = os.path.join(self.tmp, "fit.wav")
+        yp.fit_music(parts, 30.0, out)
+        self.assertAlmostEqual(yp.get_video_duration(out), 30.0, delta=0.02)
+        self.assertGreater(self.level(out, 26.6, 0.4), -30)  # still playing just before the fade-out
+        self.assertLess(self.level(out, 29.95, 0.05), -45)  # and faded out on the last frame
+        self.assertGreater(self.level(out, 1.2, 0.5), -30)  # the leading silence was removed
+        self.assertFalse([f for f in os.listdir(self.tmp) if "_clean" in f])
+
+    def test_music_that_runs_short_plays_again(self):
+        out = os.path.join(self.tmp, "loop.wav")
+        yp.fit_music([self.tone("short.wav", 12)], 40.0, out)
+        self.assertAlmostEqual(yp.get_video_duration(out), 40.0, delta=0.02)
+        for t in (5, 15, 25, 35):
+            self.assertGreater(self.level(out, t, 0.5), -30)
+
+    def test_mix_is_20_db_under_the_voice_and_ducks_while_talking(self):
+        # "Voice": loud noise 0-5 s, a pause 5-10 s, noise 10-15 s
+        voice = os.path.join(self.tmp, "voice.mp4")
+        ffmpeg("-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30:d=15",
+               "-f", "lavfi", "-i", "anoisesrc=d=5:c=pink:r=48000:seed=1:a=0.3",
+               "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=5",
+               "-f", "lavfi", "-i", "anoisesrc=d=5:c=pink:r=48000:seed=2:a=0.3",
+               "-filter_complex", "[1:a]aformat=channel_layouts=stereo[x];[3:a]aformat=channel_layouts=stereo[y];"
+                                  "[x][2:a][y]concat=n=3:v=0:a=1[a]",
+               "-map", "0:v", "-map", "[a]", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", voice)
+        music = self.tone("bed.wav", 15, lead=0, tail=0)
+        voice_lufs, music_lufs = yp.measure_lufs(voice), yp.measure_lufs(music)
+        settings = yp.music_mix_settings(voice_lufs, music_lufs)
+        out, stem = os.path.join(self.tmp, "mixed.mp4"), os.path.join(self.tmp, "stem.wav")
+        yp.mix_music(voice, music, out, settings, stem_path=stem)
+
+        self.assertAlmostEqual(yp.get_video_duration(out), 15.0, delta=0.1)
+        # In the pause the music is 20 dB under the voice; while talking it dips further
+        pause = self.level(stem, 6.5, 2.0)
+        talking = self.level(stem, 1.5, 2.0)
+        music_alone = self.level(music, 6.5, 2.0) + settings["gain_db"]
+        self.assertAlmostEqual(pause, music_alone, delta=1.0)
+        self.assertGreater(pause - talking, 3.0)
+        self.assertAlmostEqual(yp.measure_lufs(music) + settings["gain_db"], voice_lufs - 20, delta=0.5)
+
+        preview = os.path.join(self.tmp, "preview.m4a")
+        yp.mix_music(voice, music, preview, settings, audio_only=True)
+        self.assertGreater(os.path.getsize(preview), 1000)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 #include "YouTubePipelineDock.hpp"
 #include "YouTubeBrollReview.hpp"
 #include "YouTubeCutEditor.hpp"
+#include "YouTubeMusicPicker.hpp"
 #include "YouTubeSettingsWidget.hpp"
 #include "YouTubeTerminalWidget.hpp"
 #include "YouTubeThumbnailPicker.hpp"
@@ -69,7 +70,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QHBoxLayout *modeRow = new QHBoxLayout();
 	stepModeBtn = new QPushButton("👣 Step", container);
 	autoModeBtn = new QPushButton("⚡ Auto", container);
-	stepModeBtn->setToolTip("Stop for your approval: cuts, B-roll, title & description, thumbnail");
+	stepModeBtn->setToolTip("Stop for your approval: cuts, B-roll, title & description, music, thumbnail");
 	autoModeBtn->setToolTip("Run from recording to upload without stopping");
 	QButtonGroup *modeGroup = new QButtonGroup(container);
 	for (QPushButton *b : {stepModeBtn, autoModeBtn}) {
@@ -169,8 +170,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		{"edit", "3. Cut Dead Air & Butchered Retakes"},
 		{"broll", "4. Screen B-roll Plan & Review"},
 		{"llm", "5. AI Title & SEO Description (Priority 1-4)"},
-		{"thumbnail", "6. Custom 1280x720 AI Thumbnail"},
-		{"upload", "7. YouTube Upload (UNLISTED)"}
+		{"music", "6. Background Music (ACE-Step, on this PC)"},
+		{"thumbnail", "7. Custom 1280x720 AI Thumbnail"},
+		{"upload", "8. YouTube Upload (UNLISTED)"}
 	};
 
 	for (const StageDef &def : stageDefs) {
@@ -206,7 +208,11 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	brollReview = new YouTubeBrollReview(container);
 	mainLayout->addWidget(brollReview);
 
-	// 2c. Thumbnail choice (Step mode)
+	// 2c. Music choice (Step mode)
+	musicPicker = new YouTubeMusicPicker(container);
+	mainLayout->addWidget(musicPicker);
+
+	// 2d. Thumbnail choice (Step mode)
 	thumbnailPicker = new YouTubeThumbnailPicker(container);
 	mainLayout->addWidget(thumbnailPicker);
 
@@ -409,7 +415,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 				OnMetadataGenerated(meta.value("title").toString(), alts, meta.value("description").toString(),
 						    meta.value("thumbnail_hook").toString(), meta.value("provider").toString());
 			}
-		} else if (gate == "thumbnail" || gate == "publish") {
+		} else if (gate == "music" || gate == "thumbnail" || gate == "publish") {
 			QFile file(state);
 			if (file.open(QIODevice::ReadOnly)) {
 				QJsonObject ctx = QJsonDocument::fromJson(file.readAll()).object().value("ctx").toObject();
@@ -443,7 +449,7 @@ void YouTubePipelineDock::OnReviewReady(const QString &gate, const QString &stat
 	cancelBtn->setText("⏹ Discard Job");
 
 	openCutEditorBtn->setVisible(gate == "cuts");
-	reviewWatchBtn->setVisible(gate == "metadata" || gate == "thumbnail" || gate == "publish");
+	reviewWatchBtn->setVisible(gate == "metadata" || gate == "music" || gate == "thumbnail" || gate == "publish");
 	publishRow->setVisible(gate == "publish");
 	RefreshEditButtons();
 	submitBtn->setText("✅ Submit to YouTube");
@@ -457,6 +463,10 @@ void YouTubePipelineDock::OnReviewReady(const QString &gate, const QString &stat
 		reviewLabel->setText("Edit the title and description below, then click Approve & Continue.");
 		submitBtn->setText("✅ Approve & Continue");
 		submitBtn->setEnabled(true);
+	} else if (gate == "music") {
+		reviewLabel->setText("Listen to the songs below, on their own or under your voice, and pick one (or no "
+				     "music). You can also make new ones from your own style prompt.");
+		musicPicker->Load(dataPath, statePath);
 	} else if (gate == "thumbnail") {
 		reviewLabel->setText("Pick a thumbnail below, or tweak the AI images and make new ones. Nothing is "
 				     "uploaded yet.");
@@ -474,6 +484,7 @@ void YouTubePipelineDock::OnReviewCleared()
 	reviewState.clear();
 	reviewData.clear();
 	reviewPanel->hide();
+	musicPicker->Close();
 	thumbnailPicker->hide();
 	brollReview->hide();
 	submitBtn->setText("✅ Submit to YouTube");
@@ -529,8 +540,9 @@ void YouTubePipelineDock::OnPipelineStateChanged(const QString &bannerText, bool
 {
 	statusBanner->setText(bannerText);
 	cancelBtn->setEnabled(running || !reviewGate.isEmpty());
-	/* Making new thumbnails keeps the job waiting at the thumbnail step */
-	if (running && !YouTubeWorkflowManager::Instance()->IsRegeneratingThumbnails()) {
+	/* Making new thumbnails or songs keeps the job waiting at its step */
+	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
+	if (running && !mgr->IsRegeneratingThumbnails() && !mgr->IsRegeneratingMusic()) {
 		/* A new run (or the next stage) replaces whatever was being reviewed */
 		if (!reviewGate.isEmpty()) {
 			OnReviewCleared();
@@ -662,7 +674,8 @@ void YouTubePipelineDock::ShowStartOverDialog()
 		{"transcribe", "2. Transcription (everything again)", true},
 		{"cuts", "3. Cuts (reopens the Cut Editor with your last cuts)", hasCuts},
 		{"metadata", "5. Title && description", hasRender},
-		{"thumbnails", "6. Thumbnail", hasMetadata},
+		{"music", "6. Music", hasMetadata},
+		{"thumbnails", "7. Thumbnail", hasMetadata},
 	};
 	QButtonGroup *group = new QButtonGroup(&dialog);
 	for (const Choice &c : choices) {

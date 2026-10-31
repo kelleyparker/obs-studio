@@ -10,6 +10,7 @@ class QLabel;
 class YouTubeBrollReview;
 class YouTubeCutEditor;
 class YouTubeTerminalWidget;
+class YouTubeMusicPicker;
 class YouTubeThumbnailPicker;
 class YouTubeVideoPreview;
 class QComboBox;
@@ -82,6 +83,7 @@ private:
 	QPushButton *openCutEditorBtn = nullptr;
 	QPushButton *reviewWatchBtn = nullptr;
 	QWidget *publishRow = nullptr;
+	YouTubeMusicPicker *musicPicker = nullptr;
 	YouTubeThumbnailPicker *thumbnailPicker = nullptr;
 	QPointer<YouTubeCutEditor> cutEditor;
 	QString reviewGate;

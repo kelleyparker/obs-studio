@@ -181,6 +181,15 @@ def corner_rgb(video, t):
     return tuple(out[:3])
 
 
+def mean_volume(video, start, length):
+    """Mean loudness in dB of `length` seconds of the audio from `start`."""
+    err = subprocess.run(
+        ["ffmpeg", "-ss", str(start), "-t", str(length), "-i", video, "-vn", "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True
+    ).stderr
+    return float(err.split("mean_volume:")[1].split("dB")[0])
+
+
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
 class RenderTests(unittest.TestCase):
     @classmethod
@@ -220,6 +229,17 @@ class RenderTests(unittest.TestCase):
         self.assertLess(r, 80)
         self.assertEqual(yp.probe_video_geometry(out)[:2], (640, 360))
 
+    def test_fades_in_and_out_even_without_cuts(self):
+        for name, keep in (("fades.mp4", [(0.0, 6.0), (8.0, 20.0)]), ("uncut.mp4", [(0.0, 20.0)])):
+            out = os.path.join(self.tmp, name)
+            with quiet():
+                self.assertTrue(yp.render_edited_video(self.main, out, keep, 20.0))
+            end = yp.get_video_duration(out)
+            self.assertLess(center_rgb(out, 0.0)[0], 40)          # starts black
+            self.assertGreater(center_rgb(out, 3.0)[0], 180)      # red in the middle
+            self.assertLess(center_rgb(out, end - 0.1)[0], 60)    # ends black
+            self.assertLess(mean_volume(out, end - 0.25, 0.2), mean_volume(out, 3.0, 0.5) - 15)
+
     def test_pip(self):
         out = self.render("pip", "pip.mp4")
         self.assertGreater(center_rgb(out, 10.0)[2], 180)   # screen fills the frame
@@ -249,7 +269,7 @@ class RenderTests(unittest.TestCase):
         segs = [segment(9.0, 14.0, "Now click this button and you can see the result")]
         cfg = {
             "mode": "pipeline", "input_video": self.main, "priority_list": [], "skip_upload": True,
-            "secrets": {"gemini_key": "SECRET"},
+            "secrets": {"gemini_key": "SECRET"}, "music_enabled": False,
             "broll": {"enabled": True, "screen_video": self.screen, "start_delta_sec": 1.5,
                       "markers": [], "style": "cutaway", "max_coverage": 0.5, "review": True},
         }

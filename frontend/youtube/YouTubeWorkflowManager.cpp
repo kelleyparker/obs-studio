@@ -161,6 +161,9 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "CloudImageFallback")) {
 		config.cloudImageFallback = config_get_bool(cfg, "YouTubeWorkflow", "CloudImageFallback");
 	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "MusicEnabled")) {
+		config.musicEnabled = config_get_bool(cfg, "YouTubeWorkflow", "MusicEnabled");
+	}
 
 	config.brollEnabled = config_get_bool(cfg, "YouTubeWorkflow", "BrollEnabled");
 	const char *brollSource = config_get_string(cfg, "YouTubeWorkflow", "BrollSource");
@@ -191,6 +194,7 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel",
 			  config.thumbnailImageModel.toUtf8().constData());
 	config_set_bool(cfg, "YouTubeWorkflow", "CloudImageFallback", config.cloudImageFallback);
+	config_set_bool(cfg, "YouTubeWorkflow", "MusicEnabled", config.musicEnabled);
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath", config.thumbPhotoPath.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonMode", config.thumbPersonMode.toUtf8().constData());
@@ -453,9 +457,10 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["thumbnail_image_source"] = config.thumbnailImageSource;
 	payload["thumbnail_image_model"] = config.thumbnailImageModel;
 	payload["cloud_image_fallback"] = config.cloudImageFallback;
+	payload["music_enabled"] = config.musicEnabled;
 	payload["thumb_options"] = thumbOptions;
 	payload["auto_finish"] = config.autoFinish;
-	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "thumbnail", "publish"}
+	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "music", "thumbnail", "publish"}
 					   : QJsonArray();
 	payload["whisper_model"] = config.whisperModel;
 	payload["ollama_model"] = config.ollamaModel;
@@ -552,6 +557,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	emit StepProgressUpdated("edit", 0, "Queued...");
 	emit StepProgressUpdated("broll", 0, "Queued...");
 	emit StepProgressUpdated("llm", 0, "Queued...");
+	emit StepProgressUpdated("music", 0, config.musicEnabled ? "Queued..." : "Off");
 	emit StepProgressUpdated("thumbnail", 0, "Queued...");
 	emit StepProgressUpdated("upload", 0, "Queued...");
 
@@ -589,14 +595,22 @@ void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const Q
 	LoadConfig();
 	QString gate = config.pendingReviewGate;
 	SetPendingReview(QString(), QString(), QString());
-	if (gate == "cuts" || gate == "broll") {
+	/* The music gate mixes the song into {stem}_yt_final.mp4, which the player may have open */
+	if (gate == "cuts" || gate == "broll" || gate == "music") {
 		emit EditWillChange();
 	}
 
 	emit PipelineStateChanged("⚙️ Continuing the pipeline...", true);
 	/* Reset only the steps that still have to run after this gate */
-	QStringList steps = {"edit", "broll", "llm", "thumbnail", "upload"};
-	qsizetype from = gate == "metadata" ? 3 : (gate == "thumbnail" || gate == "publish") ? 4 : 0;
+	QStringList steps = {"edit", "broll", "llm", "music", "thumbnail", "upload"};
+	qsizetype from = 0;
+	if (gate == "metadata") {
+		from = 3;
+	} else if (gate == "music") {
+		from = 4;
+	} else if (gate == "thumbnail" || gate == "publish") {
+		from = 5;
+	}
 	for (qsizetype i = from; i < steps.size(); i++) {
 		emit StepProgressUpdated(steps[i], 0, "Queued...");
 	}
@@ -643,6 +657,31 @@ void YouTubeWorkflowManager::RegenerateThumbnails(const QString &action, const Q
 	}
 }
 
+void YouTubeWorkflowManager::RegenerateMusic(const QJsonObject &options)
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	if (config.pendingReviewGate != "music") {
+		emit LogMessageReceived("warning", "No job is waiting at the music step.");
+		return;
+	}
+
+	musicRegenActive = true;
+	emit MusicRegenStarted();
+	emit StepProgressUpdated("music", 0, "Starting...");
+
+	QJsonObject payload;
+	payload["mode"] = "music_regen";
+	payload["state_path"] = config.pendingReviewState;
+	payload["options"] = options;
+	if (!LaunchPipelineWorker(payload)) {
+		musicRegenActive = false;
+		emit MusicRegenFinished();
+	}
+}
+
 void YouTubeWorkflowManager::RedoPipeline(const QString &from, bool deleteFromYouTube)
 {
 	if (IsPipelineRunning()) {
@@ -660,14 +699,19 @@ void YouTubeWorkflowManager::RedoPipeline(const QString &from, bool deleteFromYo
 
 	LoadConfig();
 	DiscardPendingReview();
-	if (from == "transcribe" || from == "cuts") {
+	/* Every redo up to the music may write the edit or {stem}_yt_final.mp4 again */
+	if (from != "thumbnails") {
 		emit EditWillChange();
 	}
 	lastEditedVideo.clear();
 	lastJoins.clear();
 
-	const QStringList steps = {"transcribe", "edit", "broll", "llm", "thumbnail", "upload"};
-	qsizetype first = from == "transcribe" ? 0 : from == "cuts" ? 1 : from == "metadata" ? 3 : 4;
+	const QStringList steps = {"transcribe", "edit", "broll", "llm", "music", "thumbnail", "upload"};
+	const QStringList starts = {"transcribe", "cuts", "", "metadata", "music", "thumbnails"};
+	qsizetype first = starts.indexOf(from);
+	if (first < 0) {
+		first = 0;
+	}
 	for (qsizetype i = first; i < steps.size(); i++) {
 		emit StepProgressUpdated(steps[i], 0, "Queued...");
 	}
@@ -808,6 +852,10 @@ bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
 			if (thumbRegenActive) {
 				thumbRegenActive = false;
 				emit ThumbnailRegenFinished();
+			}
+			if (musicRegenActive) {
+				musicRegenActive = false;
+				emit MusicRegenFinished();
 			}
 		});
 
@@ -986,6 +1034,19 @@ void YouTubeWorkflowManager::CancelPipeline()
 		emit ReviewReady(config.pendingReviewGate, config.pendingReviewState, config.pendingReviewData);
 		return;
 	}
+	if (musicRegenActive && workerProcess) {
+		/* Stop only the new songs (ACE-Step quits with the worker); the job keeps waiting with the songs it had */
+		workerProcess->kill();
+		workerProcess->waitForFinished(2000);
+		workerProcess->deleteLater();
+		workerProcess = nullptr;
+		musicRegenActive = false;
+		emit MusicRegenFinished();
+		emit LogMessageReceived("warning", "Stopped making new songs.");
+		emit PipelineStateChanged("👀 Waiting for you: pick the music below", false);
+		emit ReviewReady(config.pendingReviewGate, config.pendingReviewState, config.pendingReviewData);
+		return;
+	}
 	waitingForRemux = false;
 	SetWorkflowArmed(false);
 	if (HasPendingReview()) {
@@ -1090,6 +1151,8 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 					 .arg(obj.value("removed_sec").toDouble(), 0, 'f', 1);
 		} else if (gate == "metadata") {
 			banner = "👀 Waiting for you: approve the title & description below";
+		} else if (gate == "music") {
+			banner = "👀 Waiting for you: pick the music below";
 		} else if (gate == "thumbnail") {
 			banner = "👀 Waiting for you: pick a thumbnail below";
 		} else if (gate == "publish") {

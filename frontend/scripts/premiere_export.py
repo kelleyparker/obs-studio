@@ -10,6 +10,7 @@ widened or tightened in Premiere. Tracks:
   V3  the webcam bubble over the screen (picture-in-picture B-roll only)
   A1/A2  the recording's first audio track (OBS's main mix), linked to V1. Stereo is written the way
          Premiere's own exports write it: one track per channel, which Premiere joins into a stereo clip.
+  A3/A4  the background music (if any) on its own, as it sits in the upload, so its level can be changed
 Markers show the chapters and every place the AI cut. OBS's other audio tracks are left out; they
 usually hold the same sound as the main mix, and stacking them would play it several times over.
 """
@@ -40,6 +41,7 @@ def probe_media(path: str) -> dict:
             fps = value
             break
     return {
+        "has_video": bool(video),
         "duration": float(data.get("format", {}).get("duration") or 0.0),
         "fps": fps,
         "width": int(video.get("width") or 1920),
@@ -96,7 +98,8 @@ def _file(parent, file_id: str, path: str, probe: dict, fps: float, defined: set
     _rate(f, fps)
     _sub(f, "duration", round(probe["duration"] * fps))
     media = _sub(f, "media")
-    _video_characteristics(_sub(media, "video"), probe)
+    if probe.get("has_video", True):
+        _video_characteristics(_sub(media, "video"), probe)
     if probe["audio"]:
         audio = _sub(media, "audio")
         sc = _sub(audio, "samplecharacteristics")
@@ -127,6 +130,33 @@ def _motion(parent, scale: float, horiz: float = 0.0, vert: float = 0.0):
     _sub(value, "vert", round(vert, 5))
 
 
+PPRO_TICKS_PER_SEC = 254016000000
+
+
+def _transition(track, name: str, mediatype: str, start: int, end: int, alignment: str, fps: float):
+    """A transition at an end of the sequence: alignment "start-black" (fade in) or "end-black" (fade out)."""
+    item = _sub(track, "transitionitem")
+    _sub(item, "start", start)
+    _sub(item, "end", end)
+    _sub(item, "alignment", alignment)
+    cut_frames = 0 if alignment == "start-black" else end - start
+    _sub(item, "cutPointTicks", round(cut_frames / fps * PPRO_TICKS_PER_SEC))
+    _rate(item, fps)
+    effect = _sub(item, "effect")
+    _sub(effect, "name", name)
+    _sub(effect, "effectid", name)
+    if mediatype == "video":
+        _sub(effect, "effectcategory", "Dissolve")
+    _sub(effect, "effecttype", "transition")
+    _sub(effect, "mediatype", mediatype)
+    if mediatype == "video":
+        _sub(effect, "wipecode", 0)
+        _sub(effect, "wipeaccuracy", 100)
+        _sub(effect, "startratio", 0)
+        _sub(effect, "endratio", 1)
+        _sub(effect, "reverse", "FALSE")
+
+
 def _clipitem(track, clip_id: str, name: str, fps: float, start: int, end: int, src_in: int, src_out: int,
               file_id: str, path: str, probe: dict, defined: set, **attrs):
     clip = _sub(track, "clipitem", id=clip_id, **attrs)
@@ -144,11 +174,15 @@ def _clipitem(track, clip_id: str, name: str, fps: float, start: int, end: int, 
 
 
 def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll: dict | None,
-                       chapters: list, cut_marks: list, name: str = "AI edit") -> str:
+                       chapters: list, cut_marks: list, name: str = "AI edit", fade_sec: float = 1.0,
+                       music: dict | None = None) -> str:
     """
     The edit as FCP 7 XML. keep_intervals are (start, end) seconds of the recording; broll is None or
     {path, probe, offset, inserts: [(start, end) in recording seconds], style: "pip"|"cutaway", pip_width};
     chapters are (seconds, title) and cut_marks (seconds, name, comment), both on the edited timeline.
+    V1 gets a Cross Dissolve from black at the start and to black at the end, the audio an Exponential
+    Fade at the end, each fade_sec long (0 for none) or as long as the first or last clip if that is
+    shorter. music is None or {path, probe}: a song as long as the edit, put on its own tracks.
     """
     fps = probe["fps"]
 
@@ -164,6 +198,10 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
         parts.append({"a": a, "b": b, "in": src_in, "out": src_out, "start": t, "end": t + src_out - src_in})
         t += src_out - src_in
     total = t
+    # A transition can't be longer than the clip it sits on
+    fade = min(frames(fade_sec), total // 3)
+    fade_in = min(fade, parts[0]["end"] - parts[0]["start"]) if parts else 0
+    fade_out = min(fade, parts[-1]["end"] - parts[-1]["start"]) if parts else 0
 
     root = ET.Element("xmeml", version="4")
     seq = _sub(root, "sequence", id="sequence-1")
@@ -192,14 +230,19 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(link, "linkclipref", clip_id)
             _sub(link, "mediatype", kind)
             _sub(link, "trackindex", track_index)
-            _sub(link, "clipindex", i + 1)
+            # Items are counted with the transitions, so V1's clips come after its opening dissolve
+            _sub(link, "clipindex", i + 1 + (1 if kind == "video" and fade_in else 0))
             if kind == "audio":
                 _sub(link, "groupindex", 1)
 
     v1 = _sub(video, "track")
+    if fade_in:
+        _transition(v1, "Cross Dissolve", "video", 0, fade_in, "start-black", fps)
     for i, part in enumerate(parts):
         link_part(_clipitem(v1, f"clipitem-v1-{i + 1}", f"Part {i + 1}", fps, part["start"], part["end"],
                             part["in"], part["out"], "file-1", recording, probe, defined), i)
+    if fade_out:
+        _transition(v1, "Cross Dissolve", "video", total - fade_out, total, "end-black", fps)
 
     if broll and broll.get("inserts"):
         screen_probe = broll["probe"]
@@ -257,9 +300,36 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(source, "mediatype", "audio")
             _sub(source, "trackindex", n + 1)
             link_part(clip, i)
+        if fade_out:
+            _transition(track, "Exponential Fade", "audio", total - fade_out, total, "end-black", fps)
         _sub(track, "enabled", "TRUE")
         _sub(track, "locked", "FALSE")
         _sub(track, "outputchannelindex", n + 1)
+
+    if music and music["probe"]["audio"]:
+        # The music's own tracks, after the voice; its left and right are linked into one stereo clip
+        music_stereo = music["probe"]["audio"][0]["channels"] >= 2
+        channels = 2 if music_stereo else 1
+        end = min(total, frames(music["probe"]["duration"]))
+        first = audio_count + 1
+        for n in range(channels):
+            attrs = {"currentExplodedTrackIndex": n, "totalExplodedTrackCount": 2} if music_stereo else {}
+            track = _sub(audio, "track", **attrs, premiereTrackType="Stereo" if music_stereo else "Mono")
+            clip = _clipitem(track, f"clipitem-m{n + 1}-1", "Music", fps, 0, end, 0, end, "file-3", music["path"],
+                             music["probe"], defined, premiereChannelType="stereo" if music_stereo else "mono")
+            source = _sub(clip, "sourcetrack")
+            _sub(source, "mediatype", "audio")
+            _sub(source, "trackindex", n + 1)
+            for m in range(channels):
+                link = _sub(clip, "link")
+                _sub(link, "linkclipref", f"clipitem-m{m + 1}-1")
+                _sub(link, "mediatype", "audio")
+                _sub(link, "trackindex", first + m)
+                _sub(link, "clipindex", 1)
+                _sub(link, "groupindex", 1)
+            _sub(track, "enabled", "TRUE")
+            _sub(track, "locked", "FALSE")
+            _sub(track, "outputchannelindex", n + 1)
 
     for seconds, title in chapters:
         marker = _sub(seq, "marker")
