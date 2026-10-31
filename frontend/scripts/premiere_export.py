@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Premiere Pro export for the YouTube pipeline: the AI edit as a Final Cut Pro 7 XML (xmeml v4)
-sequence, which Premiere opens as a new project (OBS starts it on the file) or with File > Import.
+sequence, which Premiere opens as a new project with the sequence on its timeline (OBS starts it with
+a script that does this) or with File > Import.
 
 The sequence uses the original recording, so every cut is a real edit point with handles and can be
 widened or tightened in Premiere. Tracks:

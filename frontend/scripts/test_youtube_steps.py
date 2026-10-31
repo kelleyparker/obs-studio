@@ -976,6 +976,25 @@ class StepRunTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len([e for e in evs if e["type"] == "complete"]), 1)
 
+    def test_a_job_stopped_mid_run_continues_from_its_next_stage(self):
+        # An Auto job whose last checkpoint was before the thumbnail (OBS closed during it), opened again in OBS
+        video, _ = self.run_to_end("stopped.mp4", [])
+        state_path = yp.pipeline_paths(video)["state_file"]
+        state = yp.read_json_file(state_path)
+        state["ctx"]["next_stage"] = "thumbnails"
+        yp.write_json_file(state_path, state)
+        with mock.patch.object(yp, "stage_render") as render, mock.patch.object(yp, "stage_metadata") as metadata:
+            rc, evs = self.run_with_patches(yp.resume_pipeline, state_path, {})
+        self.assertEqual(rc, 0)
+        render.assert_not_called()
+        metadata.assert_not_called()
+        self.assertFalse(any(e["type"] == "review_ready" for e in evs))
+        self.assertEqual(len([e for e in evs if e["type"] == "thumbnail_ready"]), 1)
+        self.assertEqual(len([e for e in evs if e["type"] == "complete"]), 1)
+        self.assertIn("Continuing 'stopped.mp4' from the thumbnails step.",
+                      [e["message"] for e in evs if e["type"] == "log"])
+        self.assertEqual(yp.read_json_file(state_path)["ctx"]["next_stage"], "done")
+
 
 class MusicPlanTests(unittest.TestCase):
     def test_short_video_is_one_song_past_the_end(self):

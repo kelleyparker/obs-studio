@@ -122,6 +122,20 @@ eview carries
 	/* Forgets a paused run without continuing it */
 	void DiscardPendingReview();
 	bool HasPendingReview() const { return !config.pendingReviewGate.isEmpty(); }
+	/* Puts the current job away (stopping any step still running) so the dock starts clean; its files stay
+	 * next to the recording and Open Project brings it back */
+	void NewProject();
+	/* Makes the job saved in statePath the current one, back where it was: waiting at a review, finished,
+	 * or stopped mid-run. False with the reason if it can't be opened */
+	bool OpenProject(const QString &statePath, QString &error);
+	/* Runs a job that stopped mid-run (OBS closed, or it was stopped) on from its next stage */
+	void ContinuePipeline(const QString &statePath);
+	/* Where a saved job (its state file's JSON) stands, for the Open Project list */
+	static QString ProjectStatus(const QJsonObject &state);
+	/* The step bars a job still has to run when its next stage is nextStage */
+	static QStringList StepsLeft(const QString &nextStage);
+	/* The file a review gate reads back, next to the recording */
+	static QString ReviewDataPath(const QString &gate, const QString &statePath, const QJsonObject &ctx);
 
 	void SetPipelineMode(const QString &mode);
 	void SetThumbnailImageSource(const QString &source);
@@ -165,6 +179,10 @@ signals:
 	void EditWillChange();
 	/* open: the user asked for this export, so Premiere Pro should start on it */
 	void PremiereExported(const QString &xmlPath, bool open);
+	/* The dock should drop the job it shows and go back to idle (New Project, or a new run starting) */
+	void ProjectReset();
+	/* A saved job became the current one; the dock shows it from its state file */
+	void ProjectOpened(const QString &statePath);
 	void ThumbnailRegenStarted();
 	void ThumbnailRegenFinished();
 	void MusicRegenStarted();
@@ -186,6 +204,8 @@ private:
 	QJsonObject PipelineSettingsPayload() const;
 	void SetLastVideo(const QString &path);
 	void SetLastUpload(const QString &videoId, const QString &url);
+	/* Kills whatever the worker is doing, including making new thumbnails or songs */
+	void StopWorker();
 
 	YouTubeWorkflowConfig config;
 	bool workflowArmed = false;

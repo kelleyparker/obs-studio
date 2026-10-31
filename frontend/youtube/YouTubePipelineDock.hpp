@@ -50,6 +50,13 @@ private:
 	void ConfirmDeleteFromYouTube();
 	void WatchEdit();
 	void RefreshEditButtons();
+	/* Back to idle: no title, thumbnail, upload or progress from the previous job */
+	void ResetJobView();
+	/* Shows a saved job as it was left: its details, progress, and the review it waits at (or Continue) */
+	void RestoreJobView(const QString &statePath);
+	void ShowOpenProjectDialog();
+	/* Asks before New/Open Project stops a step that is still running; true to go ahead */
+	bool ConfirmStopRunningJob();
 
 	struct StepRow {
 		QLabel *titleLabel = nullptr;
@@ -89,6 +96,9 @@ private:
 	QString reviewGate;
 	QString reviewState;
 	QString reviewData;
+	/* An opened job that stopped mid-run, offered to Continue */
+	QPushButton *continueBtn = nullptr;
+	QString continueState;
 
 	QPushButton *openFolderBtn = nullptr;
 	QPushButton *rerunBtn = nullptr;

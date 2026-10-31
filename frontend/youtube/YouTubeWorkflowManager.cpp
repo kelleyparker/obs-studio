@@ -9,10 +9,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QProcessEnvironment>
 #include <QSettings>
 #include <QStandardPaths>
@@ -548,10 +550,10 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	DiscardPendingReview();
 	emit EditWillChange();
 	SetLastVideo(videoPath);
-	lastVideoId.clear();
-	lastVideoUrl.clear();
+	SetLastUpload(QString(), QString());
 	lastEditedVideo.clear();
 	lastJoins.clear();
+	emit ProjectReset();
 
 	bool stepMode = config.pipelineMode == "step";
 	emit PipelineStateChanged(stepMode ? "⚙️ Step mode: analyzing, then waiting for you to review the cuts..."
@@ -791,6 +793,191 @@ void YouTubeWorkflowManager::DiscardPendingReview()
 	}
 	SetPendingReview(QString(), QString(), QString());
 	emit ReviewCleared();
+}
+
+void YouTubeWorkflowManager::StopWorker()
+{
+	if (!IsPipelineRunning()) {
+		return;
+	}
+	/* Disconnected first, so the kill isn't reported as the pipeline failing */
+	QProcess *proc = workerProcess;
+	workerProcess = nullptr;
+	disconnect(proc, nullptr, this, nullptr);
+	proc->kill();
+	proc->waitForFinished(2000);
+	proc->deleteLater();
+	if (thumbRegenActive) {
+		thumbRegenActive = false;
+		emit ThumbnailRegenFinished();
+	}
+	if (musicRegenActive) {
+		musicRegenActive = false;
+		emit MusicRegenFinished();
+	}
+	emit LogMessageReceived("warning", "Stopped the step that was running; what it finished before is saved.");
+}
+
+void YouTubeWorkflowManager::NewProject()
+{
+	StopWorker();
+	if (!brollRecorder->Active()) {
+		brollSession = BrollSession(); /* the screen recording belonged to the last recording's job */
+	}
+	emit EditWillChange();
+	DiscardPendingReview();
+	SetLastVideo(QString());
+	SetLastUpload(QString(), QString());
+	lastEditedVideo.clear();
+	lastJoins.clear();
+	emit ProjectReset();
+}
+
+bool YouTubeWorkflowManager::OpenProject(const QString &statePath, QString &error)
+{
+	if (IsPipelineRunning()) {
+		error = "A step of the current job is still running.";
+		return false;
+	}
+	QFile file(statePath);
+	if (!file.open(QIODevice::ReadOnly)) {
+		error = QString("Could not read %1").arg(QDir::toNativeSeparators(statePath));
+		return false;
+	}
+	QJsonObject ctx = QJsonDocument::fromJson(file.readAll()).object().value("ctx").toObject();
+	QString video = ctx.value("input_video").toString();
+	if (video.isEmpty() || !QFileInfo::exists(video)) {
+		error = QString("This project's recording isn't at %1 anymore.").arg(QDir::toNativeSeparators(video));
+		return false;
+	}
+	QString gate = ctx.value("pending_gate").toString();
+	QString data = gate.isEmpty() ? QString() : ReviewDataPath(gate, statePath, ctx);
+	if (!gate.isEmpty() && !QFileInfo::exists(data)) {
+		error = QString("It's waiting at the %1 review, but %2 is missing.")
+				.arg(gate, QDir::toNativeSeparators(data));
+		return false;
+	}
+
+	LoadConfig();
+	if (!brollRecorder->Active()) {
+		brollSession = BrollSession();
+	}
+	emit EditWillChange();
+	DiscardPendingReview();
+	SetLastVideo(video);
+	SetLastUpload(ctx.value("video_id").toString(), ctx.value("video_url").toString());
+	lastEditedVideo.clear();
+	lastJoins.clear();
+	if (!gate.isEmpty()) {
+		SetPendingReview(gate, statePath, data);
+	}
+	emit ProjectOpened(statePath);
+	return true;
+}
+
+void YouTubeWorkflowManager::ContinuePipeline(const QString &statePathRef)
+{
+	const QString statePath = statePathRef;
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	QFile file(statePath);
+	if (!file.open(QIODevice::ReadOnly)) {
+		emit LogMessageReceived("error", QString("Could not read %1").arg(statePath));
+		return;
+	}
+	QJsonObject state = QJsonDocument::fromJson(file.readAll()).object();
+	QString next = state.value("ctx").toObject().value("next_stage").toString("render");
+	if (next == "done") {
+		emit LogMessageReceived("info", "This job has already finished; use Start Over to redo part of it.");
+		return;
+	}
+
+	LoadConfig();
+	DiscardPendingReview();
+	emit EditWillChange();
+	emit PipelineStateChanged("⚙️ Continuing the job where it stopped...", true);
+	bool musicOn = state.value("config").toObject().value("music_enabled").toBool(true);
+	for (const QString &step : StepsLeft(next)) {
+		emit StepProgressUpdated(step, 0, step == "music" && !musicOn ? "Off" : "Queued...");
+	}
+
+	/* With no review to read back, Python picks up at the saved next stage, with the job's own Step or Auto gates */
+	QJsonObject payload;
+	payload["mode"] = "resume_pipeline";
+	payload["state_path"] = statePath;
+	LaunchPipelineWorker(payload);
+}
+
+QStringList YouTubeWorkflowManager::StepsLeft(const QString &nextStage)
+{
+	static const QMap<QString, QStringList> left = {
+		{"cuts_review", {"edit", "broll", "llm", "music", "thumbnail", "upload"}},
+		{"broll_plan", {"edit", "broll", "llm", "music", "thumbnail", "upload"}},
+		{"render", {"edit", "llm", "music", "thumbnail", "upload"}},
+		{"metadata", {"llm", "music", "thumbnail", "upload"}},
+		{"music", {"music", "thumbnail", "upload"}},
+		{"thumbnails", {"thumbnail", "upload"}},
+		{"publish", {"upload"}},
+		{"upload", {"upload"}},
+		{"finish", {"upload"}},
+	};
+	if (nextStage == "done") {
+		return QStringList();
+	}
+	return left.value(nextStage, left.value("cuts_review"));
+}
+
+QString YouTubeWorkflowManager::ProjectStatus(const QJsonObject &state)
+{
+	QJsonObject ctx = state.value("ctx").toObject();
+	QString gate = ctx.value("pending_gate").toString();
+	if (gate == "publish") {
+		return "📤 Ready to publish";
+	}
+	if (!gate.isEmpty()) {
+		static const QMap<QString, QString> reviews = {{"cuts", "the cuts"},
+							      {"broll", "the B-roll"},
+							      {"metadata", "the title & description"},
+							      {"music", "the music"},
+							      {"thumbnail", "the thumbnail"}};
+		return QString("👀 Waiting for you: %1").arg(reviews.value(gate, gate));
+	}
+	QString next = ctx.value("next_stage").toString("render");
+	if (next == "done") {
+		return ctx.value("video_url").toString().isEmpty() ? "📁 Finished (not uploaded)" : "✅ Uploaded";
+	}
+	static const QMap<QString, QString> stages = {{"cuts_review", "the cuts"},
+						     {"broll_plan", "the B-roll plan"},
+						     {"render", "rendering the edit"},
+						     {"metadata", "the title & description"},
+						     {"music", "the music"},
+						     {"thumbnails", "the thumbnail"},
+						     {"publish", "the upload"},
+						     {"upload", "the upload"},
+						     {"finish", "finishing up"}};
+	bool stepMode = !state.value("config").toObject().value("review_gates").toArray().isEmpty();
+	return QString("⏸ %1 job stopped at %2").arg(stepMode ? "Step" : "Auto", stages.value(next, next));
+}
+
+QString YouTubeWorkflowManager::ReviewDataPath(const QString &gate, const QString &statePath, const QJsonObject &ctx)
+{
+	/* The same names the pipeline gives them (pipeline_paths in youtube_pipeline.py) */
+	QFileInfo video(ctx.value("input_video").toString());
+	QString base = video.absoluteDir().filePath(video.completeBaseName());
+	if (gate == "cuts") {
+		return base + "_yt_cuts.json";
+	} else if (gate == "broll") {
+		return ctx.value("broll_plan_path").toString();
+	} else if (gate == "metadata") {
+		return base + "_yt_metadata.json";
+	} else if (gate == "music") {
+		return base + "_yt_music.json";
+	} else if (gate == "thumbnail") {
+		return base + "_yt_thumbs.json";
+	}
+	return statePath; /* publish reads the state itself */
 }
 
 void YouTubeWorkflowManager::SetPipelineMode(const QString &mode)

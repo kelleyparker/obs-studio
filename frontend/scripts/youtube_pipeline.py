@@ -4162,7 +4162,12 @@ def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None) 
         ctx["next_stage"] = "render"
         ctx["pending_gate"] = "broll"
     gate = ctx.get("pending_gate", "")
-    log_info(f"Resuming pipeline for '{os.path.basename(ctx['input_video'])}' after the {gate or 'previous'} review.")
+    name = os.path.basename(ctx["input_video"])
+    if gate:
+        log_info(f"Resuming pipeline for '{name}' after the {gate} review.")
+    else:
+        # A job that stopped mid-run (OBS closed, or it was stopped) and was opened again
+        log_info(f"Continuing '{name}' from the {ctx.get('next_stage', 'render')} step.")
     try:
         apply_review(ctx, review)
     except (OSError, ValueError) as e:
