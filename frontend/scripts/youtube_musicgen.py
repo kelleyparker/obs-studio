@@ -64,16 +64,42 @@ def load_models(job: dict):
 
     llm = LLMHandler()
     lm_ok = False
-    if job.get("lm"):
+    checkpoints = os.path.join(ace_dir, "checkpoints")
+    lm = pick_lm(checkpoints, job.get("lm", ""))
+    if job.get("lm") and not lm:
+        emit("warning", message=f"The song-planning LM ({job['lm']}) isn't downloaded, so songs are made without it.")
+    if lm:
         try:
-            message, lm_ok = llm.initialize(checkpoint_dir=os.path.join(ace_dir, "checkpoints"),
-                                            lm_model_path=job["lm"], backend="pt", device="cuda",
-                                            offload_to_cpu=offload)
+            message, lm_ok = llm.initialize(checkpoint_dir=checkpoints, lm_model_path=lm, backend="pt",
+                                            device="cuda", offload_to_cpu=offload)
             if not lm_ok:
-                emit("warning", message=f"The song-planning LM didn't load, so songs are made without it: {message}")
+                emit("warning", message="The song-planning LM didn't load, so songs are made without it: "
+                                        + first_line(message))
         except Exception as e:
-            emit("warning", message=f"The song-planning LM didn't load, so songs are made without it: {e}")
+            emit("warning", message=f"The song-planning LM didn't load, so songs are made without it: {first_line(e)}")
     return dit, llm, lm_ok
+
+
+def first_line(message) -> str:
+    """ACE-Step's errors carry the whole traceback; the first line says what went wrong."""
+    return next((line.strip(" ❌") for line in str(message).splitlines() if line.strip()), "")[:300]
+
+
+def pick_lm(checkpoints: str, wanted: str) -> str:
+    """`wanted` if its weights are downloaded, else the smallest other 5 Hz LM that is, else ""."""
+    def complete(name):
+        folder = os.path.join(checkpoints, name)
+        return os.path.isdir(folder) and any(f.endswith(".safetensors") for f in os.listdir(folder))
+
+    if not wanted or complete(wanted):
+        return wanted
+    try:
+        others = [n for n in os.listdir(checkpoints) if n.startswith("acestep-5Hz-lm-") and complete(n)]
+    except OSError:
+        return ""
+    sizes = {n: sum(os.path.getsize(os.path.join(checkpoints, n, f)) for f in os.listdir(os.path.join(checkpoints, n))
+                    if f.endswith(".safetensors")) for n in others}
+    return min(others, key=sizes.get, default="")
 
 
 def make_song(dit, llm, lm_ok: bool, song: dict, index: int, count: int):

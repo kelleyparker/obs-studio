@@ -1054,6 +1054,43 @@ class EdgeSliverTests(unittest.TestCase):
         self.assertEqual(yp.drop_edge_slivers([[0.0, 0.3]], []), [(0.0, 0.3)])  # never everything
 
 
+class MusicLmTests(unittest.TestCase):
+    def setUp(self):
+        stdout = sys.stdout
+        import youtube_musicgen  # it keeps stdout for its JSON events
+        sys.stdout = stdout
+        self.mg = youtube_musicgen
+        self.tmp = tempfile.mkdtemp(prefix="yt_lm_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def lm(self, name, size):
+        os.makedirs(os.path.join(self.tmp, name))
+        if size:
+            with open(os.path.join(self.tmp, name, "model.safetensors"), "wb") as f:
+                f.write(b"0" * size)
+
+    def test_an_unfinished_download_falls_back_to_a_complete_lm(self):
+        self.lm("acestep-5Hz-lm-0.6B", 0)
+        self.lm("acestep-5Hz-lm-4B", 30)
+        self.lm("acestep-5Hz-lm-1.7B", 20)
+        self.assertEqual(self.mg.pick_lm(self.tmp, "acestep-5Hz-lm-0.6B"), "acestep-5Hz-lm-1.7B")
+        self.lm("acestep-5Hz-lm-x", 0)
+        self.assertEqual(self.mg.pick_lm(self.tmp, "acestep-5Hz-lm-x"), "acestep-5Hz-lm-1.7B")
+
+    def test_the_wanted_lm_or_none(self):
+        self.lm("acestep-5Hz-lm-0.6B", 10)
+        self.lm("acestep-5Hz-lm-1.7B", 5)
+        self.assertEqual(self.mg.pick_lm(self.tmp, "acestep-5Hz-lm-0.6B"), "acestep-5Hz-lm-0.6B")
+        shutil.rmtree(self.tmp)
+        os.makedirs(self.tmp)
+        self.lm("acestep-5Hz-lm-0.6B", 0)
+        self.assertEqual(self.mg.pick_lm(self.tmp, "acestep-5Hz-lm-0.6B"), "")
+
+    def test_errors_keep_only_their_first_line(self):
+        self.assertEqual(self.mg.first_line("❌ Error initializing 5Hz LM: no file\n\nTraceback:\n  File x"),
+                         "Error initializing 5Hz LM: no file")
+
+
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
 class MusicAudioTests(unittest.TestCase):
     @classmethod
