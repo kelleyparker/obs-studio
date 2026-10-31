@@ -40,7 +40,7 @@ private slots:
 	void OnReviewReady(const QString &gate, const QString &statePath, const QString &dataPath);
 	void OnReviewCleared();
 	void OnVideoDeleteFinished(bool ok, const QString &message);
-	void OnPremiereExported(const QString &xmlPath);
+	void OnPremiereExported(const QString &xmlPath, bool open);
 
 private:
 	void OpenCutEditor(bool reload);
@@ -94,7 +94,6 @@ private:
 	QPushButton *rerunBtn = nullptr;
 	QPushButton *watchBtn = nullptr;
 	QPushButton *premiereBtn = nullptr;
-	QPushButton *openPremiereBtn = nullptr;
 	QPushButton *deleteBtn = nullptr;
 	QPointer<YouTubeVideoPreview> preview;
 	QPushButton *cancelBtn = nullptr;

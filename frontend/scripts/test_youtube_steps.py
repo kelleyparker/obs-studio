@@ -244,9 +244,10 @@ class PremiereXmlTests(unittest.TestCase):
         self.assertEqual(v1.find("transitionitem").findtext("cutPointTicks"), "0")
         for track in root.findall("sequence/media/audio/track"):
             fades = track.findall("transitionitem")
+            # FCP 7's own fade, so Premiere translates it without a Translation Report
             self.assertEqual([(int(t.findtext("start")), t.findtext("alignment"), t.findtext("effect/name"),
-                               t.findtext("effect/mediatype")) for t in fades],
-                             [(total - 30, "end-black", "Exponential Fade", "audio")])
+                               t.findtext("effect/effectid"), t.findtext("effect/mediatype")) for t in fades],
+                             [(total - 30, "end-black", "Cross Fade (+3dB)", "KGAudioTransCrossFade3dB", "audio")])
 
     def test_short_edge_clips_get_shorter_dissolves(self):
         root = self.build(keep=[(0.0, 0.5), (1.0, 10.0), (12.0, 12.4)])
@@ -821,6 +822,7 @@ class StepRunTests(unittest.TestCase):
         video, evs = self.run_to_end("prem.mp4", [], auto_finish="premiere")
         exported = [e for e in evs if e["type"] == "premiere_exported"]
         self.assertEqual(len(exported), 1)
+        self.assertFalse(exported[0]["open"])  # Premiere never starts by itself at the end of a run
         with open(exported[0]["xml_path"], encoding="utf-8") as f:
             root = ET.fromstring(f.read().split("\n", 2)[2])
         self.assertGreaterEqual(len(root.findall("sequence/media/video/track/clipitem")), 2)  # the silence was cut
@@ -833,7 +835,9 @@ class StepRunTests(unittest.TestCase):
         video, _ = self.run_to_end("prem2.mp4", [])
         rc, evs = run_events(yp.export_premiere_from_state, yp.pipeline_paths(video)["state_file"])
         self.assertEqual(rc, 0)
-        self.assertEqual(len([e for e in evs if e["type"] == "premiere_exported"]), 1)
+        exported = [e for e in evs if e["type"] == "premiere_exported"]
+        self.assertEqual(len(exported), 1)
+        self.assertTrue(exported[0]["open"])  # the button opens it in Premiere
 
     def test_start_over_from_later_steps(self):
         video, _ = self.run_to_end("redo.mp4", [])

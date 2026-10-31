@@ -981,7 +981,7 @@ def voice_gain_db(lufs: float, target: float = VOICE_TARGET_LUFS, max_gain: floa
 def edit_fade_filter(duration: float, gain_db: float = 0.0) -> str:
     """
     [cv][ca] -> [outv][outa]: the fade in from black and out to black (Premiere's Cross Dissolve at
-    both ends) and the audio's exponential fade-out (Premiere's Exponential Fade). Short videos get
+    both ends) and the audio's exponential fade-out (a Constant Power fade in Premiere). Short videos get
     shorter fades. `gain_db` turns the voice up (with a limiter so its peaks can't clip) or down.
     """
     d = min(EDIT_FADE_SEC, duration / 3)
@@ -3909,8 +3909,9 @@ def parse_chapters(description: str) -> list[tuple[float, str]]:
     return chapters
 
 
-def export_premiere_project(ctx: dict) -> str:
-    """Writes {stem}_premiere/ with a Premiere Pro (FCP 7 XML) sequence of the edit. Returns the XML path."""
+def export_premiere_project(ctx: dict, open_in_premiere: bool = False) -> str:
+    """Writes {stem}_premiere/ with a Premiere Pro (FCP 7 XML) sequence of the edit. Returns the XML path.
+    open_in_premiere tells OBS to start Premiere Pro on it (when the user asked for the export)."""
     import premiere_export
 
     paths = pipeline_paths(ctx["input_video"])
@@ -3974,12 +3975,12 @@ def export_premiere_project(ctx: dict) -> str:
         with open(os.path.join(out_dir, "youtube_details.txt"), "w", encoding="utf-8") as f:
             f.write(f"TITLE\n{metadata.get('title', '')}\n\nALTERNATIVE TITLES\n{alts}\n\n"
                     f"DESCRIPTION\n{metadata.get('description', '')}\n\nTAGS\n{', '.join(metadata.get('tags', []))}\n")
-    log_info(f"Premiere Pro sequence saved: {xml_path}. In Premiere use File > Import and pick this XML. "
+    log_info(f"Premiere Pro sequence saved: {xml_path}. "
              f"It uses the original recording, so keep {os.path.basename(ctx['input_video'])} where it is.")
     if ctx.get("voice_gain_db"):
         log_info(f"In Premiere your voice is as recorded; the upload has it {ctx['voice_gain_db']:+.1f} dB. To match "
                  f"it, turn on Effects > Loudness Normalization at {VOICE_TARGET_LUFS:.0f} LUFS when you export.")
-    emit("premiere_exported", xml_path=xml_path, folder=out_dir)
+    emit("premiere_exported", xml_path=xml_path, folder=out_dir, open=open_in_premiere)
     return xml_path
 
 
@@ -4307,7 +4308,7 @@ def export_premiere_from_state(state_path: str) -> int:
         emit("error", message="This video hasn't been cut yet, so there's nothing to export.")
         return 1
     try:
-        export_premiere_project(ctx)
+        export_premiere_project(ctx, open_in_premiere=True)
         return 0
     except Exception as e:
         log_error(f"Premiere export failed: {e}")

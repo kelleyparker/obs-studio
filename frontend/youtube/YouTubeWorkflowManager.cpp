@@ -1174,7 +1174,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		}
 		emit EditReady(lastEditedVideo);
 	} else if (type == "premiere_exported") {
-		emit PremiereExported(obj.value("xml_path").toString());
+		emit PremiereExported(obj.value("xml_path").toString(), obj.value("open").toBool());
 	} else if (type == "video_deleted") {
 		QString id = obj.value("video_id").toString();
 		if (id == lastVideoId) {

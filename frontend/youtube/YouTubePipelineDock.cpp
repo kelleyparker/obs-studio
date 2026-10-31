@@ -126,7 +126,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QPushButton *uploadNowBtn = new QPushButton("⬆ Upload to YouTube", publishRow);
 	uploadNowBtn->setStyleSheet("font-weight: bold;");
 	QPushButton *exportBtn = new QPushButton("🎬 Export to Premiere Pro", publishRow);
-	exportBtn->setToolTip("Write a Premiere Pro sequence of the edit; the job keeps waiting so you can upload later");
+	exportBtn->setToolTip("Write a Premiere Pro sequence of the edit and open it in Premiere Pro; the job keeps "
+			      "waiting so you can upload later");
 	QPushButton *uploadFileBtn = new QPushButton("⬆ Upload a different file…", publishRow);
 	uploadFileBtn->setToolTip("Upload your own finished file (e.g. rendered from Premiere) with this title, "
 				  "description and thumbnail");
@@ -329,9 +330,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	watchBtn = new QPushButton("▶ Watch Edit", container);
 	watchBtn->setToolTip("Play the rendered edit");
 	premiereBtn = new QPushButton("🎬 Export to Premiere", container);
-	premiereBtn->setToolTip("Write a Premiere Pro sequence (FCP XML) of the last edit, using the original recording");
-	openPremiereBtn = new QPushButton("🚀 Open Premiere Pro", container);
-	openPremiereBtn->hide();
+	premiereBtn->setToolTip(
+		"Write a Premiere Pro sequence (FCP XML) of the last edit, using the original recording, and open it "
+		"in Premiere Pro");
 	rerunBtn = new QPushButton("🔄 Start Over…", container);
 	rerunBtn->setToolTip("Redo the last video from a step of your choice; the recording is kept");
 	cancelBtn = new QPushButton("⏹ Cancel", container);
@@ -340,7 +341,6 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	btnLayout->addWidget(openFolderBtn);
 	btnLayout->addWidget(watchBtn);
 	btnLayout->addWidget(premiereBtn);
-	btnLayout->addWidget(openPremiereBtn);
 	btnLayout->addWidget(rerunBtn);
 	btnLayout->addWidget(cancelBtn);
 	mainLayout->addLayout(btnLayout);
@@ -375,12 +375,6 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	connect(rerunBtn, &QPushButton::clicked, this, &YouTubePipelineDock::ShowStartOverDialog);
 	connect(watchBtn, &QPushButton::clicked, this, &YouTubePipelineDock::WatchEdit);
 	connect(premiereBtn, &QPushButton::clicked, mgr, &YouTubeWorkflowManager::ExportToPremiere);
-	connect(openPremiereBtn, &QPushButton::clicked, this, [this]() {
-		QString exe = openPremiereBtn->property("exe").toString();
-		if (!QProcess::startDetached(exe, {})) {
-			OnLogMessageReceived("error", QString("Could not start %1").arg(exe));
-		}
-	});
 	connect(mgr, &YouTubeWorkflowManager::VideoDeleteFinished, this, &YouTubePipelineDock::OnVideoDeleteFinished);
 	connect(mgr, &YouTubeWorkflowManager::PremiereExported, this, &YouTubePipelineDock::OnPremiereExported);
 	connect(mgr, &YouTubeWorkflowManager::EditReady, this, &YouTubePipelineDock::RefreshEditButtons);
@@ -741,31 +735,41 @@ void YouTubePipelineDock::OnVideoDeleteFinished(bool ok, const QString &message)
 	}
 }
 
-void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath)
+/* The newest installed Premiere Pro (a release before a beta), or empty */
+static QString FindPremierePro()
 {
-	OnLogMessageReceived("info", "In Premiere Pro: File → Import, then pick " + QFileInfo(xmlPath).fileName() +
-					     ". It opens as a sequence; drag any cut's edge to widen or tighten it.");
-	statusBanner->setText(QString("🎬 Exported for Premiere Pro: %1").arg(xmlPath));
-	/* Explorer only understands /select,"path"; Qt would quote the whole argument (the path has spaces)
-	 * and Explorer would open Documents instead, so pass the command line as is */
-	QProcess explorer;
-	explorer.setProgram("explorer.exe");
-#ifdef _WIN32
-	explorer.setNativeArguments(QString("/select,\"%1\"").arg(QDir::toNativeSeparators(xmlPath)));
-#endif
-	explorer.startDetached();
-
-	/* The newest installed Premiere Pro (a release before a beta) */
 	QDir adobe("C:/Program Files/Adobe");
 	QStringList dirs = adobe.entryList({"Adobe Premiere Pro*"}, QDir::Dirs, QDir::Name | QDir::Reversed);
 	std::stable_partition(dirs.begin(), dirs.end(), [](const QString &d) { return !d.contains("Beta"); });
 	for (const QString &d : dirs) {
 		QString exe = adobe.filePath(d + "/Adobe Premiere Pro.exe");
 		if (QFileInfo::exists(exe)) {
-			openPremiereBtn->setProperty("exe", exe);
-			openPremiereBtn->show();
-			break;
+			return exe;
 		}
+	}
+	return QString();
+}
+
+void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath, bool open)
+{
+	statusBanner->setText(QString("🎬 Exported for Premiere Pro: %1").arg(xmlPath));
+	if (!open) {
+		OnLogMessageReceived("info", "Click Export to Premiere to open it in Premiere Pro.");
+		return;
+	}
+	QString exe = FindPremierePro();
+	if (exe.isEmpty()) {
+		OnLogMessageReceived("warning", "Premiere Pro isn't installed in C:\\Program Files\\Adobe. Open " +
+							QDir::toNativeSeparators(xmlPath) + " in it to edit the sequence.");
+		return;
+	}
+	/* Premiere opens the XML as a new project holding the sequence, or hands it to the copy already running */
+	if (QProcess::startDetached(exe, {QDir::toNativeSeparators(xmlPath)})) {
+		OnLogMessageReceived("info",
+				     "Opening it in Premiere Pro. The sequence is in the new project's bin; drag any cut's "
+				     "edge to widen or tighten it.");
+	} else {
+		OnLogMessageReceived("error", QString("Could not start %1").arg(exe));
 	}
 }
 

@@ -163,7 +163,8 @@ signals:
 	void EditReady(const QString &videoPath);
 	/* A run is about to render the edit again; anything playing it must let go of the file */
 	void EditWillChange();
-	void PremiereExported(const QString &xmlPath);
+	/* open: the user asked for this export, so Premiere Pro should start on it */
+	void PremiereExported(const QString &xmlPath, bool open);
 	void ThumbnailRegenStarted();
 	void ThumbnailRegenFinished();
 	void MusicRegenStarted();

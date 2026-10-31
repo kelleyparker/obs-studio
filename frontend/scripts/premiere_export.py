@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Premiere Pro export for the YouTube pipeline: the AI edit as a Final Cut Pro 7 XML (xmeml v4)
-sequence, which Premiere opens with File > Import.
+sequence, which Premiere opens as a new project (OBS starts it on the file) or with File > Import.
 
 The sequence uses the original recording, so every cut is a real edit point with handles and can be
 widened or tightened in Premiere. Tracks:
@@ -133,7 +133,8 @@ def _motion(parent, scale: float, horiz: float = 0.0, vert: float = 0.0):
 PPRO_TICKS_PER_SEC = 254016000000
 
 
-def _transition(track, name: str, mediatype: str, start: int, end: int, alignment: str, fps: float):
+def _transition(track, name: str, mediatype: str, start: int, end: int, alignment: str, fps: float,
+                effectid: str = ""):
     """A transition at an end of the sequence: alignment "start-black" (fade in) or "end-black" (fade out)."""
     item = _sub(track, "transitionitem")
     _sub(item, "start", start)
@@ -144,7 +145,7 @@ def _transition(track, name: str, mediatype: str, start: int, end: int, alignmen
     _rate(item, fps)
     effect = _sub(item, "effect")
     _sub(effect, "name", name)
-    _sub(effect, "effectid", name)
+    _sub(effect, "effectid", effectid or name)
     if mediatype == "video":
         _sub(effect, "effectcategory", "Dissolve")
     _sub(effect, "effecttype", "transition")
@@ -180,8 +181,8 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
     The edit as FCP 7 XML. keep_intervals are (start, end) seconds of the recording; broll is None or
     {path, probe, offset, inserts: [(start, end) in recording seconds], style: "pip"|"cutaway", pip_width};
     chapters are (seconds, title) and cut_marks (seconds, name, comment), both on the edited timeline.
-    V1 gets a Cross Dissolve from black at the start and to black at the end, the audio an Exponential
-    Fade at the end, each fade_sec long (0 for none) or as long as the first or last clip if that is
+    V1 gets a Cross Dissolve from black at the start and to black at the end, the audio a Cross Fade
+    (+3dB) at the end, each fade_sec long (0 for none) or as long as the first or last clip if that is
     shorter. music is None or {path, probe}: a song as long as the edit, put on its own tracks.
     """
     fps = probe["fps"]
@@ -301,7 +302,10 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(source, "trackindex", n + 1)
             link_part(clip, i)
         if fade_out:
-            _transition(track, "Exponential Fade", "audio", total - fade_out, total, "end-black", fps)
+            # FCP 7's equal-power fade, which Premiere reads as Constant Power; a name it doesn't know
+            # (like its own Exponential Fade) gets swapped for that anyway, with a Translation Report popup
+            _transition(track, "Cross Fade (+3dB)", "audio", total - fade_out, total, "end-black", fps,
+                        effectid="KGAudioTransCrossFade3dB")
         _sub(track, "enabled", "TRUE")
         _sub(track, "locked", "FALSE")
         _sub(track, "outputchannelindex", n + 1)
