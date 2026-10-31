@@ -22,6 +22,8 @@ public:
 
 	/* Local Ollama / Gemini / ChatGPT / Claude / Off, shared with the YouTube dock */
 	static void FillThumbnailImageSources(QComboBox *combo);
+	/* ACE-Step / Lyria, shared with the YouTube dock */
+	static void FillMusicSources(QComboBox *combo);
 
 signals:
 	void SettingsModified();
@@ -49,6 +51,7 @@ private:
 	QComboBox *thumbnailImageModelCombo = nullptr;
 	QCheckBox *cloudImageFallbackCheck = nullptr;
 	QCheckBox *musicEnabledCheck = nullptr;
+	QComboBox *musicSourceCombo = nullptr;
 	QComboBox *autoFinishCombo = nullptr;
 	QComboBox *whisperModelCombo = nullptr;
 	QComboBox *ollamaModelCombo = nullptr;

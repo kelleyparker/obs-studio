@@ -92,6 +92,11 @@ void YouTubeWorkflowManager::LoadConfig()
 		config.thumbnailImageSource = QString::fromUtf8(imageSource);
 	}
 
+	const char *musicSource = config_get_string(cfg, "YouTubeWorkflow", "MusicSource");
+	if (musicSource && *musicSource) {
+		config.musicSource = QString::fromUtf8(musicSource);
+	}
+
 	const char *imageModel = config_get_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel");
 	if (imageModel && *imageModel) {
 		config.thumbnailImageModel = QString::fromUtf8(imageModel);
@@ -200,6 +205,7 @@ void YouTubeWorkflowManager::SaveConfig()
 			  config.thumbnailImageModel.toUtf8().constData());
 	config_set_bool(cfg, "YouTubeWorkflow", "CloudImageFallback", config.cloudImageFallback);
 	config_set_bool(cfg, "YouTubeWorkflow", "MusicEnabled", config.musicEnabled);
+	config_set_string(cfg, "YouTubeWorkflow", "MusicSource", config.musicSource.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath", config.thumbPhotoPath.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonMode", config.thumbPersonMode.toUtf8().constData());
@@ -464,6 +470,7 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["thumbnail_image_model"] = config.thumbnailImageModel;
 	payload["cloud_image_fallback"] = config.cloudImageFallback;
 	payload["music_enabled"] = config.musicEnabled;
+	payload["music_source"] = config.musicSource;
 	payload["thumb_options"] = thumbOptions;
 	payload["auto_finish"] = config.autoFinish;
 	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "music", "thumbnail", "publish"}
@@ -625,6 +632,7 @@ void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const Q
 	QJsonObject payload;
 	payload["mode"] = "resume_pipeline";
 	payload["state_path"] = statePath;
+	payload["music_source"] = config.musicSource;
 	if (!review.isEmpty()) {
 		payload["review"] = review;
 	}
@@ -682,7 +690,9 @@ void YouTubeWorkflowManager::RegenerateMusic(const QJsonObject &options)
 	QJsonObject payload;
 	payload["mode"] = "music_regen";
 	payload["state_path"] = config.pendingReviewState;
-	payload["options"] = options;
+	QJsonObject withSource = options;
+	withSource["music_source"] = config.musicSource;
+	payload["options"] = withSource;
 	if (!LaunchPipelineWorker(payload)) {
 		musicRegenActive = false;
 		emit MusicRegenFinished();
@@ -907,6 +917,7 @@ void YouTubeWorkflowManager::ContinuePipeline(const QString &statePathRef)
 	QJsonObject payload;
 	payload["mode"] = "resume_pipeline";
 	payload["state_path"] = statePath;
+	payload["music_source"] = config.musicSource;
 	LaunchPipelineWorker(payload);
 }
 
@@ -1006,6 +1017,25 @@ void YouTubeWorkflowManager::SetThumbnailImageSource(const QString &source)
 		config_save_safe(cfg, "tmp", nullptr);
 	}
 	emit ThumbnailImageSourceChanged(source);
+}
+
+void YouTubeWorkflowManager::SetMusicSource(const QString &source)
+{
+	if (config.musicSource == source) {
+		return;
+	}
+	config.musicSource = source;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "MusicSource", source.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+	emit MusicSourceChanged(source);
+}
+
+QString YouTubeWorkflowManager::MusicSourceLabel(const QString &source)
+{
+	return source == "lyria" ? "Lyria, Google cloud" : "ACE-Step, on this PC";
 }
 
 bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)

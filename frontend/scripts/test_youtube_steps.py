@@ -662,6 +662,124 @@ FAKE_METADATA = {
     "tags": ["a"], "thumbnail_hook": "BIG HOOK", "thumbnail_prompt": "a desk",
 }
 
+_lyria_mp3 = []
+
+
+def lyria_mp3(seconds=25.0):
+    """A short real MP3, made once, standing in for Lyria's song."""
+    if not _lyria_mp3:
+        path = os.path.join(tempfile.mkdtemp(prefix="yt_lyria_"), "song.mp3")
+        ffmpeg("-f", "lavfi", "-i", f"sine=f=330:d={seconds}:r=44100", "-ac", "2", "-c:a", "libmp3lame", path)
+        with open(path, "rb") as f:
+            _lyria_mp3.append(f.read())
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+    return _lyria_mp3[0]
+
+
+def lyria_ok(*args, **kwargs):
+    audio = yp.base64.b64encode(lyria_mp3()).decode()
+    return FakeResponse(json.dumps({"id": "i-1", "steps": [{"type": "model_output", "content": [
+        {"type": "text", "text": "A calm song."},
+        {"type": "audio", "mime_type": "audio/mpeg", "data": audio}]}]}).encode())
+
+
+def lyria_job(tmp, label="song 1/1", group="Song 1", **extra):
+    return dict({"caption": "warm lo-fi, soft piano", "lyrics": "", "instrumental": True, "bpm": 80,
+                 "keyscale": "F major", "duration": 30.0, "seed": 1, "out": os.path.join(tmp, f"{group}.wav"),
+                 "label": label, "group": group}, **extra)
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
+class LyriaTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yt_lyria_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # Keeps the real ~/OBSYouTubeMusicGen/timings.json as it is
+        patcher = mock.patch.object(yp, "save_music_timings")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make(self, songs, source="lyria", key="g-test", side_effect=lyria_ok, local=fake_songs):
+        notes = []
+        config = {"music_source": source, "secrets": {"gemini_key": key} if key else {}}
+        with mock.patch("urllib.request.urlopen", side_effect=side_effect) as urlopen, \
+                mock.patch.object(yp, "generate_songs", side_effect=local) as ace, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            made, by = yp.make_songs(config, songs, notes)
+        return made, by, notes, urlopen, ace, out.getvalue()
+
+    def test_the_request_and_the_decoded_song(self):
+        job = lyria_job(self.tmp)
+        made, by, notes, urlopen, ace, _ = self.make([job])
+        self.assertEqual((made, by, notes), ({job["out"]}, {job["out"]: "Lyria 3.5"}, []))
+        ace.assert_not_called()
+        req = urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "https://generativelanguage.googleapis.com/v1beta/interactions")
+        self.assertEqual(req.get_header("X-goog-api-key"), "g-test")
+        self.assertNotIn("g-test", req.full_url)
+        body = json.loads(req.data)
+        self.assertEqual((body["model"], body["response_format"]), ("lyria-3.5", {"type": "audio"}))
+        for words in ("warm lo-fi, soft piano", "80 BPM, F major", "Instrumental only, no vocals", "About 30 seconds"):
+            self.assertIn(words, body["input"])
+        # The 48 kHz stereo WAV the rest of the music step reads, and no MP3 left behind
+        self.assertAlmostEqual(yp.get_video_duration(job["out"]), 25.0, delta=0.2)
+        self.assertEqual(os.listdir(self.tmp), [os.path.basename(job["out"])])
+
+    def test_lyrics_are_sung_when_the_brief_has_them(self):
+        prompt = yp.lyria_prompt(lyria_job(self.tmp, instrumental=False, lyrics="[verse]\nhello"))
+        self.assertNotIn("no vocals", prompt)
+        self.assertTrue(prompt.endswith("singing these lyrics:\n[verse]\nhello"))
+
+    def test_a_retired_model_moves_to_the_next(self):
+        def reply(req, *args, **kwargs):
+            if json.loads(req.data)["model"] == "lyria-3.5":
+                raise gemini_error(404, "NOT_FOUND", "models/lyria-3.5 is not found")
+            return lyria_ok()
+
+        made, by, notes, urlopen, ace, _ = self.make([lyria_job(self.tmp)], side_effect=reply)
+        self.assertEqual(list(by.values()), ["Lyria 3 Pro"])
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_out_of_quota_makes_the_whole_option_on_this_pc(self):
+        songs = [lyria_job(self.tmp, "song 1/2, part 1/2", "Song 1"),
+                 dict(lyria_job(self.tmp, "song 1/2, part 2/2", "Song 1"), out=os.path.join(self.tmp, "s1p2.wav")),
+                 lyria_job(self.tmp, "song 2/2", "Song 2")]
+        calls = []
+
+        def reply(req, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise gemini_error(429, "RESOURCE_EXHAUSTED", "You exceeded your current quota")
+            return lyria_ok()
+
+        with mock.patch.object(yp, "LYRIA_PARALLEL", 1):
+            made, by, notes, urlopen, ace, out = self.make(songs, side_effect=reply)
+        # Part 2 of Song 1 ran out of quota, and Lyria wasn't asked again: Song 1 and Song 2 are made locally
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(sorted(s["group"] for s in ace.call_args.args[1]), ["Song 1", "Song 1", "Song 2"])
+        self.assertEqual(set(by.values()), {"ACE-Step"})
+        self.assertEqual(made, {s["out"] for s in songs})
+        self.assertIn("out of quota (429)", notes[-1])
+        self.assertIn("making them on this PC with ACE-Step instead", out)
+
+    def test_a_failed_option_alone_is_made_on_this_pc(self):
+        songs = [lyria_job(self.tmp, "song 1/2", "Song 1"), lyria_job(self.tmp, "song 2/2", "Song 2")]
+        # Song 2's prompt is turned down (a reply with text and no audio); Song 1 stays Lyria's
+        replies = iter([lyria_ok(), FakeResponse(json.dumps({"steps": [
+            {"type": "model_output", "content": [{"type": "text", "text": "I can't make that."}]}]}).encode())])
+        with mock.patch.object(yp, "LYRIA_PARALLEL", 1):
+            made, by, notes, urlopen, ace, _ = self.make(songs, side_effect=lambda *a, **k: next(replies))
+        self.assertEqual(by, {songs[0]["out"]: "Lyria 3.5", songs[1]["out"]: "ACE-Step"})
+        self.assertEqual([s["group"] for s in ace.call_args.args[1]], ["Song 2"])
+        self.assertIn("I can't make that.", notes[-1])
+
+    def test_no_key_or_acestep_goes_straight_to_this_pc(self):
+        for source, key, warned in (("lyria", "", True), ("acestep", "g-test", False)):
+            made, by, notes, urlopen, ace, out = self.make([lyria_job(self.tmp)], source=source, key=key)
+            urlopen.assert_not_called()
+            self.assertEqual(list(by.values()), ["ACE-Step"])
+            self.assertEqual("there's no Gemini API key" in out, warned)
+
 
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
 class StepRunTests(unittest.TestCase):
@@ -945,6 +1063,24 @@ class StepRunTests(unittest.TestCase):
         rc, evs = self.run_with_patches(yp.resume_pipeline, ready["state_path"], {})
         self.assertEqual([e["edited_video"] for e in evs if e["type"] == "complete"],
                          [yp.pipeline_paths(video)["edited_video"]])
+
+    def test_step_mode_music_from_lyria(self):
+        with mock.patch("urllib.request.urlopen", side_effect=lyria_ok) as urlopen, \
+                mock.patch.object(yp, "save_music_timings"):
+            video, evs = self.run_to_end("lyria.mp4", ["music"], music_enabled=True, music_source="lyria")
+            self.assertEqual(urlopen.call_count, 3)
+            ready = [e for e in evs if e["type"] == "review_ready"]
+            self.assertEqual([e["gate"] for e in ready], ["music"])
+            music = yp.read_json_file(ready[0]["data_path"])
+            self.assertEqual([o["made_by"] for o in music["options"]], ["Lyria 3.5"] * 3)
+            edited = yp.get_video_duration(yp.pipeline_paths(video)["edited_video"])
+            self.assertTrue(all(abs(yp.get_video_duration(o["path"]) - edited) < 0.05 for o in music["options"]))
+            # Switched back to this PC in OBS before making more: the new songs come from ACE-Step
+            self.run_with_patches(yp.regenerate_music, ready[0]["state_path"], {"gemini_key": "SECRET"},
+                                  {"style": "calm piano", "music_source": "acestep"})
+            self.assertEqual(urlopen.call_count, 3)
+        music = yp.read_json_file(ready[0]["data_path"])
+        self.assertEqual([o["made_by"] for o in music["options"]][3:], ["ACE-Step", "ACE-Step"])
 
     def test_auto_mode_mixes_one_song(self):
         video, evs = self.run_to_end("automusic.mp4", [], music_enabled=True)

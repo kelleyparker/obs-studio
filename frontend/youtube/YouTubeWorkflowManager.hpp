@@ -26,8 +26,10 @@ struct YouTubeWorkflowConfig {
 	QString thumbnailImageModel = "x/z-image-turbo";
 	// When a cloud image source is out of quota or refuses the key, try the other cloud sources that have a key
 	bool cloudImageFallback = true;
-	// Background music made on this PC with ACE-Step, mixed under the voice
+	// Background music mixed under the voice, made by "acestep" (free, on this PC) or "lyria" (Google's
+	// Lyria with the Gemini key, billed per song; ACE-Step stands in for any song it can't make)
 	bool musicEnabled = true;
+	QString musicSource = "acestep";
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
@@ -139,6 +141,9 @@ eview carries
 
 	void SetPipelineMode(const QString &mode);
 	void SetThumbnailImageSource(const QString &source);
+	void SetMusicSource(const QString &source);
+	/* "ACE-Step, on this PC" or "Lyria, Google cloud", for the music step's title */
+	static QString MusicSourceLabel(const QString &source);
 	void StartOAuthLogin();
 	void CancelPipeline();
 
@@ -171,6 +176,7 @@ signals:
 	void ReviewCleared();
 	void PipelineModeChanged(const QString &mode);
 	void ThumbnailImageSourceChanged(const QString &source);
+	void MusicSourceChanged(const QString &source);
 	void VideoUpdateFinished(bool ok, const QString &message);
 	void VideoDeleteFinished(bool ok, const QString &message);
 	/* The edit has been rendered and can be watched */

@@ -1130,9 +1130,9 @@ GEMINI_TEXT_MODELS = ["gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemin
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def gemini_request(url: str, body: dict | None = None, timeout: int = 45) -> dict:
+def gemini_request(url: str, body: dict | None = None, timeout: int = 45, headers: dict | None = None) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -2638,7 +2638,7 @@ def chosen_thumbnail_path(thumbs: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 4b. Background music: ACE-Step 1.5 on this PC, fitted to the edit and mixed under the voice
+# 4b. Background music: ACE-Step 1.5 on this PC (or Google's Lyria), fitted to the edit and mixed under the voice
 # ---------------------------------------------------------------------------
 
 # ACE-Step runs youtube_musicgen.py with the Python of its own venv (PyTorch for CUDA 12.8, which the
@@ -2658,8 +2658,15 @@ MUSIC_DUCK_DB = 6.0  # how much further it dips while you talk
 MUSIC_DUCK_HEADROOM_DB = 12.0  # how far below your average talking level the dip starts
 STEP_MUSIC_OPTIONS = 3
 REGEN_MUSIC_OPTIONS = 2
-# Seconds to load the models, and seconds of work per second of music; replaced by this PC's own after a run
-MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0}
+# ACE-Step's seconds to load the models and seconds of work per second of music, and Lyria's seconds per
+# song; replaced by this PC's own after a run
+MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0, "lyria_s": 45.0}
+
+# Google's Lyria through the Gemini API (the same key as the titles), newest first. About 2 minutes of
+# music per call, billed per call; no free tier. Only the text prompt is sent.
+LYRIA_MODELS = {"lyria-3.5": "Lyria 3.5", "lyria-3-pro-preview": "Lyria 3 Pro"}
+LYRIA_PRICE = 0.08  # US$ per song
+LYRIA_PARALLEL = 3
 
 MUSIC_BRIEF_PROMPT = """You choose background music for a YouTube video. It plays quietly under the creator's voice
 for the whole video. Return ONLY a JSON object:
@@ -2914,6 +2921,15 @@ def load_music_timings() -> dict:
         return dict(MUSIC_TIMINGS_DEFAULT)
 
 
+def save_music_timings(**values):
+    """Updates some of the timings in MUSIC_HOME/timings.json, keeping the others."""
+    try:
+        os.makedirs(MUSIC_HOME, exist_ok=True)
+        write_json_file(os.path.join(MUSIC_HOME, "timings.json"), {**load_music_timings(), **values})
+    except OSError:
+        pass
+
+
 def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int = 86) -> set:
     """
     Makes the songs ({caption, lyrics, instrumental, bpm, keyscale, duration, seed, out, label}) with
@@ -2923,8 +2939,8 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
     import threading
 
     cmd, env, flags, ace_dir = musicgen_command(config)
-    job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL, "offload": True,
-           "parent_pid": os.getpid(), "songs": [{k: v for k, v in s.items() if k != "label"} for s in songs]}
+    job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL, "offload": True, "parent_pid": os.getpid(),
+           "songs": [{k: v for k, v in s.items() if k not in ("label", "group")} for s in songs]}
     timings = load_music_timings()
     total = sum(s["duration"] for s in songs) or 1.0
     unload_ollama_models()
@@ -2997,11 +3013,7 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
         proc.wait()
 
     if made and load_s is not None and gen_started is not None:
-        try:
-            write_json_file(os.path.join(MUSIC_HOME, "timings.json"), {
-                "load_s": round(load_s, 1), "rate": round((time.time() - gen_started) / max(1.0, done_audio), 3)})
-        except OSError:
-            pass
+        save_music_timings(load_s=round(load_s, 1), rate=round((time.time() - gen_started) / max(1.0, done_audio), 3))
     if not made:
         try:
             with open(err_path, encoding="utf-8", errors="replace") as f:
@@ -3013,10 +3025,178 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
     return made
 
 
+def lyria_prompt(song: dict) -> str:
+    """The text Lyria gets for one song job (the same job ACE-Step would get)."""
+    parts = [song["caption"].strip().rstrip("."), f"{song['bpm']} BPM, {song['keyscale']}",
+             "Background music for a YouTube video, steady all the way through, no big drops or sudden stops",
+             f"About {round(song['duration'])} seconds long"]
+    if song.get("instrumental", True) or not song.get("lyrics"):
+        parts.append("Instrumental only, no vocals")
+        return ". ".join(parts) + "."
+    return ". ".join(parts) + ". With vocals, singing these lyrics:\n" + song["lyrics"]
+
+
+def _blocks_with(node, test):
+    """Every dict in a JSON reply (at any depth) that `test` accepts."""
+    if isinstance(node, dict):
+        if test(node):
+            yield node
+        for value in node.values():
+            yield from _blocks_with(value, test)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _blocks_with(value, test)
+
+
+def lyria_song(api_key: str, model: str, prompt: str, timeout: int = 300) -> tuple[bytes, str]:
+    """One song from Lyria (Gemini Interactions API). Returns the audio and its MIME type (MP3 or WAV)."""
+    data = gemini_request(f"{GEMINI_API}/interactions",
+                          {"model": model, "input": prompt, "response_format": {"type": "audio"}}, timeout,
+                          headers={"x-goog-api-key": api_key})
+
+    def mime(block):
+        return str(block.get("mime_type") or block.get("mimeType") or "")
+
+    for block in _blocks_with(data, lambda b: isinstance(b.get("data"), str)
+                              and (mime(b).startswith("audio/") or b.get("type") == "audio")):
+        return base64.b64decode(block["data"]), mime(block) or "audio/mpeg"
+    said = " ".join(b["text"] for b in _blocks_with(data, lambda b: isinstance(b.get("text"), str)))
+    raise RuntimeError(f"Lyria sent back no audio{': ' + said[:200] if said.strip() else ''}")
+
+
+def save_lyria_audio(audio: bytes, mime: str, out: str):
+    """Writes Lyria's MP3 (or WAV) as the 48 kHz stereo WAV the rest of the music step reads."""
+    raw = f"{os.path.splitext(out)[0]}_lyria.{'wav' if 'wav' in mime else 'mp3'}"
+    with open(raw, "wb") as f:
+        f.write(audio)
+    try:
+        res = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-i", raw, "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le",
+                              out], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError(f"Lyria's audio couldn't be read: {(res.stderr or '').strip()[-200:]}")
+    finally:
+        try:
+            os.remove(raw)
+        except OSError:
+            pass
+
+
+def generate_songs_lyria(api_key: str, songs: list, notes: list, lo: int = 8, hi: int = 86) -> tuple[set, dict]:
+    """
+    Makes the songs with Lyria, a few at a time, counting down in the music step. A model Google retired
+    is skipped for the next; running out of quota or a refused key stops Lyria for the rest of the run.
+    Returns (the paths it wrote, {path: model name}).
+    """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    models = list(LYRIA_MODELS)
+    stopped = []  # why Lyria won't be asked again in this run
+
+    def one(song) -> str:
+        if stopped:
+            raise RuntimeError(stopped[0])
+        prompt = lyria_prompt(song)
+        while models:
+            model = models[0]
+            try:
+                audio, mime = lyria_song(api_key, model, prompt)
+            except RuntimeError as e:
+                if is_model_unavailable(e):
+                    try:
+                        models.remove(model)
+                    except ValueError:
+                        pass  # another song found it gone first
+                    continue
+                if is_quota_error(e) or is_key_error(e):
+                    stopped.append(short_cloud_error(e))
+                raise RuntimeError(short_cloud_error(e)) from None
+            save_lyria_audio(audio, mime, song["out"])
+            return LYRIA_MODELS[model]
+        raise RuntimeError("no Lyria model is available to this key")
+
+    per_song = load_music_timings()["lyria_s"]
+    waves = math.ceil(len(songs) / LYRIA_PARALLEL)
+    made, by, done = set(), {}, 0
+    started = time.time()
+
+    def show():
+        elapsed = time.time() - started
+        expected = max(1.0, waves * per_song)
+        fraction = max(done / len(songs), min(0.95, elapsed / expected))
+        update_step("music", lo + int((hi - lo) * fraction),
+                    f"Making {len(songs)} song{'s' if len(songs) > 1 else ''} with Lyria ({done}/{len(songs)} done)"
+                    f" · ~{_fmt_clock(max(5.0, expected - elapsed))} left")
+
+    with ThreadPoolExecutor(max_workers=LYRIA_PARALLEL) as pool:
+        futures = {pool.submit(one, s): s for s in songs}
+        pending = set(futures)
+        show()
+        while pending:
+            finished, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+            for future in finished:
+                song = futures[future]
+                done += 1
+                try:
+                    by[song["out"]] = future.result()
+                    made.add(song["out"])
+                except Exception as e:
+                    notes.append(f"Lyria couldn't make {song['label']}: {str(e)[:200]}")
+            show()
+    if made:
+        save_music_timings(lyria_s=round((time.time() - started) / waves, 1))
+    return made, by
+
+
+def make_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int = 86) -> tuple[set, dict]:
+    """
+    Makes the songs with the chosen music source. With Lyria, every song it couldn't make (the whole
+    option, so one song never mixes the two) is made on this PC with ACE-Step instead.
+    Returns (the paths written, {path: what made it}).
+    """
+    rest, made, by = songs, set(), {}
+    if config.get("music_source", "acestep") == "lyria":
+        key = (config.get("secrets") or {}).get("gemini_key", "")
+        if not key:
+            log_warn("The music source is Lyria, but there's no Gemini API key in Settings -> YouTube Automation; "
+                     "making the music on this PC with ACE-Step.")
+        else:
+            failures = []
+            made, by = generate_songs_lyria(key, songs, failures, lo, hi)
+            if made:
+                log_info(f"Lyria made {len(made)} song{'s' if len(made) > 1 else ''} "
+                         f"(~${len(made) * LYRIA_PRICE:.2f} on your Gemini key's billing).")
+            failed = sorted({s["group"] for s in songs if s["out"] not in made})
+            rest = [s for s in songs if s["group"] in failed]
+            for s in rest:
+                if s["out"] in made:
+                    made.discard(s["out"])
+                    by.pop(s["out"], None)
+                    try:
+                        os.remove(s["out"])
+                    except OSError:
+                        pass
+            if rest:
+                reason = failures[0].split(": ", 1)[-1] if failures else "it failed"
+                log_warn(f"Lyria couldn't make {', '.join(failed)} ({reason}); "
+                         "making them on this PC with ACE-Step instead.")
+                notes.append(f"{', '.join(failed)} made on this PC with ACE-Step, because Lyria couldn't ({reason}).")
+    if rest:
+        try:
+            local = generate_songs(config, rest, notes, lo, hi)
+        except RuntimeError as e:
+            if len(rest) == len(songs):
+                raise
+            notes.append(f"ACE-Step couldn't stand in: {str(e)[:300]}")
+            local = set()
+        made |= local
+        by.update({path: "ACE-Step" for path in local})
+    return made, by
+
+
 def make_music_options(config: dict, ctx: dict, briefs: list[dict], first: int = 1) -> tuple[list[dict], list[str]]:
     """
-    One song per brief with ACE-Step, fitted to the edit's length, and a preview of it mixed under your
-    voice. Returns (options, notes); an option without "path" failed.
+    One song per brief from the music source, fitted to the edit's length, and a preview of it mixed under
+    your voice. Returns (options, notes); an option without "path" failed.
     """
     paths = pipeline_paths(ctx["input_video"])
     out_dir = paths["music_dir"]
@@ -3037,12 +3217,12 @@ def make_music_options(config: dict, ctx: dict, briefs: list[dict], first: int =
             label = f"song {i + 1}/{len(briefs)}" + (f", part {k + 1}/{len(sections)}" if len(sections) > 1 else "")
             songs.append({"caption": brief["style"], "lyrics": brief["lyrics"], "instrumental": brief["instrumental"],
                           "bpm": brief["bpm"], "keyscale": brief["key"], "duration": length, "seed": seed + k,
-                          "out": part, "label": label})
+                          "out": part, "label": label, "group": option["label"]})
             option["parts"].append(part)
         options.append(option)
 
     notes = []
-    made = generate_songs(config, songs, notes)
+    made, made_by = make_songs(config, songs, notes)
     if made and ctx.get("voice_lufs") is None:
         lufs = measure_lufs(voice)
         # Stored in the state file, which must stay valid JSON for OBS (no -inf)
@@ -3057,7 +3237,7 @@ def make_music_options(config: dict, ctx: dict, briefs: list[dict], first: int =
                 settings = music_mix_settings(ctx["voice_lufs"], measure_lufs(song))
                 preview = os.path.join(out_dir, f"{option['id']}_preview.wav")
                 mix_music(voice, song, preview, settings, audio_only=True)
-                option.update(path=song, preview=preview, mix=settings)
+                option.update(path=song, preview=preview, mix=settings, made_by=made_by.get(parts[0], "ACE-Step"))
         except Exception as e:
             notes.append(f"{option['label']} couldn't be fitted to the video: {str(e)[:200]}")
         finally:
@@ -3153,6 +3333,8 @@ def regenerate_music(state_path: str, secrets: dict, options: dict) -> int:
         return 1
     config = dict(state.get("config", {}))
     config["secrets"] = secrets or {}
+    if options.get("music_source"):
+        config["music_source"] = options["music_source"]
     ctx = state.get("ctx", {})
     if ctx.get("pending_gate") != "music":
         emit("error", message="This job isn't waiting at the music step.")
@@ -4148,13 +4330,16 @@ def load_state(state_path: str) -> dict | None:
     return state
 
 
-def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None) -> int:
+def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, music_source: str = "") -> int:
     """Continue a paused run after the user reviewed a gate in OBS."""
     state = load_state(state_path)
     if state is None:
         return 1
     config = dict(state.get("config", {}))
     config["secrets"] = secrets or {}
+    if music_source:
+        # The music source picked in OBS now, not the one the job started with
+        config["music_source"] = music_source
     ctx = state.get("ctx", {})
     if state.get("version", 1) < 2:
         # Version 1 only ever paused for the B-roll review, right before rendering
@@ -4375,7 +4560,8 @@ def main():
                 emit("delete_error", message=str(e))
                 return 0
         if mode == "resume_pipeline":
-            return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("review"))
+            return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("review"),
+                                   cfg.get("music_source", ""))
         if mode == "thumbnail_regen":
             return regenerate_thumbnails(cfg.get("state_path", ""), cfg.get("secrets", {}),
                                          cfg.get("action", "generate"), cfg.get("options") or {})

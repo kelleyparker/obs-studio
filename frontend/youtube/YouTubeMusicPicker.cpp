@@ -17,14 +17,23 @@
 #include <QLabel>
 #include <QMediaDevices>
 #include <QMediaPlayer>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSaveFile>
+#include <QSlider>
+#include <QStyle>
+#include <QStyleOptionSlider>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QtEndian>
+
+#include <algorithm>
+#include <cmath>
 
 namespace {
 const char *kPlaySong = "▶ Song";
@@ -90,6 +99,46 @@ QString Clock(double seconds)
 	int s = int(seconds + 0.5);
 	return QString("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
 }
+
+/* A 16-bit WAV's length in milliseconds, or 0 if it can't be read */
+qint64 WavLengthMs(const QString &path)
+{
+	QFile file(path);
+	QAudioFormat format;
+	qint64 dataOffset = 0;
+	if (!file.open(QIODevice::ReadOnly) || !ReadWavHeader(file, format, dataOffset) || !format.bytesPerFrame()) {
+		return 0;
+	}
+	return (file.size() - dataOffset) / format.bytesPerFrame() * 1000 / format.sampleRate();
+}
+
+/* A seek bar that jumps straight to where it's clicked (not a page at a time), and lets the mouse wheel
+ * scroll the dock instead of moving it */
+class SeekSlider : public QSlider {
+public:
+	using QSlider::QSlider;
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton) {
+			QStyleOptionSlider opt;
+			initStyleOption(&opt);
+			QRect handle = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
+			if (!handle.contains(event->position().toPoint())) {
+				QRect groove =
+					style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderGroove, this);
+				int x = int(event->position().x()) - groove.x() - handle.width() / 2;
+				setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), x,
+									 groove.width() - handle.width()));
+			}
+		}
+		/* The handle is under the mouse now, so this picks it up for dragging */
+		QSlider::mousePressEvent(event);
+	}
+
+	void wheelEvent(QWheelEvent *event) override { event->ignore(); }
+};
 } // namespace
 
 YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick the Music", parent)
@@ -120,11 +169,10 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	styleEdit->setPlaceholderText("Genre, mood, tempo and instruments, e.g. chill lo-fi hip hop, warm and calm, "
 				      "soft Rhodes piano, mellow bass, brushed drums");
 	styleEdit->setFixedHeight(54);
-	styleEdit->setToolTip("The style prompt for ACE-Step. It starts as the selected song's; a tempo like "
+	styleEdit->setToolTip("The style prompt for the music. It starts as the selected song's; a tempo like "
 			      "\"100 bpm\" in it is used too.");
 	regenLayout->addWidget(styleEdit);
 	regenButton = new QPushButton(regenBox);
-	regenButton->setToolTip("Make new songs with this style on this PC (ACE-Step); the songs above stay");
 	regenLayout->addWidget(regenButton);
 	layout->addWidget(regenBox);
 
@@ -151,10 +199,15 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	audio = new QAudioOutput(this);
 	player->setAudioOutput(audio);
 	connect(player, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
-		if (status == QMediaPlayer::EndOfMedia || status == QMediaPlayer::InvalidMedia) {
+		if (status == QMediaPlayer::EndOfMedia) {
+			ReachedEnd();
+		} else if (status == QMediaPlayer::InvalidMedia) {
 			StopPlayback();
 		}
 	});
+	positionTimer = new QTimer(this);
+	positionTimer->setInterval(100);
+	connect(positionTimer, &QTimer::timeout, this, &YouTubeMusicPicker::ShowPosition);
 
 	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
 	connect(useButton, &QPushButton::clicked, this, &YouTubeMusicPicker::Finish);
@@ -162,6 +215,7 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	connect(stopButton, &QPushButton::clicked, mgr, &YouTubeWorkflowManager::CancelPipeline);
 	connect(mgr, &YouTubeWorkflowManager::MusicRegenStarted, this, [this]() { SetBusy(true); });
 	connect(mgr, &YouTubeWorkflowManager::MusicRegenFinished, this, [this]() { SetBusy(false); });
+	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, &YouTubeMusicPicker::UpdateEtaLabel);
 	connect(mgr, &YouTubeWorkflowManager::StepProgressUpdated, this,
 		[this](const QString &step, int percent, const QString &message) {
 			if (step == "music" && busyRow->isVisible()) {
@@ -199,9 +253,20 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 	videoSeconds = root.value("duration").toDouble();
 	regenCount = root.value("regen_count").toInt(2);
 	QString by = root.value("brief_by").toString();
-	infoLabel->setText(QString("Made on this PC with ACE-Step%1. Each song is fitted to the video and plays about "
-				   "20 dB under your voice, dipping further while you talk.")
-				   .arg(by.isEmpty() ? QString() : QString(", styles by %1").arg(by)));
+	QStringList makers;
+	for (const QJsonValue &v : root.value("options").toArray()) {
+		QJsonObject o = v.toObject();
+		QString maker = o.value("made_by").toString("ACE-Step");
+		if (!o.value("path").toString().isEmpty() && !makers.contains(maker)) {
+			makers.append(maker);
+		}
+	}
+	QString made = makers.isEmpty() || makers == QStringList{"ACE-Step"}
+			       ? QString("Made on this PC with ACE-Step")
+			       : QString("Made with %1").arg(makers.join(" and "));
+	infoLabel->setText(QString("%1%2. Each song is fitted to the video and plays about 20 dB under your voice, "
+				   "dipping further while you talk.")
+				   .arg(made, by.isEmpty() ? QString() : QString(", styles by %1").arg(by)));
 	QStringList notes;
 	for (const QJsonValue &v : root.value("notes").toArray()) {
 		notes.append("⚠ " + v.toString());
@@ -217,15 +282,20 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 			continue;
 		}
 		QWidget *row = new QWidget(listBox);
-		QHBoxLayout *rowLayout = new QHBoxLayout(row);
-		rowLayout->setContentsMargins(0, 0, 0, 0);
+		QVBoxLayout *rowColumn = new QVBoxLayout(row);
+		rowColumn->setContentsMargins(0, 0, 0, 0);
+		rowColumn->setSpacing(0);
+		QHBoxLayout *rowLayout = new QHBoxLayout();
+		rowColumn->addLayout(rowLayout);
 		QRadioButton *radio = new QRadioButton(
 			QString("%1 · %2").arg(o.value("label").toString(), o.value("name").toString()), row);
 		QString style = o.value("style").toString();
-		QString details = QString("%1 BPM, %2%3")
+		QString details = QString("%1 BPM, %2%3%4")
 					  .arg(o.value("bpm").toInt())
 					  .arg(o.value("key").toString())
-					  .arg(o.value("instrumental").toBool(true) ? ", instrumental" : ", with vocals");
+					  .arg(o.value("instrumental").toBool(true) ? ", instrumental" : ", with vocals")
+					  .arg(makers.size() > 1 ? " · " + o.value("made_by").toString("ACE-Step")
+								 : QString());
 		radio->setToolTip(QString("%1\n%2").arg(style, details));
 		radio->setProperty("songId", o.value("id").toString());
 		radio->setProperty("style", style);
@@ -251,6 +321,36 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 		rowLayout->addWidget(detailLabel, 1);
 		rowLayout->addWidget(songButton);
 		rowLayout->addWidget(mixButton);
+
+		/* Where the song is: both versions are fitted to the video, so they share one slider */
+		QHBoxLayout *seekLayout = new QHBoxLayout();
+		seekLayout->setContentsMargins(22, 0, 0, 0);
+		SeekSlider *slider = new SeekSlider(Qt::Horizontal, row);
+		qint64 lengthMs = WavLengthMs(path);
+		slider->setRange(0, int(lengthMs > 0 ? lengthMs : qint64(videoSeconds * 1000.0)));
+		slider->setSingleStep(1000);
+		slider->setPageStep(10000);
+		slider->setFocusPolicy(Qt::NoFocus);
+		slider->setToolTip("Click or drag to jump to any point; ▶ starts from here");
+		QLabel *timeLabel = new QLabel(row);
+		timeLabel->setStyleSheet("color: #b8a8c8; font-size: 11px;");
+		timeLabel->setMinimumWidth(timeLabel->fontMetrics().horizontalAdvance("00:00 / 00:00") + 4);
+		timeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		auto showTime = [timeLabel, slider](int ms) {
+			timeLabel->setText(QString("%1 / %2").arg(Clock(ms / 1000.0), Clock(slider->maximum() / 1000.0)));
+		};
+		showTime(0);
+		connect(slider, &QSlider::valueChanged, timeLabel, showTime);
+		connect(slider, &QSlider::sliderReleased, this, [this, slider]() {
+			if (slider == playingSlider) {
+				SeekTo(slider->value());
+			}
+		});
+		songButton->setProperty("slider", QVariant::fromValue<QObject *>(slider));
+		mixButton->setProperty("slider", QVariant::fromValue<QObject *>(slider));
+		seekLayout->addWidget(slider, 1);
+		seekLayout->addWidget(timeLabel);
+		rowColumn->addLayout(seekLayout);
 		listLayout->addWidget(row);
 		if (o.value("id").toString() == chosen || !checked) {
 			checked = radio;
@@ -289,39 +389,101 @@ void YouTubeMusicPicker::Play(QPushButton *button, const QString &file)
 	}
 	playingButton = button;
 	button->setText("⏹ Stop");
+	/* From where the row's slider was left; from the start once it has reached the end */
+	playingSlider = qobject_cast<QSlider *>(button->property("slider").value<QObject *>());
+	qint64 startMs = playingSlider ? playingSlider->value() : 0;
+	if (playingSlider && startMs >= playingSlider->maximum() - 250) {
+		startMs = 0;
+	}
+	positionTimer->start();
 	/* Inside OBS, Windows Media Foundation stalls on audio-only files after a moment, so WAVs go
 	 * straight to the sound card; the media player is only for older M4A previews */
-	if (file.endsWith(".wav", Qt::CaseInsensitive) && PlayWav(file)) {
+	if (file.endsWith(".wav", Qt::CaseInsensitive) && PlayWav(file, startMs)) {
 		return;
 	}
 	player->setSource(QUrl::fromLocalFile(file));
+	player->setPosition(startMs);
 	player->play();
 }
 
-bool YouTubeMusicPicker::PlayWav(const QString &path)
+bool YouTubeMusicPicker::PlayWav(const QString &path, qint64 startMs)
 {
 	QFile *file = new QFile(path, this);
 	QAudioFormat format;
 	qint64 dataOffset = 0;
 	QAudioDevice device = QMediaDevices::defaultAudioOutput();
 	if (!file->open(QIODevice::ReadOnly) || !ReadWavHeader(*file, format, dataOffset) || device.isNull() ||
-	    !device.isFormatSupported(format) || !file->seek(dataOffset)) {
+	    !device.isFormatSupported(format)) {
 		delete file;
 		return false;
 	}
 	wavFile = file;
-	sink = new QAudioSink(device, format, this);
-	connect(sink, &QAudioSink::stateChanged, this, [this](QAudio::State state) {
-		/* Idle once the file is read and the sound card has played what it was given */
-		if (state == QAudio::IdleState && wavFile && wavFile->atEnd()) {
-			StopPlayback();
-		}
-	});
-	sink->start(wavFile);
+	wavFormat = format;
+	wavDataOffset = dataOffset;
+	if (!SeekWav(startMs)) {
+		wavFile = nullptr;
+		delete file;
+		return false;
+	}
+	StartSink();
 	return true;
 }
 
-void YouTubeMusicPicker::StopPlayback()
+bool YouTubeMusicPicker::SeekWav(qint64 ms)
+{
+	qint64 frame = ms * wavFormat.sampleRate() / 1000;
+	qint64 offset = std::min(wavDataOffset + frame * wavFormat.bytesPerFrame(), wavFile->size());
+	playStartMs = ms;
+	return wavFile->seek(offset);
+}
+
+void YouTubeMusicPicker::StartSink()
+{
+	sink = new QAudioSink(QMediaDevices::defaultAudioOutput(), wavFormat, this);
+	connect(sink, &QAudioSink::stateChanged, this, [this](QAudio::State state) {
+		/* Idle once the file is read and the sound card has played what it was given */
+		if (state == QAudio::IdleState && wavFile && wavFile->atEnd()) {
+			ReachedEnd();
+		}
+	});
+	sink->start(wavFile);
+}
+
+void YouTubeMusicPicker::SeekTo(qint64 ms)
+{
+	if (sink && wavFile) {
+		/* A sink can't skip, so the file moves and a new sink starts there */
+		StopSink();
+		if (SeekWav(ms)) {
+			StartSink();
+		}
+	} else if (player->playbackState() == QMediaPlayer::PlayingState) {
+		player->setPosition(ms);
+	}
+}
+
+void YouTubeMusicPicker::ShowPosition()
+{
+	if (!playingSlider || playingSlider->isSliderDown()) {
+		return;
+	}
+	if (sink) {
+		playingSlider->setValue(int(playStartMs + sink->processedUSecs() / 1000));
+	} else if (player->playbackState() == QMediaPlayer::PlayingState) {
+		playingSlider->setValue(int(player->position()));
+	}
+}
+
+void YouTubeMusicPicker::ReachedEnd()
+{
+	QSlider *slider = playingSlider;
+	StopPlayback();
+	if (slider) {
+		slider->setValue(0);
+	}
+}
+
+void YouTubeMusicPicker::StopSink()
 {
 	if (sink) {
 		sink->disconnect(this);
@@ -329,6 +491,15 @@ void YouTubeMusicPicker::StopPlayback()
 		sink->deleteLater();
 		sink = nullptr;
 	}
+}
+
+void YouTubeMusicPicker::StopPlayback()
+{
+	/* The slider stays where it stopped, so ▶ picks up from there */
+	positionTimer->stop();
+	ShowPosition();
+	playingSlider = nullptr;
+	StopSink();
 	/* Let go of the file, so the pipeline can write over it */
 	if (wavFile) {
 		wavFile->close();
@@ -395,11 +566,27 @@ void YouTubeMusicPicker::SetBusy(bool busy)
 
 void YouTubeMusicPicker::UpdateEtaLabel()
 {
-	/* How long ACE-Step took last time on this PC (written by the pipeline) */
+	/* How long the music source took last time (written by the pipeline) */
 	QJsonObject t = ReadJson(QDir::homePath() + "/OBSYouTubeMusicGen/timings.json");
+	if (YouTubeWorkflowManager::Instance()->GetConfig().musicSource == "lyria") {
+		/* The pipeline's sections: up to 240 s each, joined with 6 s crossfades, 10 s past the end */
+		double target = videoSeconds + 10.0;
+		int parts = target <= 240.0 ? 1 : int(std::ceil((target - 6.0) / 234.0));
+		int songs = regenCount * parts;
+		double seconds = std::ceil(songs / 3.0) * t.value("lyria_s").toDouble(45.0);
+		regenButton->setText(videoSeconds > 0 ? QString("🎵 Make %1 new songs with Lyria (~%2, ~$%3)")
+								.arg(regenCount)
+								.arg(Clock(seconds))
+								.arg(songs * 0.08, 0, 'f', 2)
+						      : QString("🎵 Make %1 new songs with Lyria").arg(regenCount));
+		regenButton->setToolTip("Make new songs with this style with Google's Lyria, on your Gemini key "
+					"(about $0.08 per 2-minute song); the songs above stay");
+		return;
+	}
 	double load = t.value("load_s").toDouble(90.0);
 	double rate = t.value("rate").toDouble(1.0);
 	double seconds = load + regenCount * (videoSeconds + 10.0) * rate + 10.0 * regenCount;
 	regenButton->setText(videoSeconds > 0 ? QString("🎵 Make %1 new songs (~%2)").arg(regenCount).arg(Clock(seconds))
 					      : QString("🎵 Make %1 new songs").arg(regenCount));
+	regenButton->setToolTip("Make new songs with this style on this PC (ACE-Step); the songs above stay");
 }

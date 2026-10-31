@@ -117,14 +117,24 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"Each image you get is billed by the model that made it.");
 	modelForm->addRow("Cloud fallback:", cloudImageFallbackCheck);
 
-	musicEnabledCheck = new QCheckBox("Make background music on this PC (ACE-Step) and mix it under my voice",
-					  prioGroup);
+	musicEnabledCheck = new QCheckBox("Make background music and mix it under my voice", prioGroup);
 	musicEnabledCheck->setChecked(true);
 	musicEnabledCheck->setToolTip(
-		"Your local LLM writes a style for the video, ACE-Step makes the songs on your GPU (nothing is uploaded)\n"
-		"and the one you pick plays about 20 dB under your voice, dipping further while you talk.\n"
-		"Step mode offers 3 songs to choose from; Auto mode makes one. Needs ACE-Step in %USERPROFILE%\\OBSYouTubeMusicGen.");
+		"Your local LLM writes a style for the video, the music source below makes the songs, and the one you\n"
+		"pick plays about 20 dB under your voice, dipping further while you talk.\n"
+		"Step mode offers 3 songs to choose from; Auto mode makes one.");
 	modelForm->addRow("Background music:", musicEnabledCheck);
+
+	musicSourceCombo = new QComboBox(prioGroup);
+	FillMusicSources(musicSourceCombo);
+	musicSourceCombo->setToolTip(
+		"ACE-Step makes the songs on your GPU (nothing is uploaded); it needs ACE-Step in\n"
+		"%USERPROFILE%\\OBSYouTubeMusicGen and takes about 3 minutes per minute of video.\n"
+		"Lyria is Google's music model, on the Gemini API key below (billing must be on: there's no free tier).\n"
+		"It makes about 2 minutes of music per song at about $0.08, in a minute or two: a 10-minute video is\n"
+		"about $0.72 for Step mode's 3 songs, $0.24 in Auto mode. Only the style text is sent, never your voice.\n"
+		"Any song Lyria can't make (out of quota, key refused) is made on this PC with ACE-Step instead.");
+	modelForm->addRow("Music source:", musicSourceCombo);
 
 	thumbnailImageModelCombo = new QComboBox(prioGroup);
 	thumbnailImageModelCombo->setEditable(true);
@@ -410,6 +420,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(thumbnailImageModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
 	connect(cloudImageFallbackCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(musicEnabledCheck, &QCheckBox::toggled, this, notifyMod);
+	connect(musicSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(autoFinishCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(ollamaModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
@@ -588,6 +599,7 @@ void YouTubeSettingsWidget::LoadFromManager()
 	thumbnailImageModelCombo->setCurrentText(cfg.thumbnailImageModel);
 	cloudImageFallbackCheck->setChecked(cfg.cloudImageFallback);
 	musicEnabledCheck->setChecked(cfg.musicEnabled);
+	musicSourceCombo->setCurrentIndex(std::max(0, musicSourceCombo->findData(cfg.musicSource)));
 	autoFinishCombo->setCurrentIndex(std::max(0, autoFinishCombo->findData(cfg.autoFinish)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
@@ -682,6 +694,7 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.thumbnailImageModel = thumbnailImageModelCombo->currentText().trimmed();
 	cfg.cloudImageFallback = cloudImageFallbackCheck->isChecked();
 	cfg.musicEnabled = musicEnabledCheck->isChecked();
+	cfg.musicSource = musicSourceCombo->currentData().toString();
 	cfg.autoFinish = autoFinishCombo->currentData().toString();
 	cfg.whisperModel = whisperModelCombo->currentData().toString();
 	cfg.ollamaModel = ollamaModelCombo->currentText().trimmed();
@@ -707,6 +720,13 @@ void YouTubeSettingsWidget::SaveToManager()
 
 	mgr->SaveConfig();
 	emit mgr->ThumbnailImageSourceChanged(cfg.thumbnailImageSource);
+	emit mgr->MusicSourceChanged(cfg.musicSource);
+}
+
+void YouTubeSettingsWidget::FillMusicSources(QComboBox *combo)
+{
+	combo->addItem("ACE-Step on this PC (free, default)", "acestep");
+	combo->addItem("Google Lyria 3.5 (paid, ~$0.08 per song, fast)", "lyria");
 }
 
 void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)

@@ -64,6 +64,11 @@ static const char *const NO_PROVIDER = "AI Provider: Priority Chain Ready (1 to 
 static const char *const NO_THUMBNAIL = "16:9 Custom Thumbnail Preview\n(1280x720 JPG)";
 static const char *const NOT_UPLOADED = "YouTube Link: <i>Not uploaded yet</i>";
 
+static QString MusicStepTitle(const QString &source)
+{
+	return QString("6. Background Music (%1)").arg(YouTubeWorkflowManager::MusicSourceLabel(source));
+}
+
 YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 {
 	QVBoxLayout *outerLayout = new QVBoxLayout(this);
@@ -130,6 +135,19 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	modeRow->addWidget(new QLabel("AI thumbnails:", container));
 	modeRow->addWidget(imageSourceCombo, 1);
 	mainLayout->addLayout(modeRow);
+
+	QHBoxLayout *musicRow = new QHBoxLayout();
+	musicSourceCombo = new QComboBox(container);
+	YouTubeSettingsWidget::FillMusicSources(musicSourceCombo);
+	musicSourceCombo->setToolTip("What makes the background music (also in Settings → YouTube Automation). Lyria "
+				     "uses your Gemini key; any song it can't make is made on this PC with ACE-Step");
+	musicSourceCombo->setCurrentIndex(std::max(0, musicSourceCombo->findData(mgr->GetConfig().musicSource)));
+	musicRow->addWidget(new QLabel("Music:", container));
+	musicRow->addWidget(musicSourceCombo, 1);
+	mainLayout->addLayout(musicRow);
+	connect(musicSourceCombo, QOverload<int>::of(&QComboBox::activated), this, [this, mgr](int index) {
+		mgr->SetMusicSource(musicSourceCombo->itemData(index).toString());
+	});
 
 	SetModeButtons(mgr->GetConfig().pipelineMode);
 	imageSourceCombo->setCurrentIndex(std::max(0, imageSourceCombo->findData(mgr->GetConfig().thumbnailImageSource)));
@@ -220,7 +238,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		{"edit", "3. Cut Dead Air & Butchered Retakes"},
 		{"broll", "4. Screen B-roll Plan & Review"},
 		{"llm", "5. AI Title & SEO Description (Priority 1-4)"},
-		{"music", "6. Background Music (ACE-Step, on this PC)"},
+		{"music", MusicStepTitle(mgr->GetConfig().musicSource)},
 		{"thumbnail", "7. Custom 1280x720 AI Thumbnail"},
 		{"upload", "8. YouTube Upload (UNLISTED)"}
 	};
@@ -253,6 +271,13 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		stepRows[def.key] = StepRow{tLabel, dLabel, bar};
 	}
 	mainLayout->addWidget(stagesGroup);
+	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, [this](const QString &source) {
+		int idx = musicSourceCombo->findData(source);
+		if (idx >= 0) {
+			musicSourceCombo->setCurrentIndex(idx);
+		}
+		stepRows["music"].titleLabel->setText(MusicStepTitle(source));
+	});
 
 	// 2b. B-roll review (shown while the pipeline waits for it)
 	brollReview = new YouTubeBrollReview(container);
