@@ -943,7 +943,7 @@ def build_broll_filter(keep_intervals: list[tuple], broll: dict, width: int, hei
     )
 
 
-EDIT_FADE_SEC = 1.0  # every edit fades in from black and out to black, with an exponential audio fade-out
+EDIT_FADE_SEC = 1.0  # every edit fades in from black and out to black; the sound keeps its level to the end
 
 
 def drop_edge_slivers(keep: list, segments: list, min_len: float = EDIT_FADE_SEC) -> list:
@@ -981,7 +981,7 @@ def voice_gain_db(lufs: float, target: float = VOICE_TARGET_LUFS, max_gain: floa
 def edit_fade_filter(duration: float, gain_db: float = 0.0) -> str:
     """
     [cv][ca] -> [outv][outa]: the fade in from black and out to black (Premiere's Cross Dissolve at
-    both ends) and the audio's exponential fade-out (a Constant Power fade in Premiere). Short videos get
+    both ends). The sound isn't faded, so it can be tapered by hand where it needs it. Short videos get
     shorter fades. `gain_db` turns the voice up (with a limiter so its peaks can't clip) or down.
     """
     d = min(EDIT_FADE_SEC, duration / 3)
@@ -993,7 +993,7 @@ def edit_fade_filter(duration: float, gain_db: float = 0.0) -> str:
     elif gain_db < -0.05:
         level = f"volume={gain_db:.1f}dB,"
     return (f"[cv]fade=t=in:st=0:d={d:.3f},fade=t=out:st={out:.3f}:d={d:.3f}[outv];"
-            f"[ca]{level}afade=t=out:st={out:.3f}:d={d:.3f}:curve=exp[outa]")
+            f"[ca]{level.rstrip(',') or 'anull'}[outa]")
 
 
 def render_edited_video(
@@ -2653,7 +2653,6 @@ MUSIC_MIN_SECTION = 10.0  # ACE-Step's shortest song
 MUSIC_MAX_SECTION = 240.0  # longer videos get several sections (ACE-Step can do 480 s here, but long songs wander)
 MUSIC_CROSSFADE = 6.0  # between sections
 MUSIC_TAIL = 10.0  # made past the end of the video, so the cut lands inside the music and not in its ending
-MUSIC_FADE_OUT = 3.0  # exponential fade-out that ends on the last frame
 MUSIC_UNDER_VOICE_DB = 20.0  # the music's loudness below the voice's
 MUSIC_DUCK_DB = 6.0  # how much further it dips while you talk
 MUSIC_DUCK_HEADROOM_DB = 12.0  # how far below your average talking level the dip starts
@@ -2749,11 +2748,12 @@ def strip_music_silence(src: str, dst: str) -> float:
 
 
 def fit_music(parts: list[str], duration: float, out_path: str, crossfade: float = MUSIC_CROSSFADE,
-              fade_in: float = EDIT_FADE_SEC, fade_out: float = MUSIC_FADE_OUT) -> None:
+              fade_in: float = EDIT_FADE_SEC) -> None:
     """
     Joins the sections of one song (silence removed) with crossfades into exactly `duration` seconds: it
-    fades in with the video's dissolve and fades out exponentially, ending on the last frame. If it
-    still falls short, its sections play again, so it never stops before the video does.
+    fades in with the video's dissolve and plays at full level to the last frame (taper it by hand if
+    the ending needs it). If it still falls short, its sections play again, so it never stops before
+    the video does.
     """
     clean, lengths = [], []
     for i, part in enumerate(parts):
@@ -2773,9 +2773,8 @@ def fit_music(parts: list[str], duration: float, out_path: str, crossfade: float
     for k in range(1, len(order)):
         graph.append(f"{chain}[{k}:a]acrossfade=d={xf:.3f}:c1=qsin:c2=qsin[x{k}]")
         chain = f"[x{k}]"
-    fi, fo = min(fade_in, duration / 4), min(fade_out, duration / 4)
-    graph.append(f"{chain}atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,afade=t=in:d={fi:.3f},"
-                 f"afade=t=out:st={duration - fo:.3f}:d={fo:.3f}:curve=exp[out]")
+    fi = min(fade_in, duration / 4)
+    graph.append(f"{chain}atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,afade=t=in:d={fi:.3f}[out]")
     cmd = ["ffmpeg", "-y", "-hide_banner"]
     for i in order:
         cmd += ["-i", clean[i]]

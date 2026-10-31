@@ -302,11 +302,7 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
             _sub(source, "mediatype", "audio")
             _sub(source, "trackindex", n + 1)
             link_part(clip, i)
-        if fade_out:
-            # FCP 7's equal-power fade, which Premiere reads as Constant Power; a name it doesn't know
-            # (like its own Exponential Fade) gets swapped for that anyway, with a Translation Report popup
-            _transition(track, "Cross Fade (+3dB)", "audio", total - fade_out, total, "end-black", fps,
-                        effectid="KGAudioTransCrossFade3dB")
+        # The sound gets no fade-out, so it can be tapered by hand where the ending needs it
         _sub(track, "enabled", "TRUE")
         _sub(track, "locked", "FALSE")
         _sub(track, "outputchannelindex", n + 1)

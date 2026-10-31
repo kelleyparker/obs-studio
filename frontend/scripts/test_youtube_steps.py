@@ -243,11 +243,7 @@ class PremiereXmlTests(unittest.TestCase):
                                      (total - 30, total, "end-black", "Cross Dissolve")])
         self.assertEqual(v1.find("transitionitem").findtext("cutPointTicks"), "0")
         for track in root.findall("sequence/media/audio/track"):
-            fades = track.findall("transitionitem")
-            # FCP 7's own fade, so Premiere translates it without a Translation Report
-            self.assertEqual([(int(t.findtext("start")), t.findtext("alignment"), t.findtext("effect/name"),
-                               t.findtext("effect/effectid"), t.findtext("effect/mediatype")) for t in fades],
-                             [(total - 30, "end-black", "Cross Fade (+3dB)", "KGAudioTransCrossFade3dB", "audio")])
+            self.assertEqual(track.findall("transitionitem"), [])  # the sound is tapered by hand, if at all
 
     def test_short_edge_clips_get_shorter_dissolves(self):
         root = self.build(keep=[(0.0, 0.5), (1.0, 10.0), (12.0, 12.4)])
@@ -255,8 +251,6 @@ class PremiereXmlTests(unittest.TestCase):
         v1 = root.find("sequence/media/video/track")
         self.assertEqual([(int(t.findtext("start")), int(t.findtext("end"))) for t in v1.findall("transitionitem")],
                          [(0, 15), (total - 12, total)])
-        audio_fade = root.find("sequence/media/audio/track/transitionitem")
-        self.assertEqual(int(audio_fade.findtext("start")), total - 12)
 
     def test_music_gets_its_own_stereo_tracks(self):
         music = {"path": r"G:\obs rec\My Video_premiere\music.wav",
@@ -276,7 +270,7 @@ class PremiereXmlTests(unittest.TestCase):
         self.assertIsNone(music_file.find("media/video"))
         self.assertEqual(music_file.findtext("media/audio/channelcount"), "2")
         self.assertEqual(clips[0].findtext("masterclipid"), "masterclip-3")
-        self.assertEqual(tracks[2].findall("transitionitem"), [])  # the fade is in the music itself
+        self.assertEqual(tracks[2].findall("transitionitem"), [])
 
     def test_no_fades_when_turned_off(self):
         import xml.etree.ElementTree as ET
@@ -1101,9 +1095,10 @@ class VoiceLoudnessTests(unittest.TestCase):
         self.assertIn("[ca]volume=21.7dB,alimiter=limit=0.8414:", up)
         self.assertIn("level=false", up)
         down = yp.edit_fade_filter(30.0, -5.0)
-        self.assertIn("[ca]volume=-5.0dB,afade", down)
+        self.assertIn("[ca]volume=-5.0dB[outa]", down)
         self.assertNotIn("alimiter", down)
-        self.assertIn("[ca]afade", yp.edit_fade_filter(30.0))
+        self.assertIn("[ca]anull[outa]", yp.edit_fade_filter(30.0))
+        self.assertNotIn("afade", up + down)  # the sound keeps its level to the end
 
 
 class MusicLmTests(unittest.TestCase):
@@ -1168,8 +1163,7 @@ class MusicAudioTests(unittest.TestCase):
         out = os.path.join(self.tmp, "fit.wav")
         yp.fit_music(parts, 30.0, out)
         self.assertAlmostEqual(yp.get_video_duration(out), 30.0, delta=0.02)
-        self.assertGreater(self.level(out, 26.6, 0.4), -30)  # still playing just before the fade-out
-        self.assertLess(self.level(out, 29.95, 0.05), -45)  # and faded out on the last frame
+        self.assertGreater(self.level(out, 29.5, 0.45), -30)  # still at full level on the last frame
         self.assertGreater(self.level(out, 1.2, 0.5), -30)  # the leading silence was removed
         self.assertFalse([f for f in os.listdir(self.tmp) if "_clean" in f])
 
