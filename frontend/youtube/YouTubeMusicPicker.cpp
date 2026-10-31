@@ -2,7 +2,10 @@
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QAbstractButton>
+#include <QAudioDevice>
+#include <QAudioFormat>
 #include <QAudioOutput>
+#include <QAudioSink>
 #include <QButtonGroup>
 #include <QDir>
 #include <QFile>
@@ -12,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMediaDevices>
 #include <QMediaPlayer>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -20,10 +24,57 @@
 #include <QSaveFile>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtEndian>
 
 namespace {
 const char *kPlaySong = "▶ Song";
 const char *kPlayMix = "▶ With my voice";
+
+/* The sample format of a 16-bit PCM WAV and where its samples start; false for anything else */
+bool ReadWavHeader(QFile &file, QAudioFormat &format, qint64 &dataOffset)
+{
+	QByteArray riff = file.read(12);
+	if (riff.size() < 12 || !riff.startsWith("RIFF") || riff.mid(8, 4) != "WAVE") {
+		return false;
+	}
+	bool haveFormat = false;
+	for (;;) {
+		QByteArray header = file.read(8);
+		if (header.size() < 8) {
+			return false;
+		}
+		QByteArray id = header.left(4);
+		quint32 size = qFromLittleEndian<quint32>(header.constData() + 4);
+		if (id == "data") {
+			dataOffset = file.pos();
+			return haveFormat;
+		}
+		if (id == "fmt ") {
+			QByteArray fmt = file.read(size);
+			if (fmt.size() < 16) {
+				return false;
+			}
+			quint16 tag = qFromLittleEndian<quint16>(fmt.constData());
+			quint16 channels = qFromLittleEndian<quint16>(fmt.constData() + 2);
+			quint32 rate = qFromLittleEndian<quint32>(fmt.constData() + 4);
+			quint16 bits = qFromLittleEndian<quint16>(fmt.constData() + 14);
+			/* 1 = PCM, 0xFFFE = WAVE_FORMAT_EXTENSIBLE */
+			if ((tag != 1 && tag != 0xFFFE) || bits != 16 || !channels || !rate) {
+				return false;
+			}
+			format.setSampleRate(int(rate));
+			format.setChannelCount(channels);
+			format.setSampleFormat(QAudioFormat::Int16);
+			haveFormat = true;
+		} else if (!file.seek(file.pos() + size)) {
+			return false;
+		}
+		/* Chunks are padded to an even length */
+		if ((size & 1) && !file.seek(file.pos() + 1)) {
+			return false;
+		}
+	}
+}
 
 QJsonObject ReadJson(const QString &path)
 {
@@ -238,14 +289,53 @@ void YouTubeMusicPicker::Play(QPushButton *button, const QString &file)
 	}
 	playingButton = button;
 	button->setText("⏹ Stop");
+	/* Inside OBS, Windows Media Foundation stalls on audio-only files after a moment, so WAVs go
+	 * straight to the sound card; the media player is only for older M4A previews */
+	if (file.endsWith(".wav", Qt::CaseInsensitive) && PlayWav(file)) {
+		return;
+	}
 	player->setSource(QUrl::fromLocalFile(file));
 	player->play();
 }
 
+bool YouTubeMusicPicker::PlayWav(const QString &path)
+{
+	QFile *file = new QFile(path, this);
+	QAudioFormat format;
+	qint64 dataOffset = 0;
+	QAudioDevice device = QMediaDevices::defaultAudioOutput();
+	if (!file->open(QIODevice::ReadOnly) || !ReadWavHeader(*file, format, dataOffset) || device.isNull() ||
+	    !device.isFormatSupported(format) || !file->seek(dataOffset)) {
+		delete file;
+		return false;
+	}
+	wavFile = file;
+	sink = new QAudioSink(device, format, this);
+	connect(sink, &QAudioSink::stateChanged, this, [this](QAudio::State state) {
+		/* Idle once the file is read and the sound card has played what it was given */
+		if (state == QAudio::IdleState && wavFile && wavFile->atEnd()) {
+			StopPlayback();
+		}
+	});
+	sink->start(wavFile);
+	return true;
+}
+
 void YouTubeMusicPicker::StopPlayback()
 {
-	player->stop();
+	if (sink) {
+		sink->disconnect(this);
+		sink->stop();
+		sink->deleteLater();
+		sink = nullptr;
+	}
 	/* Let go of the file, so the pipeline can write over it */
+	if (wavFile) {
+		wavFile->close();
+		wavFile->deleteLater();
+		wavFile = nullptr;
+	}
+	player->stop();
 	player->setSource(QUrl());
 	if (playingButton) {
 		playingButton->setText(playingButton->property("idleText").toString());

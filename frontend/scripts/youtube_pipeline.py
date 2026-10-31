@@ -2797,8 +2797,9 @@ def mix_music(voice_video: str, music: str, out_path: str, settings: dict, stem_
               audio_only: bool = False) -> None:
     """
     The voice with the music under it: the music at settings' gain, ducked further by the voice (ffmpeg
-    sidechaincompress). Writes the video (or, with audio_only, just the sound as M4A) and, with stem_path,
-    the ducked music on its own as a WAV, as it sits in the mix.
+    sidechaincompress). Writes the video (or, with audio_only, just the sound: WAV for a .wav path, which
+    the music picker plays directly, else AAC) and, with stem_path, the ducked music on its own as a WAV,
+    as it sits in the mix.
     """
     fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
     graph = (f"[0:a]{fmt},asplit=2[voice][sc];"
@@ -2809,7 +2810,8 @@ def mix_music(voice_video: str, music: str, out_path: str, settings: dict, stem_
     graph += "[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]"
     cmd = ["ffmpeg", "-y", "-hide_banner", "-i", voice_video, "-i", music, "-filter_complex", graph]
     if audio_only:
-        cmd += ["-map", "[mix]", "-c:a", "aac", "-b:a", "160k", out_path]
+        codec = ["pcm_s16le"] if out_path.lower().endswith(".wav") else ["aac", "-b:a", "160k"]
+        cmd += ["-map", "[mix]", "-c:a", *codec, out_path]
     else:
         cmd += ["-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart", out_path]
@@ -3054,7 +3056,7 @@ def make_music_options(config: dict, ctx: dict, briefs: list[dict], first: int =
                 song = os.path.join(out_dir, f"{option['id']}.wav")
                 fit_music(parts, duration, song)
                 settings = music_mix_settings(ctx["voice_lufs"], measure_lufs(song))
-                preview = os.path.join(out_dir, f"{option['id']}_preview.m4a")
+                preview = os.path.join(out_dir, f"{option['id']}_preview.wav")
                 mix_music(voice, song, preview, settings, audio_only=True)
                 option.update(path=song, preview=preview, mix=settings)
         except Exception as e:

@@ -897,7 +897,9 @@ class StepRunTests(unittest.TestCase):
         edited = yp.get_video_duration(yp.pipeline_paths(video)["edited_video"])
         for o in music["options"]:
             self.assertAlmostEqual(yp.get_video_duration(o["path"]), edited, delta=0.05)
-            self.assertTrue(os.path.exists(o["preview"]))
+            # A WAV, which the picker plays directly (Media Foundation stalls on audio-only files in OBS)
+            self.assertTrue(o["preview"].endswith(".wav"))
+            self.assertAlmostEqual(yp.get_video_duration(o["preview"]), edited, delta=0.05)
             self.assertFalse(any(os.path.exists(o["path"].replace(".wav", f"_part{k}.wav")) for k in (1, 2)))
 
         # New songs from an edited style prompt are added, and the job keeps waiting

@@ -4,7 +4,9 @@
 #include <QString>
 
 class QAudioOutput;
+class QAudioSink;
 class QButtonGroup;
+class QFile;
 class QLabel;
 class QMediaPlayer;
 class QPlainTextEdit;
@@ -41,6 +43,9 @@ private:
 
 	QMediaPlayer *player;
 	QAudioOutput *audio;
+	/* WAVs play through these instead of the media player */
+	QAudioSink *sink = nullptr;
+	QFile *wavFile = nullptr;
 	QPushButton *playingButton = nullptr;
 
 	QString musicPath;
@@ -49,6 +54,7 @@ private:
 	int regenCount = 2;
 
 	void Play(QPushButton *button, const QString &file);
+	bool PlayWav(const QString &path);
 	void StopPlayback();
 	void Finish();
 	void Regenerate();
