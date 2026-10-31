@@ -1797,6 +1797,12 @@ CLOUD_IMAGE_MODELS = {
     "openai": ("OpenAI GPT Image", ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]),
 }
 _working_cloud_model = {}
+# When a source runs out of quota or its key is refused, these are tried next (only those with a key)
+CLOUD_IMAGE_FALLBACK_ORDER = ["gemini_pro", "gemini", "openai"]
+CLOUD_IMAGE_KEYS = {"gemini": "gemini_key", "gemini_pro": "gemini_key", "openai": "openai_key"}
+# Models out of quota and providers whose key was refused in this run, so the next images skip them
+_exhausted_cloud_models = set()
+_refused_cloud_keys = set()
 
 
 def is_model_unavailable(error) -> bool:
@@ -1804,14 +1810,47 @@ def is_model_unavailable(error) -> bool:
     return any(s in text for s in ("404", "not_found", "not found", "model_not_found", "does not exist"))
 
 
+def is_quota_error(error) -> bool:
+    text = str(error).lower()
+    return any(s in text for s in ("429", "resource_exhausted", "quota", "insufficient_quota", "rate limit",
+                                   "rate_limit", "billing"))
+
+
+def is_key_error(error) -> bool:
+    text = str(error).lower()
+    return any(s in text for s in ("401", "403", "permission_denied", "unauthenticated", "api key not valid",
+                                   "api_key_invalid", "invalid_api_key", "incorrect api key"))
+
+
+def short_cloud_error(error) -> str:
+    """One line for the log instead of the provider's whole JSON error."""
+    text = str(error)
+    if is_quota_error(error):
+        msg = "out of quota (429)"
+        if "free_tier" in text.lower() or "free tier" in text.lower():
+            msg += "; free-tier keys have no image quota, so enable billing on this key's Google project"
+        wait = re.search(r"retry in ([\d.]+h)?([\d.]+m)?([\d.]+)s", text)
+        if wait:
+            h, m, s = (float((g or "0").rstrip("hm")) for g in wait.groups())
+            minutes = round(h * 60 + m + s / 60)
+            msg += f" (resets in {minutes // 60}h {minutes % 60}m)" if minutes >= 60 else f" (resets in {minutes}m)"
+        return msg
+    if is_key_error(error):
+        return f"the API key was refused, check it in Settings -> YouTube Automation ({text[:120]})"
+    return text[:200]
+
+
 def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None):
     """Nano Banana (Gemini image model) text-to-image, or an edit of init_image. Returns a PIL image."""
     if not api_key:
         raise ValueError("No Gemini API key configured.")
+    import logging
     from google import genai
     from google.genai import types
     from PIL import Image
 
+    # Its harmless "automatic function calling" notice would show up as a warning in the dock's log
+    logging.getLogger("google_genai").setLevel(logging.ERROR)
     client = genai.Client(api_key=api_key)
     result = client.models.generate_content(
         model=model,
@@ -1877,26 +1916,56 @@ def generate_openai_image(api_key: str, prompt: str, model: str, init_image=None
     return Image.open(io.BytesIO(base64.b64decode(data["data"][0]["b64_json"])))
 
 
-def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=None):
-    """One image from a cloud source, trying the next model if one isn't available. Returns (image, model)."""
-    _, models = CLOUD_IMAGE_MODELS[source]
-    working = _working_cloud_model.get(source)
-    models = sorted(models, key=lambda m: m != working)
+def cloud_image_attempts(source: str, secrets: dict, fallback: bool) -> list[tuple[str, str]]:
+    """(source, model) pairs to try: the source's own models, then with `fallback` the other cloud sources
+    that have a key. Each model is tried once."""
+    sources = [source]
+    if fallback:
+        sources += [s for s in CLOUD_IMAGE_FALLBACK_ORDER if s != source and secrets.get(CLOUD_IMAGE_KEYS[s])]
+    attempts, seen = [], set()
+    for s in sources:
+        working = _working_cloud_model.get(s)
+        for model in sorted(CLOUD_IMAGE_MODELS[s][1], key=lambda m: m != working):
+            if model not in seen:
+                seen.add(model)
+                attempts.append((s, model))
+    return attempts
+
+
+def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=None, fallback: bool = False):
+    """
+    One image from a cloud source. A model that isn't available or is out of quota moves on to the
+    source's next model; with `fallback`, a quota or key error also moves on to the other cloud sources
+    that have a key. Returns (image, source, model).
+    """
     last = None
-    for model in models:
+    for src, model in cloud_image_attempts(source, secrets, fallback):
+        key_name = CLOUD_IMAGE_KEYS[src]
+        if model in _exhausted_cloud_models or key_name in _refused_cloud_keys:
+            continue
+        if src != source and last is not None:
+            log_info(f"Trying {CLOUD_IMAGE_MODELS[src][0]} ({model}) instead.")
         try:
-            if source == "openai":
-                img = generate_openai_image(secrets.get("openai_key", ""), prompt, model, init_image)
+            if src == "openai":
+                img = generate_openai_image(secrets.get(key_name, ""), prompt, model, init_image)
             else:
-                img = generate_gemini_image(secrets.get("gemini_key", ""), prompt, model, init_image)
-            _working_cloud_model[source] = model
-            return img, model
+                img = generate_gemini_image(secrets.get(key_name, ""), prompt, model, init_image)
+            _working_cloud_model[src] = model
+            return img, src, model
         except Exception as e:
-            if not is_model_unavailable(e):
-                raise
-            log_warn(f"{model} isn't available ({str(e)[:160]}); trying the next model.")
             last = e
-    raise RuntimeError(f"None of {', '.join(models)} is available: {last}")
+            if is_quota_error(e):
+                _exhausted_cloud_models.add(model)
+            elif is_key_error(e):
+                _refused_cloud_keys.add(key_name)
+            elif not is_model_unavailable(e):
+                raise RuntimeError(short_cloud_error(e)) from None
+            log_warn(f"{CLOUD_IMAGE_MODELS[src][0]} ({model}): {short_cloud_error(e)}")
+            if src == source and not fallback and is_key_error(e):
+                break
+    if last is None:
+        raise RuntimeError("Every cloud image model is out of quota or refused the key in this run.")
+    raise RuntimeError(short_cloud_error(last))
 
 
 DEFAULT_THUMBNAIL_IMAGE_MODEL = "x/z-image-turbo"
@@ -2319,6 +2388,7 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
                    or "YouTube creator studio").strip()
     prompts, negative = thumbnail_prompts(base_prompt, count, options)
     secrets = config.get("secrets", {})
+    fallback = bool(config.get("cloud_image_fallback", True))
     label = THUMBNAIL_IMAGE_SOURCE_LABELS.get(source, source)
     made = []
     designer = "claude" if source == "claude" else "local"
@@ -2353,12 +2423,15 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
                 if source == "local":
                     img = generate_ollama_image(model, prompt)
                 else:
-                    img, used = generate_cloud_image(source, secrets, prompt)
-                    label = f"{CLOUD_IMAGE_MODELS[source][0]} ({used})"
+                    img, used_source, used = generate_cloud_image(source, secrets, prompt, fallback=fallback)
+                    label = f"{CLOUD_IMAGE_MODELS[used_source][0]} ({used})"
+                    if used_source != source and not made:
+                        notes.append(f"{CLOUD_IMAGE_MODELS[source][0]} was out of quota or refused the key, "
+                                     f"so {label} made these.")
                 made.append(save_ai_candidate(img, f"ai_{len(made) + 1}", out_dir, hook, person, side))
             except Exception as e:
                 log_warn(f"{label} image {i + 1} failed: {e}")
-                notes.append(f"{label} image {i + 1} failed: {str(e)[:160]}")
+                notes.append(f"{label} image {i + 1} failed: {str(e)[:200]}")
                 if not made:
                     break  # the first one failed; don't keep retrying a source that doesn't work
         if made:
@@ -2392,7 +2465,8 @@ def cloud_refine_prompt(base_prompt: str, options: dict, strength: float) -> str
     return prompt
 
 
-def refine_with_cloud(source: str, secrets: dict, bg_path: str, prompt: str, count: int, notes: list) -> list:
+def refine_with_cloud(source: str, secrets: dict, bg_path: str, prompt: str, count: int, notes: list,
+                      fallback: bool = True) -> list:
     """`count` edits of the background by the cloud model. Only the text-free background is sent, never your photo."""
     from PIL import Image
 
@@ -2402,7 +2476,7 @@ def refine_with_cloud(source: str, secrets: dict, bg_path: str, prompt: str, cou
     for i in range(count):
         update_step("thumbnail", 20 + 70 * i // count, f"Refining {i + 1}/{count} with {name}...")
         try:
-            img, _ = generate_cloud_image(source, secrets, prompt, init)
+            img, _, _ = generate_cloud_image(source, secrets, prompt, init, fallback=fallback)
             images.append(img)
         except Exception as e:
             log_warn(f"{name} refine {i + 1} failed: {e}")
@@ -2432,7 +2506,8 @@ def refine_thumbnail(config: dict, candidate: dict, metadata: dict, options: dic
                      "(nothing of you is uploaded).")
     if source in CLOUD_IMAGE_MODELS and not shows_you(candidate):
         images = refine_with_cloud(source, config.get("secrets", {}), candidate["bg"],
-                                   cloud_refine_prompt(base_prompt, options, strength), count, notes)
+                                   cloud_refine_prompt(base_prompt, options, strength), count, notes,
+                                   bool(config.get("cloud_image_fallback", True)))
     else:
         prompts, negative = thumbnail_prompts(base_prompt, count, options)
         label = "Refine (local Stable Diffusion)"

@@ -108,6 +108,15 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"Your photo and video frames are never sent to them: only the text-free background is.");
 	modelForm->addRow("AI thumbnail images:", thumbnailImageSourceCombo);
 
+	cloudImageFallbackCheck = new QCheckBox("Try the other cloud image models if one is out of quota or its key fails",
+						prioGroup);
+	cloudImageFallbackCheck->setChecked(true);
+	cloudImageFallbackCheck->setToolTip(
+		"Nano Banana Pro, Nano Banana 2 and GPT Image are tried in turn (only those with an API key saved below)\n"
+		"before falling back to free local thumbnails. Another Nano Banana model on the same key is always tried.\n"
+		"Each image you get is billed by the model that made it.");
+	modelForm->addRow("Cloud fallback:", cloudImageFallbackCheck);
+
 	thumbnailImageModelCombo = new QComboBox(prioGroup);
 	thumbnailImageModelCombo->setEditable(true);
 	thumbnailImageModelCombo->addItem("x/z-image-turbo");
@@ -382,6 +391,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	};
 	connect(thumbnailImageSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(thumbnailImageModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
+	connect(cloudImageFallbackCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(autoFinishCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(ollamaModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
@@ -557,6 +567,7 @@ void YouTubeSettingsWidget::LoadFromManager()
 	if (sourceIdx >= 0)
 		thumbnailImageSourceCombo->setCurrentIndex(sourceIdx);
 	thumbnailImageModelCombo->setCurrentText(cfg.thumbnailImageModel);
+	cloudImageFallbackCheck->setChecked(cfg.cloudImageFallback);
 	autoFinishCombo->setCurrentIndex(std::max(0, autoFinishCombo->findData(cfg.autoFinish)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
@@ -648,6 +659,7 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.priorityList = CurrentPriorityKeys();
 	cfg.thumbnailImageSource = thumbnailImageSourceCombo->currentData().toString();
 	cfg.thumbnailImageModel = thumbnailImageModelCombo->currentText().trimmed();
+	cfg.cloudImageFallback = cloudImageFallbackCheck->isChecked();
 	cfg.autoFinish = autoFinishCombo->currentData().toString();
 	cfg.whisperModel = whisperModelCombo->currentData().toString();
 	cfg.ollamaModel = ollamaModelCombo->currentText().trimmed();

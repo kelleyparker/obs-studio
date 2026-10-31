@@ -47,6 +47,7 @@ private:
 	QPushButton *moveDownBtn = nullptr;
 	QComboBox *thumbnailImageSourceCombo = nullptr;
 	QComboBox *thumbnailImageModelCombo = nullptr;
+	QCheckBox *cloudImageFallbackCheck = nullptr;
 	QComboBox *autoFinishCombo = nullptr;
 	QComboBox *whisperModelCombo = nullptr;
 	QComboBox *ollamaModelCombo = nullptr;

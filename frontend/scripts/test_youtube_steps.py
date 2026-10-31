@@ -307,10 +307,12 @@ class CloudImageTests(unittest.TestCase):
 
     def setUp(self):
         yp._working_cloud_model.clear()
+        yp._exhausted_cloud_models.clear()
+        yp._refused_cloud_keys.clear()
 
     def test_openai_generate_uses_gpt_image(self):
         with mock.patch("urllib.request.urlopen", side_effect=openai_ok) as urlopen:
-            img, model = yp.generate_cloud_image("openai", self.SECRETS, "a desk")
+            img, _, model = yp.generate_cloud_image("openai", self.SECRETS, "a desk")
         req = urlopen.call_args.args[0]
         body = json.loads(req.data)
         self.assertEqual(model, "gpt-image-2")
@@ -341,22 +343,100 @@ class CloudImageTests(unittest.TestCase):
             return openai_ok()
 
         with mock.patch("urllib.request.urlopen", side_effect=urlopen), contextlib.redirect_stdout(io.StringIO()):
-            _, model = yp.generate_cloud_image("openai", self.SECRETS, "a")
+            _, _, model = yp.generate_cloud_image("openai", self.SECRETS, "a")
             yp.generate_cloud_image("openai", self.SECRETS, "b")
         self.assertEqual(model, "gpt-image-1.5")
         self.assertEqual(calls, ["gpt-image-2", "gpt-image-1.5", "gpt-image-1.5"])
 
     def test_auth_error_does_not_fall_back(self):
-        with mock.patch("urllib.request.urlopen", side_effect=openai_error(401, "invalid_api_key", "Bad key")) as u:
-            with self.assertRaisesRegex(RuntimeError, "Bad key"):
+        with mock.patch("urllib.request.urlopen", side_effect=openai_error(401, "invalid_api_key", "Bad key")) as u, \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "key was refused.*Bad key"):
                 yp.generate_cloud_image("openai", self.SECRETS, "a")
         self.assertEqual(u.call_count, 1)
+
+    QUOTA = ("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota. "
+             "Quota exceeded for metric: generate_content_free_tier_requests, limit: 0. "
+             "Please retry in 4h43m42.97s.', 'status': 'RESOURCE_EXHAUSTED'}}")
+
+    def gemini_client(self, quota_models):
+        client = mock.MagicMock()
+
+        def generate(model, **kwargs):
+            if model in quota_models:
+                raise RuntimeError(self.QUOTA)
+            return gemini_reply(png_bytes())
+
+        client.models.generate_content.side_effect = generate
+        return client
+
+    def test_quota_error_is_one_readable_line(self):
+        msg = yp.short_cloud_error(RuntimeError(self.QUOTA))
+        self.assertEqual(msg, "out of quota (429); free-tier keys have no image quota, so enable billing on "
+                              "this key's Google project (resets in 4h 44m)")
+
+    def test_quota_tries_the_next_nano_banana(self):
+        client = self.gemini_client({"gemini-3-pro-image-preview"})
+        with mock.patch("google.genai.Client", return_value=client), contextlib.redirect_stdout(io.StringIO()):
+            _, source, model = yp.generate_cloud_image("gemini_pro", self.SECRETS, "a")
+            yp.generate_cloud_image("gemini_pro", self.SECRETS, "b")
+        self.assertEqual((source, model), ("gemini_pro", "gemini-3.1-flash-image-preview"))
+        called = [c.kwargs["model"] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(called, ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
+                                  "gemini-3.1-flash-image-preview"])
+
+    def test_quota_on_every_gemini_falls_back_to_gpt_image(self):
+        client = self.gemini_client(set(yp.CLOUD_IMAGE_MODELS["gemini_pro"][1]))
+        with mock.patch("google.genai.Client", return_value=client), \
+                mock.patch("urllib.request.urlopen", side_effect=openai_ok), \
+                contextlib.redirect_stdout(io.StringIO()):
+            _, source, model = yp.generate_cloud_image("gemini_pro", self.SECRETS, "a", fallback=True)
+            _, source2, _ = yp.generate_cloud_image("gemini_pro", self.SECRETS, "b", fallback=True)
+        self.assertEqual((source, model, source2), ("openai", "gpt-image-2", "openai"))
+        # Each Gemini model is tried once, not again for the second image
+        self.assertEqual(client.models.generate_content.call_count, 3)
+
+    def test_no_fallback_without_the_option_or_a_key(self):
+        client = self.gemini_client(set(yp.CLOUD_IMAGE_MODELS["gemini_pro"][1]))
+        for fallback, secrets in ((False, self.SECRETS), (True, {"gemini_key": "g-test"})):
+            yp._exhausted_cloud_models.clear()
+            with mock.patch("google.genai.Client", return_value=client), \
+                    mock.patch("urllib.request.urlopen", side_effect=openai_ok) as urlopen, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "out of quota"):
+                    yp.generate_cloud_image("gemini_pro", secrets, "a", fallback=fallback)
+            urlopen.assert_not_called()
+
+    def test_refused_key_falls_back_to_the_other_provider(self):
+        client = mock.MagicMock()
+        client.models.generate_content.side_effect = RuntimeError("400 INVALID_ARGUMENT. API key not valid.")
+        with mock.patch("google.genai.Client", return_value=client), \
+                mock.patch("urllib.request.urlopen", side_effect=openai_ok), \
+                contextlib.redirect_stdout(io.StringIO()):
+            _, source, _ = yp.generate_cloud_image("gemini", self.SECRETS, "a", fallback=True)
+        self.assertEqual(source, "openai")
+        self.assertEqual(client.models.generate_content.call_count, 1)
+
+    def test_thumbnails_say_which_model_stood_in(self):
+        from PIL import Image
+
+        img = Image.new("RGB", (1536, 1024), (30, 30, 30))
+        notes = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yp, "generate_cloud_image", return_value=(img, "openai", "gpt-image-2")) as cloud, \
+                contextlib.redirect_stdout(io.StringIO()):
+            made, label = yp.generate_ai_thumbnails("gemini_pro", 2, {"secrets": self.SECRETS},
+                                                    StableDiffusionThumbnailTests.META, [], tmp, notes=notes)
+        self.assertEqual(label, "OpenAI GPT Image (gpt-image-2)")
+        self.assertTrue(cloud.call_args.kwargs["fallback"])
+        self.assertEqual(notes, ["Google Nano Banana Pro was out of quota or refused the key, "
+                                 "so OpenAI GPT Image (gpt-image-2) made these."])
 
     def test_gemini_pro_tries_pro_first(self):
         client = mock.MagicMock()
         client.models.generate_content.return_value = gemini_reply("Here you go", png_bytes())
         with mock.patch("google.genai.Client", return_value=client):
-            img, model = yp.generate_cloud_image("gemini_pro", self.SECRETS, "a desk")
+            img, _, model = yp.generate_cloud_image("gemini_pro", self.SECRETS, "a desk")
         self.assertEqual(model, "gemini-3-pro-image-preview")
         kwargs = client.models.generate_content.call_args.kwargs
         self.assertEqual(kwargs["model"], "gemini-3-pro-image-preview")
@@ -375,7 +455,7 @@ class CloudImageTests(unittest.TestCase):
 
         img = Image.new("RGB", (1536, 1024), (30, 30, 30))
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(yp, "generate_cloud_image", return_value=(img, "gpt-image-2")), \
+                mock.patch.object(yp, "generate_cloud_image", return_value=(img, "openai", "gpt-image-2")), \
                 contextlib.redirect_stdout(io.StringIO()):
             made, label = yp.generate_ai_thumbnails("openai", 2, {"secrets": self.SECRETS},
                                                     StableDiffusionThumbnailTests.META, [], tmp)
@@ -391,7 +471,7 @@ class CloudImageTests(unittest.TestCase):
             Image.new("RGB", (1280, 720)).save(bg)
             cand = {"id": "x", "kind": kind, "bg": bg, **(extra or {})}
             img = Image.new("RGB", (1280, 720), (90, 90, 90))
-            with mock.patch.object(yp, "generate_cloud_image", return_value=(img, "gpt-image-2")) as cloud, \
+            with mock.patch.object(yp, "generate_cloud_image", return_value=(img, "openai", "gpt-image-2")) as cloud, \
                     mock.patch.object(yp, "generate_sd_images", return_value=[img, img]) as sd:
                 made = yp.refine_thumbnail({"thumbnail_image_source": "openai", "secrets": self.SECRETS}, cand,
                                            StableDiffusionThumbnailTests.META,

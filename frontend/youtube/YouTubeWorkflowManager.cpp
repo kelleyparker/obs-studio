@@ -158,6 +158,9 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "CutRetakes")) {
 		config.cutRetakes = config_get_bool(cfg, "YouTubeWorkflow", "CutRetakes");
 	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "CloudImageFallback")) {
+		config.cloudImageFallback = config_get_bool(cfg, "YouTubeWorkflow", "CloudImageFallback");
+	}
 
 	config.brollEnabled = config_get_bool(cfg, "YouTubeWorkflow", "BrollEnabled");
 	const char *brollSource = config_get_string(cfg, "YouTubeWorkflow", "BrollSource");
@@ -187,6 +190,7 @@ void YouTubeWorkflowManager::SaveConfig()
 			  config.thumbnailImageSource.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel",
 			  config.thumbnailImageModel.toUtf8().constData());
+	config_set_bool(cfg, "YouTubeWorkflow", "CloudImageFallback", config.cloudImageFallback);
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath", config.thumbPhotoPath.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonMode", config.thumbPersonMode.toUtf8().constData());
@@ -448,6 +452,7 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["priority_list"] = prioArr;
 	payload["thumbnail_image_source"] = config.thumbnailImageSource;
 	payload["thumbnail_image_model"] = config.thumbnailImageModel;
+	payload["cloud_image_fallback"] = config.cloudImageFallback;
 	payload["thumb_options"] = thumbOptions;
 	payload["auto_finish"] = config.autoFinish;
 	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "thumbnail", "publish"}

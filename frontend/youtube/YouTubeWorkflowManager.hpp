@@ -24,6 +24,8 @@ struct YouTubeWorkflowConfig {
 	// "gemini_pro" (Nano Banana Pro), "openai" (GPT Image), "claude" (paid) or "off"
 	QString thumbnailImageSource = "sd";
 	QString thumbnailImageModel = "x/z-image-turbo";
+	// When a cloud image source is out of quota or refuses the key, try the other cloud sources that have a key
+	bool cloudImageFallback = true;
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
