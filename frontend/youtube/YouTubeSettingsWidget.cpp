@@ -18,7 +18,9 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSlider>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 QString ProviderDisplayName(const QString &key)
@@ -345,22 +347,55 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	mainLayout->addWidget(editGroup);
 
 	// =========================================================================
-	// SECTION 5: Screen B-roll
+	// SECTION 5: B-roll (AI pictures of what you say, and/or your screen)
 	// =========================================================================
-	QGroupBox *brollGroup = new QGroupBox("5. Screen B-roll (Record Your Screen & Cut To It)", container);
+	QGroupBox *brollGroup = new QGroupBox("5. B-roll (AI Pictures of What You Say, or Your Screen)", container);
 	QFormLayout *brollForm = new QFormLayout(brollGroup);
 
-	brollEnabledCheck = new QCheckBox("Record a screen source alongside the webcam and add it as B-roll", brollGroup);
+	brollEnabledCheck = new QCheckBox("Add B-roll to my videos", brollGroup);
 	brollForm->addRow("B-roll:", brollEnabledCheck);
+
+	QWidget *amountRow = new QWidget(brollGroup);
+	QHBoxLayout *amountLayout = new QHBoxLayout(amountRow);
+	amountLayout->setContentsMargins(0, 0, 0, 0);
+	QLabel *fewerLabel = new QLabel("Fewer", amountRow);
+	brollAmountSlider = new QSlider(Qt::Horizontal, amountRow);
+	brollAmountSlider->setRange(0, kBrollAmountMax);
+	brollAmountSlider->setPageStep(1);
+	brollAmountSlider->setTickPosition(QSlider::TicksBelow);
+	brollAmountSlider->setValue(2);
+	brollAmountSlider->setToolTip(
+		"How many AI pictures to add, from Off to Lots (about one every 2 minutes up to one every 25 seconds). "
+		"The AI picks the moments where a picture helps explain what you say. In Step mode you can change "
+		"this for each video before any picture is made.");
+	QLabel *moreLabel = new QLabel("More", amountRow);
+	brollAmountLabel = new QLabel(amountRow);
+	brollAmountLabel->setMinimumWidth(70);
+	amountLayout->addWidget(fewerLabel);
+	amountLayout->addWidget(brollAmountSlider, 1);
+	amountLayout->addWidget(moreLabel);
+	amountLayout->addWidget(brollAmountLabel);
+	connect(brollAmountSlider, &QSlider::valueChanged, this,
+		[this](int value) { brollAmountLabel->setText(BrollAmountName(value)); });
+	brollAmountLabel->setText(BrollAmountName(brollAmountSlider->value()));
+	brollForm->addRow("AI pictures:", amountRow);
+
+	brollImageSourceCombo = new QComboBox(brollGroup);
+	FillBrollImageSources(brollImageSourceCombo);
+	brollImageSourceCombo->setToolTip(
+		"Who makes the pictures. Auto mode always uses this; in Step mode you can pick for each picture. "
+		"Only the picture's description is sent to a cloud model, never your video. A picture the cloud "
+		"can't make is made on this PC instead.");
+	brollForm->addRow("Made with:", brollImageSourceCombo);
 
 	brollSourceCombo = new QComboBox(brollGroup);
 	brollSourceCombo->setToolTip(
-		"Any video source, e.g. a Display Capture in a spare scene. It is recorded to its own file; "
-		"the main recording is not changed.");
-	brollForm->addRow("Screen Source:", brollSourceCombo);
+		"Optional. Any video source, e.g. a Display Capture in a spare scene, recorded to its own file "
+		"next to the webcam so the edit can cut to your screen. The main recording is not changed.");
+	brollForm->addRow("Screen source (optional):", brollSourceCombo);
 
 	brollStyleCombo = new QComboBox(brollGroup);
-	brollStyleCombo->addItem("Screen with webcam bubble (PiP)", "pip");
+	brollStyleCombo->addItem("B-roll with webcam bubble (PiP)", "pip");
 	brollStyleCombo->addItem("Full-screen cutaway", "cutaway");
 	brollForm->addRow("Style:", brollStyleCombo);
 
@@ -374,7 +409,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 
 	QLabel *brollHint = new QLabel(
 		"Tip: bind \"YouTube: Mark B-roll moment\" in Settings → Hotkeys and press it while recording to flag "
-		"spots that need your screen. In Step mode (YouTube dock) you review the suggestions before rendering.",
+		"spots that need a picture or your screen. In Step mode (YouTube dock) you pick the spots, choose who "
+		"makes each picture and see them before rendering.",
 		brollGroup);
 	brollHint->setWordWrap(true);
 	brollHint->setStyleSheet("color: #b8a8c8; font-size: 11px;");
@@ -438,6 +474,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(brollSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(brollStyleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(brollCoverageSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, notifyMod);
+	connect(brollAmountSlider, &QSlider::valueChanged, this, notifyMod);
+	connect(brollImageSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 
 	connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::OAuthStatusUpdated, this,
 		[this](bool connected, const QString &channelTitle, const QString &message) {
@@ -660,6 +698,8 @@ void YouTubeSettingsWidget::LoadFromManager()
 	int brollStyleIdx = brollStyleCombo->findData(cfg.brollStyle);
 	brollStyleCombo->setCurrentIndex(brollStyleIdx >= 0 ? brollStyleIdx : 0);
 	brollCoverageSpin->setValue(cfg.brollMaxCoverage * 100.0);
+	brollAmountSlider->setValue(cfg.brollAmount);
+	brollImageSourceCombo->setCurrentIndex(std::max(0, brollImageSourceCombo->findData(cfg.brollImageSource)));
 
 	internalUpdating = false;
 }
@@ -713,6 +753,8 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.brollSourceName = brollSourceCombo->currentData().toString();
 	cfg.brollStyle = brollStyleCombo->currentData().toString();
 	cfg.brollMaxCoverage = brollCoverageSpin->value() / 100.0;
+	cfg.brollAmount = brollAmountSlider->value();
+	cfg.brollImageSource = brollImageSourceCombo->currentData().toString();
 
 	mgr->SetVaultKey("GeminiKey", geminiKeyEdit->text());
 	mgr->SetVaultKey("OpenAIKey", openaiKeyEdit->text());
@@ -729,6 +771,34 @@ void YouTubeSettingsWidget::FillMusicSources(QComboBox *combo)
 {
 	combo->addItem("ACE-Step on this PC (free, default)", "acestep");
 	combo->addItem("Google Lyria 3.5 (paid, ~$0.08 per song, fast)", "lyria");
+}
+
+void YouTubeSettingsWidget::FillBrollImageSources(QComboBox *combo, bool compact)
+{
+	/* Prices: Google's paid tier per 1K picture, as CLOUD_IMAGE_PRICE in youtube_pipeline.py */
+	combo->addItem(compact ? "This PC (free)" : "Stable Diffusion on this PC (free, default)", "sd");
+	combo->addItem(compact ? "Nano Banana 2 (~$0.07)" : "Google Nano Banana 2 (paid, ~$0.07 per picture)",
+		       "gemini");
+	combo->addItem(compact ? "Nano Banana Pro (~$0.13)"
+			       : "Google Nano Banana Pro (paid, ~$0.13 per picture, best quality)",
+		       "gemini_pro");
+}
+
+double YouTubeSettingsWidget::BrollImagePrice(const QString &source)
+{
+	if (source == "gemini") {
+		return 0.067;
+	}
+	if (source == "gemini_pro") {
+		return 0.134;
+	}
+	return 0.0;
+}
+
+QString YouTubeSettingsWidget::BrollAmountName(int amount)
+{
+	static const char *names[] = {"Off", "Very few", "Few", "Some", "Many", "Lots"};
+	return names[std::clamp(amount, 0, kBrollAmountMax)];
 }
 
 void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)

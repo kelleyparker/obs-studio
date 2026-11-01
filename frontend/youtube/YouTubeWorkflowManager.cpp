@@ -187,6 +187,13 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollMaxCoverage")) {
 		config.brollMaxCoverage = config_get_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage");
 	}
+	if (config_has_user_value(cfg, "YouTubeWorkflow", "BrollAmount")) {
+		config.brollAmount = (int)config_get_int(cfg, "YouTubeWorkflow", "BrollAmount");
+	}
+	const char *brollImageSource = config_get_string(cfg, "YouTubeWorkflow", "BrollImageSource");
+	if (brollImageSource && *brollImageSource) {
+		config.brollImageSource = QString::fromUtf8(brollImageSource);
+	}
 }
 
 void YouTubeWorkflowManager::SaveConfig()
@@ -233,6 +240,8 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_string(cfg, "YouTubeWorkflow", "BrollSource", config.brollSourceName.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "BrollStyle", config.brollStyle.toUtf8().constData());
 	config_set_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage", config.brollMaxCoverage);
+	config_set_int(cfg, "YouTubeWorkflow", "BrollAmount", config.brollAmount);
+	config_set_string(cfg, "YouTubeWorkflow", "BrollImageSource", config.brollImageSource.toUtf8().constData());
 
 	config_save_safe(cfg, "tmp", nullptr);
 }
@@ -338,7 +347,7 @@ void YouTubeWorkflowManager::OnRecordingStarted()
 		return;
 	}
 	if (config.brollSourceName.isEmpty()) {
-		emit LogMessageReceived("warning", "B-roll is on but no screen source is selected; skipping B-roll.");
+		/* B-roll is AI pictures only: nothing to record next to the webcam */
 		return;
 	}
 	QString error;
@@ -579,16 +588,21 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	payload["mode"] = "pipeline";
 	payload["input_video"] = videoPath;
 
-	if (config.brollEnabled && !brollSession.screenPath.isEmpty() && QFileInfo::exists(brollSession.screenPath)) {
+	if (config.brollEnabled) {
 		QJsonArray markers;
 		for (double m : brollSession.markers) {
 			markers.append(m);
 		}
 		QJsonObject broll;
 		broll["enabled"] = true;
-		broll["screen_video"] = brollSession.screenPath;
-		broll["start_delta_sec"] = brollSession.startDeltaSec;
+		/* Pictures need nothing but what was said; the screen only when it was recorded */
+		if (!brollSession.screenPath.isEmpty() && QFileInfo::exists(brollSession.screenPath)) {
+			broll["screen_video"] = brollSession.screenPath;
+			broll["start_delta_sec"] = brollSession.startDeltaSec;
+		}
 		broll["markers"] = markers;
+		broll["amount"] = config.brollAmount;
+		broll["image_source"] = config.brollImageSource;
 		broll["style"] = config.brollStyle;
 		broll["max_coverage"] = config.brollMaxCoverage;
 		broll["review"] = stepMode;
@@ -699,6 +713,31 @@ void YouTubeWorkflowManager::RegenerateMusic(const QJsonObject &options)
 	if (!LaunchPipelineWorker(payload)) {
 		musicRegenActive = false;
 		emit MusicRegenFinished();
+	}
+}
+
+void YouTubeWorkflowManager::MakeBrollImages(const QJsonObject &options)
+{
+	if (IsPipelineRunning()) {
+		emit LogMessageReceived("warning", "A YouTube pipeline job is already running.");
+		return;
+	}
+	if (config.pendingReviewGate != "broll") {
+		emit LogMessageReceived("warning", "No job is waiting at the B-roll step.");
+		return;
+	}
+
+	brollImagesActive = true;
+	emit BrollImagesStarted();
+	emit StepProgressUpdated("broll", 0, "Starting...");
+
+	QJsonObject payload;
+	payload["mode"] = "broll_images";
+	payload["state_path"] = config.pendingReviewState;
+	payload["options"] = options;
+	if (!LaunchPipelineWorker(payload)) {
+		brollImagesActive = false;
+		emit BrollImagesFinished();
 	}
 }
 
@@ -827,6 +866,10 @@ void YouTubeWorkflowManager::StopWorker()
 	if (musicRegenActive) {
 		musicRegenActive = false;
 		emit MusicRegenFinished();
+	}
+	if (brollImagesActive) {
+		brollImagesActive = false;
+		emit BrollImagesFinished();
 	}
 	emit LogMessageReceived("warning", "Stopped the step that was running; what it finished before is saved.");
 }
@@ -1082,6 +1125,10 @@ bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
 				musicRegenActive = false;
 				emit MusicRegenFinished();
 			}
+			if (brollImagesActive) {
+				brollImagesActive = false;
+				emit BrollImagesFinished();
+			}
 		});
 
 	SetPythonUtf8Environment(workerProcess);
@@ -1272,6 +1319,19 @@ void YouTubeWorkflowManager::CancelPipeline()
 		emit ReviewReady(config.pendingReviewGate, config.pendingReviewState, config.pendingReviewData);
 		return;
 	}
+	if (brollImagesActive && workerProcess) {
+		/* Stop only the pictures (Stable Diffusion quits with the worker); the job keeps waiting at B-roll */
+		workerProcess->kill();
+		workerProcess->waitForFinished(2000);
+		workerProcess->deleteLater();
+		workerProcess = nullptr;
+		brollImagesActive = false;
+		emit BrollImagesFinished();
+		emit LogMessageReceived("warning", "Stopped making B-roll pictures.");
+		emit PipelineStateChanged("👀 Waiting for you: review the B-roll below", false);
+		emit BrollPlanReady(config.pendingReviewData, config.pendingReviewState);
+		return;
+	}
 	waitingForRemux = false;
 	SetWorkflowArmed(false);
 	if (HasPendingReview()) {
@@ -1362,7 +1422,10 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "broll_plan_ready") {
 		int count = obj.value("insert_count").toInt();
 		emit PipelineStateChanged(
-			QString("👀 Review %1 B-roll suggestion(s) below, then Render & Upload").arg(count), false);
+			QString("👀 Review %1 B-roll spot(s) below, then Render & Upload").arg(count), false);
+		for (const QJsonValue &note : obj.value("notes").toArray()) {
+			emit LogMessageReceived("warning", note.toString());
+		}
 		emit LogMessageReceived("info",
 					QString("B-roll plan ready: %1").arg(obj.value("plan_path").toString()));
 		SetPendingReview("broll", obj.value("state_path").toString(), obj.value("plan_path").toString());

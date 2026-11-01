@@ -10,6 +10,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QSlider;
 
 class YouTubeSettingsWidget : public QWidget {
 	Q_OBJECT
@@ -24,6 +25,12 @@ public:
 	static void FillThumbnailImageSources(QComboBox *combo);
 	/* ACE-Step / Lyria, shared with the YouTube dock */
 	static void FillMusicSources(QComboBox *combo);
+	/* Stable Diffusion / Nano Banana 2 / Nano Banana Pro, shared with the B-roll review */
+	static void FillBrollImageSources(QComboBox *combo, bool compact = false);
+	static double BrollImagePrice(const QString &source);
+	/* The Fewer <-> More dial's steps: Off, Very few ... Lots */
+	static QString BrollAmountName(int amount);
+	static constexpr int kBrollAmountMax = 5;
 
 signals:
 	void SettingsModified();
@@ -84,6 +91,9 @@ private:
 	QComboBox *brollSourceCombo = nullptr;
 	QComboBox *brollStyleCombo = nullptr;
 	QDoubleSpinBox *brollCoverageSpin = nullptr;
+	QSlider *brollAmountSlider = nullptr;
+	QLabel *brollAmountLabel = nullptr;
+	QComboBox *brollImageSourceCombo = nullptr;
 
 	void RefreshBrollSources(const QString &selected);
 

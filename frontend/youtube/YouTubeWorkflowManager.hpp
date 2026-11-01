@@ -51,6 +51,8 @@ struct YouTubeWorkflowConfig {
 	QString brollSourceName;
 	QString brollStyle = "pip"; // "pip" (webcam bubble over the screen) or "cutaway"
 	double brollMaxCoverage = 0.40;
+	int brollAmount = 2;              // AI pictures dial: 0 (Off) to 5 (Lots)
+	QString brollImageSource = "sd"; // "sd" (this PC), "gemini" or "gemini_pro"; Auto always uses this
 
 	// How AI thumbnails are tweaked (remembered for the next video): "Leave out" text, and the
 	// person composited on top ("none", "video" or "photo") with the photo and side
@@ -110,6 +112,9 @@ eview carries
 	/* At the music gate: make new songs from {"style", "base_id"} */
 	void RegenerateMusic(const QJsonObject &options);
 	bool IsRegeneratingMusic() const { return musicRegenActive; }
+	/* At the B-roll gate: make pictures for {"ids", "prompts": {id: text}, "sources": {id: source}} */
+	void MakeBrollImages(const QJsonObject &options);
+	bool IsMakingBrollImages() const { return brollImagesActive; }
 	/* Starts the last video over from "transcribe", "cuts", "metadata", "music" or "thumbnails", keeping the
 	 * recording; optionally deletes its YouTube upload first */
 	void RedoPipeline(const QString &from, bool deleteFromYouTube);
@@ -193,6 +198,8 @@ signals:
 	void ThumbnailRegenFinished();
 	void MusicRegenStarted();
 	void MusicRegenFinished();
+	void BrollImagesStarted();
+	void BrollImagesFinished();
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
 
@@ -218,6 +225,7 @@ private:
 	bool waitingForRemux = false;
 	bool thumbRegenActive = false;
 	bool musicRegenActive = false;
+	bool brollImagesActive = false;
 	QString lastVideoPath;
 	QString lastVideoId;
 	QString lastVideoUrl;

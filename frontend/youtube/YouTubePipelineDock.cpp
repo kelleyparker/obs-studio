@@ -579,9 +579,10 @@ void YouTubePipelineDock::OnPipelineStateChanged(const QString &bannerText, bool
 {
 	statusBanner->setText(bannerText);
 	cancelBtn->setEnabled(running || !reviewGate.isEmpty());
-	/* Making new thumbnails or songs keeps the job waiting at its step */
+	/* Making new thumbnails, songs or B-roll pictures keeps the job waiting at its step */
 	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
-	if (running && !mgr->IsRegeneratingThumbnails() && !mgr->IsRegeneratingMusic()) {
+	if (running && !mgr->IsRegeneratingThumbnails() && !mgr->IsRegeneratingMusic() &&
+	    !mgr->IsMakingBrollImages()) {
 		/* A new run (or the next stage) replaces whatever was being reviewed or offered to continue */
 		if (!reviewGate.isEmpty() || !continueState.isEmpty()) {
 			OnReviewCleared();
