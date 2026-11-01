@@ -1,15 +1,18 @@
 #pragma once
 
+#include <QList>
 #include <QStringList>
 #include <QWidget>
 
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QScrollArea;
 class QSlider;
 
 class YouTubeSettingsWidget : public QWidget {
@@ -35,6 +38,9 @@ public:
 signals:
 	void SettingsModified();
 
+protected:
+	bool eventFilter(QObject *obj, QEvent *event) override;
+
 private slots:
 	void OnPreferredDefaultChanged(int index);
 	void OnMovePriorityUp();
@@ -48,6 +54,17 @@ private:
 	void RefreshPriorityLabels();
 	QStringList CurrentPriorityKeys() const;
 	void SetPriorityKeys(const QStringList &keys);
+
+	/* Shows only the settings whose label, text, choices or tooltip contain
+	 * the text, as the Hotkeys page's filter does. Typed values (API keys)
+	 * are never searched. */
+	void ApplyFilter(const QString &text);
+
+	QLineEdit *filterEdit = nullptr;
+	QLabel *headerLabel = nullptr;
+	QLabel *noMatchLabel = nullptr;
+	QScrollArea *scrollArea = nullptr;
+	QList<QGroupBox *> sections;
 
 	// Section 1: 1-to-4 Priority & AI Models
 	QComboBox *preferredDefaultCombo = nullptr;

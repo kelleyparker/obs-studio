@@ -8,10 +8,12 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -19,6 +21,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
+#include <QTextDocumentFragment>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -35,6 +38,53 @@ QString ProviderDisplayName(const QString &key)
 		return "Local GPU LLM (Ollama on RTX GPU + Smart Frame Compositor — 100% Free)";
 	return key;
 }
+
+/* What the settings filter matches a widget on: labels, button text, list
+ * and dropdown choices, placeholders and tooltips. Never a QLineEdit's text,
+ * so a typed API key can't be found by searching for it. */
+QString SearchText(QWidget *root)
+{
+	QStringList parts;
+	QList<QWidget *> widgets = root->findChildren<QWidget *>();
+	widgets.prepend(root);
+	for (QWidget *w : widgets) {
+		parts << w->toolTip();
+		if (auto *label = qobject_cast<QLabel *>(w)) {
+			parts << QTextDocumentFragment::fromHtml(label->text()).toPlainText();
+		} else if (auto *button = qobject_cast<QAbstractButton *>(w)) {
+			parts << button->text();
+		} else if (auto *combo = qobject_cast<QComboBox *>(w)) {
+			for (int i = 0; i < combo->count(); ++i)
+				parts << combo->itemText(i);
+		} else if (auto *list = qobject_cast<QListWidget *>(w)) {
+			for (int i = 0; i < list->count(); ++i)
+				parts << list->item(i)->text();
+		} else if (auto *edit = qobject_cast<QLineEdit *>(w)) {
+			parts << edit->placeholderText();
+		}
+	}
+	return parts.join('\n');
+}
+
+void CollectWidgets(QLayoutItem *item, QList<QWidget *> &out)
+{
+	if (QWidget *w = item->widget()) {
+		out << w;
+	} else if (QLayout *layout = item->layout()) {
+		for (int i = 0; i < layout->count(); ++i)
+			CollectWidgets(layout->itemAt(i), out);
+	}
+}
+
+QString SearchText(QLayoutItem *item)
+{
+	QList<QWidget *> widgets;
+	CollectWidgets(item, widgets);
+	QStringList parts;
+	for (QWidget *w : widgets)
+		parts << SearchText(w);
+	return parts.join('\n');
+}
 } // namespace
 
 YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
@@ -42,7 +92,19 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	QVBoxLayout *outerLayout = new QVBoxLayout(this);
 	outerLayout->setContentsMargins(0, 0, 0, 0);
 
+	// Filter row, outside the scroll area so it stays put (as on the Hotkeys page)
+	QHBoxLayout *filterRow = new QHBoxLayout();
+	filterRow->setContentsMargins(12, 12, 12, 0);
+	filterRow->addWidget(new QLabel("Filter:", this));
+	filterEdit = new QLineEdit(this);
+	filterEdit->setPlaceholderText("Search YouTube settings…");
+	filterEdit->setClearButtonEnabled(true);
+	filterEdit->installEventFilter(this);
+	filterRow->addWidget(filterEdit, 1);
+	outerLayout->addLayout(filterRow);
+
 	QScrollArea *scroll = new QScrollArea(this);
+	scrollArea = scroll;
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
 
@@ -61,6 +123,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	header->setStyleSheet(
 		"QLabel { background-color: #2b1d38; border: 1px solid #6b4c85; border-radius: 6px; padding: 10px; }");
 	mainLayout->addWidget(header);
+	headerLabel = header;
 
 	// =========================================================================
 	// SECTION 1: 1-to-4 AI Provider Priority Ranking & Models
@@ -417,6 +480,18 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	brollForm->addRow(brollHint);
 
 	mainLayout->addWidget(brollGroup);
+
+	sections = {prioGroup, vaultGroup, ytGroup, editGroup, brollGroup};
+	/* Never taller than their contents, so when the filter hides most of a section the spare height
+	 * goes to the stretch below rather than to the stretch beside the Move Up/Down buttons */
+	for (QGroupBox *section : sections) {
+		section->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+	}
+	noMatchLabel = new QLabel(container);
+	noMatchLabel->setWordWrap(true);
+	noMatchLabel->setStyleSheet("color: #b8a8c8;");
+	noMatchLabel->hide();
+	mainLayout->addWidget(noMatchLabel);
 	mainLayout->addStretch();
 
 	scroll->setWidget(container);
@@ -443,6 +518,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		}
 		emit SettingsModified();
 	});
+
+	connect(filterEdit, &QLineEdit::textChanged, this, &YouTubeSettingsWidget::ApplyFilter);
 
 	connect(preferredDefaultCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
 		&YouTubeSettingsWidget::OnPreferredDefaultChanged);
@@ -489,6 +566,73 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		});
 
 	LoadFromManager();
+}
+
+bool YouTubeSettingsWidget::eventFilter(QObject *obj, QEvent *event)
+{
+	if (obj == filterEdit && event->type() == QEvent::KeyPress &&
+	    static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape && !filterEdit->text().isEmpty()) {
+		filterEdit->clear();
+		return true;
+	}
+	return QWidget::eventFilter(obj, event);
+}
+
+void YouTubeSettingsWidget::ApplyFilter(const QString &text)
+{
+	const QString needle = text.trimmed();
+	auto matches = [&needle](const QString &haystack) {
+		return haystack.contains(needle, Qt::CaseInsensitive);
+	};
+
+	bool anyShown = false;
+	for (QGroupBox *section : sections) {
+		const bool showAll = needle.isEmpty() || matches(section->title());
+		bool sectionShown = false;
+
+		auto filterForm = [&](QFormLayout *form) {
+			for (int row = 0; row < form->rowCount(); ++row) {
+				QString haystack;
+				for (auto role : {QFormLayout::LabelRole, QFormLayout::FieldRole, QFormLayout::SpanningRole}) {
+					if (QLayoutItem *item = form->itemAt(row, role))
+						haystack += SearchText(item) + '\n';
+				}
+				const bool show = showAll || matches(haystack);
+				form->setRowVisible(row, show);
+				sectionShown |= show;
+			}
+		};
+
+		if (QFormLayout *form = qobject_cast<QFormLayout *>(section->layout())) {
+			filterForm(form);
+		} else if (QLayout *layout = section->layout()) {
+			/* Forms are filtered row by row; anything else (the priority
+			 * list and its buttons, notices, button rows) as one piece */
+			for (int i = 0; i < layout->count(); ++i) {
+				QLayoutItem *item = layout->itemAt(i);
+				if (QFormLayout *subForm = qobject_cast<QFormLayout *>(item->layout())) {
+					filterForm(subForm);
+					continue;
+				}
+				QList<QWidget *> widgets;
+				CollectWidgets(item, widgets);
+				if (widgets.isEmpty())
+					continue;
+				const bool show = showAll || matches(SearchText(item));
+				for (QWidget *w : widgets)
+					w->setVisible(show);
+				sectionShown |= show;
+			}
+		}
+
+		section->setVisible(sectionShown);
+		anyShown |= sectionShown;
+	}
+
+	headerLabel->setVisible(needle.isEmpty());
+	noMatchLabel->setText(QString("No YouTube settings match \"%1\".").arg(needle));
+	noMatchLabel->setVisible(!anyShown);
+	scrollArea->ensureVisible(0, 0);
 }
 
 QStringList YouTubeSettingsWidget::CurrentPriorityKeys() const
