@@ -124,6 +124,9 @@ eview carries
 	void ExportToPremiere();
 	/* The state file of the last video (paused or finished run), or empty if there is none */
 	QString LastStatePath() const;
+	/* The folder of the last job that was opened or started; unlike the last video, New Project keeps it,
+	 * so Open Recent can find the job again after a crash */
+	QString RecentProjectDir() const;
 	/* The rendered edit of the last video and where its cuts are, for the preview player */
 	bool GetEditInfo(QString &videoPath, QList<double> &joins) const;
 	/* Forgets a paused run without continuing it */

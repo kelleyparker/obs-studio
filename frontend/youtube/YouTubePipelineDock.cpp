@@ -46,6 +46,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -98,10 +99,14 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QHBoxLayout *projectRow = new QHBoxLayout();
 	QPushButton *newProjectBtn = new QPushButton("🆕 New Project", container);
 	newProjectBtn->setToolTip("Put the current job away and start clean; its files stay next to the recording");
+	QPushButton *openRecentBtn = new QPushButton("🕘 Open Recent", container);
+	openRecentBtn->setToolTip("Reopen the newest job where it was left, e.g. after OBS or the PC shut down "
+				  "unexpectedly. If the newest file is a recording with no job yet, it offers to start one.");
 	QPushButton *openProjectBtn = new QPushButton("📂 Open Project…", container);
 	openProjectBtn->setToolTip(
 		"Pick a saved job (or a recording) and carry on where it was left, in the Step or Auto mode it ran in");
 	projectRow->addWidget(newProjectBtn);
+	projectRow->addWidget(openRecentBtn);
 	projectRow->addWidget(openProjectBtn);
 	mainLayout->addLayout(projectRow);
 	connect(newProjectBtn, &QPushButton::clicked, this, [this, mgr]() {
@@ -112,6 +117,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		OnLogMessageReceived("info",
 				     "New project: click ▶ YT to record one, or Open Project to pick up a saved one.");
 	});
+	connect(openRecentBtn, &QPushButton::clicked, this, &YouTubePipelineDock::OpenRecentProject);
 	connect(openProjectBtn, &QPushButton::clicked, this, &YouTubePipelineDock::ShowOpenProjectDialog);
 
 	// 1b. Step | Auto toggle and AI thumbnail source (both apply to the next run)
@@ -908,58 +914,12 @@ void YouTubePipelineDock::ShowOpenProjectDialog()
 	QPushButton *browseBtn = buttons->addButton("📁 Browse folder…", QDialogButtonBox::ActionRole);
 	layout->addWidget(buttons);
 
-	/* Saved jobs ({stem}_yt_state.json) and recordings with none yet, newest first */
 	auto fill = [&](const QString &dir, const QString &selectStem) {
 		folder = dir;
 		folderLabel->setText(
 			QString("Jobs and recordings in <b>%1</b>").arg(QDir::toNativeSeparators(dir).toHtmlEscaped()));
 		list->clear();
-		struct Row {
-			QDateTime when;
-			QString text;
-			QString path;
-			QString stem;
-		};
-		QList<Row> rows;
-		QSet<QString> started;
-		QString current = mgr->LastStatePath();
-		QDir d(dir);
-		for (const QFileInfo &f : d.entryInfoList({"*_yt_state.json"}, QDir::Files)) {
-			QFile file(f.absoluteFilePath());
-			if (!file.open(QIODevice::ReadOnly)) {
-				continue;
-			}
-			QJsonObject state = QJsonDocument::fromJson(file.readAll()).object();
-			QString stem = f.fileName().chopped(QStringLiteral("_yt_state.json").size());
-			started.insert(stem);
-			QJsonObject meta = state.value("ctx").toObject().value("metadata").toObject();
-			QString title = meta.value("title").toString();
-			QString status = YouTubeWorkflowManager::ProjectStatus(state);
-			if (!current.isEmpty() && QFileInfo(current) == f) {
-				status += "  (open now)";
-			}
-			rows.append({f.lastModified(),
-				     QString("%1\n%2  ·  %3  ·  %4")
-					     .arg(title.isEmpty() ? stem : title, status, stem,
-						  f.lastModified().toString("MMM d, h:mm AP")),
-				     f.absoluteFilePath(), stem});
-		}
-		/* One row per recording, the remuxed MP4 before the MKV it came from */
-		QFileInfoList videos = d.entryInfoList({"*.mp4"}, QDir::Files) +
-				       d.entryInfoList({"*.mov", "*.mkv"}, QDir::Files);
-		for (const QFileInfo &f : videos) {
-			QString stem = f.completeBaseName();
-			/* The pipeline's own outputs and B-roll screen recordings aren't projects */
-			if (stem.contains("_yt_") || stem.endsWith("_broll_screen") || started.contains(stem)) {
-				continue;
-			}
-			started.insert(stem);
-			QString when = f.lastModified().toString("MMM d, h:mm AP");
-			rows.append({f.lastModified(), QString("%1\n🎥 Not started  ·  %2").arg(f.fileName(), when),
-				     f.absoluteFilePath(), stem});
-		}
-		std::sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) { return a.when > b.when; });
-		for (const Row &row : rows) {
+		for (const ProjectRow &row : ListProjects(dir)) {
 			QListWidgetItem *item = new QListWidgetItem(row.text, list);
 			item->setData(Qt::UserRole, row.path);
 			item->setToolTip(QDir::toNativeSeparators(row.path));
@@ -995,8 +955,112 @@ void YouTubePipelineDock::ShowOpenProjectDialog()
 	if (dialog.exec() != QDialog::Accepted || !list->currentItem()) {
 		return;
 	}
+	OpenProjectPath(list->currentItem()->data(Qt::UserRole).toString());
+}
 
-	QString path = list->currentItem()->data(Qt::UserRole).toString();
+QList<YouTubePipelineDock::ProjectRow> YouTubePipelineDock::ListProjects(const QString &dir) const
+{
+	/* Saved jobs ({stem}_yt_state.json) and recordings with none yet, newest first */
+	QList<ProjectRow> rows;
+	QSet<QString> started;
+	QString current = YouTubeWorkflowManager::Instance()->LastStatePath();
+	QDir d(dir);
+	for (const QFileInfo &f : d.entryInfoList({"*_yt_state.json"}, QDir::Files)) {
+		QFile file(f.absoluteFilePath());
+		if (!file.open(QIODevice::ReadOnly)) {
+			continue;
+		}
+		QJsonObject state = QJsonDocument::fromJson(file.readAll()).object();
+		ProjectRow row;
+		row.when = f.lastModified();
+		row.path = f.absoluteFilePath();
+		row.stem = f.fileName().chopped(QStringLiteral("_yt_state.json").size());
+		started.insert(row.stem);
+		QString title = state.value("ctx").toObject().value("metadata").toObject().value("title").toString();
+		row.title = title.isEmpty() ? row.stem : title;
+		row.status = YouTubeWorkflowManager::ProjectStatus(state);
+		row.openNow = !current.isEmpty() && QFileInfo(current) == f;
+		if (row.openNow) {
+			row.status += "  (open now)";
+		}
+		row.text = QString("%1\n%2  ·  %3  ·  %4")
+				   .arg(row.title, row.status, row.stem, row.when.toString("MMM d, h:mm AP"));
+		rows.append(row);
+	}
+	/* One row per recording, the remuxed MP4 before the MKV it came from */
+	QFileInfoList videos = d.entryInfoList({"*.mp4"}, QDir::Files) +
+			       d.entryInfoList({"*.mov", "*.mkv"}, QDir::Files);
+	for (const QFileInfo &f : videos) {
+		QString stem = f.completeBaseName();
+		/* The pipeline's own outputs and B-roll screen recordings aren't projects */
+		if (stem.contains("_yt_") || stem.endsWith("_broll_screen") || started.contains(stem)) {
+			continue;
+		}
+		started.insert(stem);
+		ProjectRow row;
+		row.when = f.lastModified();
+		row.path = f.absoluteFilePath();
+		row.stem = stem;
+		row.title = f.fileName();
+		row.status = "🎥 Not started";
+		row.text = QString("%1\n%2  ·  %3").arg(row.title, row.status, row.when.toString("MMM d, h:mm AP"));
+		rows.append(row);
+	}
+	std::sort(rows.begin(), rows.end(), [](const ProjectRow &a, const ProjectRow &b) { return a.when > b.when; });
+	return rows;
+}
+
+void YouTubePipelineDock::OpenRecentProject()
+{
+	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
+	if (mgr->IsPipelineRunning()) {
+		if (!ConfirmStopRunningJob()) {
+			return;
+		}
+		mgr->NewProject();
+	}
+
+	/* The last job's folder (kept through New Project) and where OBS records now */
+	QStringList dirs;
+	for (const QString &dir :
+	     {mgr->RecentProjectDir(), QString::fromUtf8(OBSBasic::Get()->GetCurrentOutputPath())}) {
+		if (dir.isEmpty() || !QDir(dir).exists()) {
+			continue;
+		}
+		QString clean = QDir::cleanPath(QFileInfo(dir).absoluteFilePath());
+		if (!dirs.contains(clean, Qt::CaseInsensitive)) {
+			dirs.append(clean);
+		}
+	}
+	std::optional<ProjectRow> newest;
+	for (const QString &dir : dirs) {
+		QList<ProjectRow> rows = ListProjects(dir);
+		if (!rows.isEmpty() && (!newest || rows.first().when > newest->when)) {
+			newest = rows.first();
+		}
+	}
+	if (!newest) {
+		QMessageBox::information(this, "Open Recent",
+					 QString("No YouTube projects or recordings found in %1.")
+						 .arg(QDir::toNativeSeparators(dirs.join(", "))));
+		return;
+	}
+	/* A recording with no job yet gets OpenProjectPath's own "Start the pipeline?" question */
+	if (newest->path.endsWith("_yt_state.json")) {
+		QString question = QString("Open your most recent project?\n\n%1\n%2  ·  %3")
+					   .arg(newest->title, newest->status,
+						newest->when.toString("MMM d, h:mm AP"));
+		if (QMessageBox::question(this, "Open Recent", question, QMessageBox::Yes | QMessageBox::Cancel,
+					  QMessageBox::Yes) != QMessageBox::Yes) {
+			return;
+		}
+	}
+	OpenProjectPath(newest->path);
+}
+
+void YouTubePipelineDock::OpenProjectPath(const QString &path)
+{
+	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
 	if (!path.endsWith("_yt_state.json")) {
 		QString question = QString("Start the pipeline on %1 in %2 mode?")
 					   .arg(QFileInfo(path).fileName(),

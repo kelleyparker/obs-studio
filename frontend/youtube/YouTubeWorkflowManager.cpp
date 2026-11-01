@@ -503,8 +503,22 @@ void YouTubeWorkflowManager::SetLastVideo(const QString &path)
 	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
 	if (cfg) {
 		config_set_string(cfg, "YouTubeWorkflow", "LastVideoPath", path.toUtf8().constData());
+		if (!path.isEmpty()) {
+			config_set_string(cfg, "YouTubeWorkflow", "RecentProjectDir",
+					  QFileInfo(path).absolutePath().toUtf8().constData());
+		}
 		config_save_safe(cfg, "tmp", nullptr);
 	}
+}
+
+QString YouTubeWorkflowManager::RecentProjectDir() const
+{
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	const char *dir = cfg ? config_get_string(cfg, "YouTubeWorkflow", "RecentProjectDir") : nullptr;
+	if (dir && *dir) {
+		return QString::fromUtf8(dir);
+	}
+	return lastVideoPath.isEmpty() ? QString() : QFileInfo(lastVideoPath).absolutePath();
 }
 
 void YouTubeWorkflowManager::SetLastUpload(const QString &videoId, const QString &url)

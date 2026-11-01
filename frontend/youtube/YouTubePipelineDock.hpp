@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QDateTime>
+#include <QList>
 #include <QMap>
 #include <QPointer>
 #include <QString>
@@ -56,6 +58,22 @@ private:
 	/* Shows a saved job as it was left: its details, progress, and the review it waits at (or Continue) */
 	void RestoreJobView(const QString &statePath);
 	void ShowOpenProjectDialog();
+	/* Reopens the newest saved job (or offers to start the newest unstarted recording), e.g. after a crash */
+	void OpenRecentProject();
+	/* Opens a saved job's state file, or asks to start the pipeline on a recording */
+	void OpenProjectPath(const QString &path);
+
+	struct ProjectRow {
+		QDateTime when;
+		QString text;
+		QString path;
+		QString stem;
+		QString title;
+		QString status;
+		bool openNow = false;
+	};
+	/* Saved jobs ({stem}_yt_state.json) and recordings with none yet in dir, newest first */
+	QList<ProjectRow> ListProjects(const QString &dir) const;
 	/* Asks before New/Open Project stops a step that is still running; true to go ahead */
 	bool ConfirmStopRunningJob();
 
