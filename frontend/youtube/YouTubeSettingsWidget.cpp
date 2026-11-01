@@ -1,4 +1,5 @@
 #include "YouTubeSettingsWidget.hpp"
+#include "YouTubeScriptWriter.hpp"
 #include "YouTubeSecretVault.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
@@ -216,6 +217,35 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	autoFinishCombo->addItem("Both: export to Premiere Pro and upload", "both");
 	autoFinishCombo->setToolTip("What Auto mode does with the finished edit. Step mode always asks you at the end.");
 	modelForm->addRow("When Auto mode finishes:", autoFinishCombo);
+
+	/* Script writer: Claude writes the script before you record (📝 Script… in the YouTube dock) */
+	QWidget *scriptRow = new QWidget(prioGroup);
+	QHBoxLayout *scriptLayout = new QHBoxLayout(scriptRow);
+	scriptLayout->setContentsMargins(0, 0, 0, 0);
+	scriptModelCombo = new QComboBox(scriptRow);
+	YouTubeScriptWriter::FillModels(scriptModelCombo);
+	scriptEffortCombo = new QComboBox(scriptRow);
+	YouTubeScriptWriter::FillEfforts(scriptEffortCombo);
+	scriptCostLabel = new QLabel(scriptRow);
+	scriptCostLabel->setStyleSheet("color: #b8a8c8;");
+	scriptLayout->addWidget(scriptModelCombo, 1);
+	scriptLayout->addWidget(scriptEffortCombo);
+	scriptLayout->addWidget(scriptCostLabel);
+	scriptRow->setToolTip(
+		"Who writes your video scripts and teleprompter text, before you record (📝 Script… in the YouTube dock).\n"
+		"Uses the Claude API key below and is billed per script. Only your topic, notes and past video titles\n"
+		"are sent, never your recordings. Higher effort thinks longer: better on hard topics, slower, costs more.");
+	auto updateScriptCost = [this]() {
+		scriptCostLabel->setText(
+			QString("~$%1 per 8-min script")
+				.arg(YouTubeScriptWriter::EstimateCost(scriptModelCombo->currentData().toString(),
+								      scriptEffortCombo->currentData().toString(), 8.0),
+				     0, 'f', 2));
+	};
+	connect(scriptModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, updateScriptCost);
+	connect(scriptEffortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, updateScriptCost);
+	updateScriptCost();
+	modelForm->addRow("Script writer:", scriptRow);
 
 	whisperModelCombo = new QComboBox(prioGroup);
 	whisperModelCombo->addItem("large-v3-turbo (Recommended — 8x Faster RTX CUDA FP16)", "large-v3-turbo");
@@ -537,6 +567,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(musicEnabledCheck, &QCheckBox::toggled, this, notifyMod);
 	connect(musicSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(autoFinishCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(scriptModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
+	connect(scriptEffortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
 	connect(ollamaModelCombo, &QComboBox::currentTextChanged, this, notifyMod);
 	connect(privacyCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, notifyMod);
@@ -785,6 +817,8 @@ void YouTubeSettingsWidget::LoadFromManager()
 	musicEnabledCheck->setChecked(cfg.musicEnabled);
 	musicSourceCombo->setCurrentIndex(std::max(0, musicSourceCombo->findData(cfg.musicSource)));
 	autoFinishCombo->setCurrentIndex(std::max(0, autoFinishCombo->findData(cfg.autoFinish)));
+	scriptModelCombo->setCurrentIndex(std::max(0, scriptModelCombo->findData(cfg.scriptModel)));
+	scriptEffortCombo->setCurrentIndex(std::max(0, scriptEffortCombo->findData(cfg.scriptEffort)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
 	if (wIdx >= 0)
@@ -882,6 +916,8 @@ void YouTubeSettingsWidget::SaveToManager()
 	cfg.musicEnabled = musicEnabledCheck->isChecked();
 	cfg.musicSource = musicSourceCombo->currentData().toString();
 	cfg.autoFinish = autoFinishCombo->currentData().toString();
+	cfg.scriptModel = scriptModelCombo->currentData().toString();
+	cfg.scriptEffort = scriptEffortCombo->currentData().toString();
 	cfg.whisperModel = whisperModelCombo->currentData().toString();
 	cfg.ollamaModel = ollamaModelCombo->currentText().trimmed();
 	cfg.privacyStatus = privacyCombo->currentData().toString();

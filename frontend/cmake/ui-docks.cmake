@@ -21,10 +21,14 @@ target_sources(
     youtube/YouTubeMusicPicker.hpp
     youtube/YouTubePipelineDock.cpp
     youtube/YouTubePipelineDock.hpp
+    youtube/YouTubeScriptWriter.cpp
+    youtube/YouTubeScriptWriter.hpp
     youtube/YouTubeSecretVault.cpp
     youtube/YouTubeSecretVault.hpp
     youtube/YouTubeSettingsWidget.cpp
     youtube/YouTubeSettingsWidget.hpp
+    youtube/YouTubeTeleprompter.cpp
+    youtube/YouTubeTeleprompter.hpp
     youtube/YouTubeTerminalWidget.cpp
     youtube/YouTubeTerminalWidget.hpp
     youtube/YouTubeThumbnailPicker.cpp

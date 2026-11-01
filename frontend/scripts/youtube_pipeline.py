@@ -1566,6 +1566,310 @@ def call_claude_json(api_key: str, system_prompt: str, user_text: str, max_token
     return extract_json_object(text)
 
 
+# ---------------------------------------------------------------------------
+# Script writer: Claude writes the spoken script before recording
+# ---------------------------------------------------------------------------
+
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+SCRIPT_MODELS = {
+    "claude-opus-5-5": "Claude Opus 5.5",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "claude-fable-5-1": "Claude Fable 5.1",
+}
+SCRIPT_DEFAULT_MODEL = "claude-opus-5-5"
+SCRIPT_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+SCRIPT_DEFAULT_EFFORT = "high"
+# US$ per million input / output tokens (thinking is billed as output)
+CLAUDE_PRICE = {
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-fable-5-1": (10.0, 50.0),
+}
+SCRIPT_WPM = 150  # spoken words per minute, for the length target and read time
+SCRIPT_HOME = os.path.join(os.path.expanduser("~"), "OBSYouTubeScripts")
+SCRIPT_TONES = {
+    "conversational": "conversational, like talking to one viewer across the table",
+    "tutorial": "a clear step-by-step tutorial that shows as it tells",
+    "story": "a story with a beginning, a turn and a payoff",
+    "hype": "high-energy and punchy, without overpromising",
+}
+
+SCRIPT_SYSTEM_PROMPT = """You write the spoken script for a talking-head YouTube video. The creator reads it from a teleprompter, word for word, on camera.
+
+Write it to be said out loud:
+- The first 15 seconds are the hook: say what the viewer gets and why it matters now. No "hey guys, welcome back".
+- Short sentences, contractions, plain words. One idea per paragraph. No bullet lists, tables, emoji or stage directions in the spoken text.
+- Spell things the way they're said (say "about 40 percent", not "~40%").
+- End with a short payoff and one call to action.
+
+Format (Markdown):
+- First line: "# " and a working title for the video.
+- Split it into sections with "## " headings. Headings are not read aloud.
+- Optionally, on a line of its own, "[show: ...]" for a picture or screen moment that would help. Use them sparingly; they are not read aloud.
+- Everything else is spoken text.
+
+Reply with the script only, nothing before or after it."""
+
+SCRIPT_IDEAS_PROMPT = """You suggest topics for the creator's next talking-head YouTube video. Use their notes and the titles of their past videos to find what fits the channel, without repeating a video they've already made. Each idea needs a specific angle, not just a subject.
+
+Give exactly 5 ideas."""
+
+SCRIPT_IDEAS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "angle": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["title", "angle", "why"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["ideas"],
+    "additionalProperties": False,
+}
+
+
+def claude_request(api_key: str, body: dict, stream: bool = False, timeout: float = 600.0):
+    """Opens a Messages API request. The key goes in the header only."""
+    if not api_key:
+        raise ValueError("No Claude API key in the OBS Vault (Settings → YouTube → 2).")
+    body = dict(body, stream=stream)
+    req = urllib.request.Request(
+        CLAUDE_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            # On a safety decline, the request is rerun on Anthropic's recommended fallback model.
+            "anthropic-beta": "server-side-fallback-2026-07-01",
+        },
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        detail = str(e)
+        try:
+            detail = json.loads(e.read().decode("utf-8", "replace")).get("error", {}).get("message", detail)
+        except Exception:
+            pass
+        raise RuntimeError(f"Claude API error {e.code}: {detail}") from None
+
+
+def script_request_body(model: str, effort: str, system: str, messages: list, max_tokens: int) -> dict:
+    model = model if model in SCRIPT_MODELS else SCRIPT_DEFAULT_MODEL
+    effort = effort if effort in SCRIPT_EFFORTS else SCRIPT_DEFAULT_EFFORT
+    # Thinking stays at the model's default (always on for these models); effort sets how deep it goes.
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "output_config": {"effort": effort},
+        "fallbacks": "default",
+        "system": system,
+        "messages": messages,
+    }
+
+
+def claude_cost(model: str, usage: dict) -> float:
+    price_in, price_out = CLAUDE_PRICE.get(model, CLAUDE_PRICE[SCRIPT_DEFAULT_MODEL])
+    tokens_in = (usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+                 + usage.get("cache_read_input_tokens", 0))
+    return (tokens_in * price_in + usage.get("output_tokens", 0) * price_out) / 1_000_000
+
+
+def claude_stream_text(api_key: str, model: str, effort: str, system: str, messages: list, on_text,
+                       max_tokens: int = 32000) -> tuple[str, dict]:
+    """
+    Streams a Claude reply and passes each piece of its text to on_text. Thinking blocks are skipped.
+    After a mid-reply safety fallback the stream carries on from the partial text, so all text is kept.
+    Returns the text and the usage of the attempt that produced it.
+    """
+    body = script_request_body(model, effort, system, messages, max_tokens)
+    parts = []
+    usage = {}
+    stop_reason = ""
+    stop_details = None
+    with claude_request(api_key, body, stream=True) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                event = json.loads(line[5:].strip())
+            except ValueError:
+                continue
+            kind = event.get("type")
+            if kind == "message_start":
+                usage.update((event.get("message") or {}).get("usage") or {})
+            elif kind == "content_block_start":
+                block = event.get("content_block") or {}
+                if block.get("type") == "fallback":
+                    log_warn(f"Claude handed this over to {(block.get('to') or {}).get('model', 'another model')} "
+                             "partway through (a safety check); it carries on from the same text.")
+            elif kind == "content_block_delta":
+                delta = event.get("delta") or {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    parts.append(delta["text"])
+                    on_text(delta["text"])
+            elif kind == "message_delta":
+                stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+                stop_details = (event.get("delta") or {}).get("stop_details") or stop_details
+                usage.update(event.get("usage") or {})
+            elif kind == "error":
+                raise RuntimeError(f"Claude stream error: {(event.get('error') or {}).get('message', event)}")
+    if stop_reason == "refusal":
+        raise RuntimeError(f"Claude declined to write this ({(stop_details or {}).get('category') or 'no reason given'}).")
+    text = "".join(parts)
+    if stop_reason == "max_tokens":
+        log_warn("Claude hit its length limit, so the script may stop mid-sentence.")
+    return text, usage
+
+
+def past_video_titles(dirs: list[str], limit: int = 25) -> list[str]:
+    """The chosen titles of past videos, from the {stem}_yt_titles.txt files beside the recordings."""
+    found = []
+    for folder in dirs:
+        try:
+            names = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith("_yt_titles.txt")]
+        except OSError:
+            continue
+        for path in names:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    first = f.readline().strip()
+            except OSError:
+                continue
+            title = re.sub(r"^\d+\.\s*", "", first)
+            title = re.sub(r"\s*\(current\)$", "", title).strip()
+            if title:
+                found.append((os.path.getmtime(path), title))
+    found.sort(reverse=True)
+    seen, titles = set(), []
+    for _, title in found:
+        if title.lower() not in seen:
+            seen.add(title.lower())
+            titles.append(title)
+    return titles[:limit]
+
+
+def suggest_script_topics(api_key: str, options: dict) -> tuple[list[dict], float]:
+    model = options.get("model") or SCRIPT_DEFAULT_MODEL
+    titles = past_video_titles(options.get("title_dirs") or [])
+    user = [f"Notes from the creator: {options.get('notes') or '(none)'}"]
+    if options.get("topic"):
+        user.append(f"They're thinking about: {options['topic']}")
+    user.append("Titles of their past videos, newest first:\n" + ("\n".join(f"- {t}" for t in titles) or "(none yet)"))
+    body = script_request_body(model, options.get("effort") or SCRIPT_DEFAULT_EFFORT, SCRIPT_IDEAS_PROMPT,
+                               [{"role": "user", "content": "\n\n".join(user)}], 16000)
+    body["output_config"]["format"] = {"type": "json_schema", "schema": SCRIPT_IDEAS_SCHEMA}
+    with claude_request(api_key, body) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if data.get("stop_reason") == "refusal":
+        raise RuntimeError(f"Claude declined ({(data.get('stop_details') or {}).get('category') or 'no reason given'}).")
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    ideas = [i for i in json.loads(text).get("ideas", []) if isinstance(i, dict) and i.get("title")]
+    return ideas[:5], claude_cost(data.get("model") or model, data.get("usage") or {})
+
+
+def script_messages(options: dict) -> list[dict]:
+    minutes = max(1.0, min(60.0, float(options.get("minutes") or 8)))
+    words = int(round(minutes * SCRIPT_WPM / 10.0) * 10)
+    tone = SCRIPT_TONES.get(options.get("tone") or "", SCRIPT_TONES["conversational"])
+    ask = [f"Topic: {options.get('topic') or '(pick a good one from the notes)'}",
+           f"Notes: {options.get('notes') or '(none)'}",
+           f"Tone: {tone}",
+           f"Length: about {words} spoken words (about {minutes:g} minutes at {SCRIPT_WPM} words a minute)."]
+    messages = [{"role": "user", "content": "\n".join(ask)}]
+    if options.get("action") == "revise" and options.get("previous"):
+        messages += [{"role": "assistant", "content": options["previous"]},
+                     {"role": "user", "content": "Rewrite the whole script with these changes, keeping the same "
+                                                 f"format:\n{options.get('feedback') or 'Make it tighter.'}"}]
+    return messages
+
+
+def spoken_words(script: str) -> int:
+    """Words that are read aloud: not the title, headings or [show: ...] cues."""
+    count = 0
+    for line in script.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or re.fullmatch(r"\[show:.*\]", line, re.IGNORECASE):
+            continue
+        count += len(line.split())
+    return count
+
+
+def script_title(script: str, fallback: str) -> str:
+    m = re.search(r"^#\s+(.+)$", script, re.MULTILINE)
+    return (m.group(1).strip() if m else "") or fallback or "Untitled script"
+
+
+def save_script(script: str, title: str, out_dir: str, previous_path: str = "") -> str:
+    """Saves the script as Markdown; a revision is saved next to the one it came from as "... v2.md"."""
+    os.makedirs(out_dir, exist_ok=True)
+    if previous_path:
+        stem = re.sub(r" v\d+$", "", os.path.splitext(os.path.basename(previous_path))[0])
+    else:
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", title).strip(" .")[:80] or "Untitled script"
+        stem = f"{time.strftime('%Y-%m-%d')} {safe}"
+    path = os.path.join(out_dir, f"{stem}.md")
+    version = 2
+    while os.path.exists(path):
+        path = os.path.join(out_dir, f"{stem} v{version}.md")
+        version += 1
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(script.rstrip() + "\n")
+    return path
+
+
+def write_script(secrets: dict, options: dict) -> int:
+    """Worker mode "script": topic ideas, or a new or revised script streamed to the dock as it's written."""
+    api_key = secrets.get("claude_key", "")
+    model = options.get("model") if options.get("model") in SCRIPT_MODELS else SCRIPT_DEFAULT_MODEL
+    effort = options.get("effort") if options.get("effort") in SCRIPT_EFFORTS else SCRIPT_DEFAULT_EFFORT
+    label = SCRIPT_MODELS[model]
+    try:
+        if options.get("action") == "ideas":
+            log_info(f"Asking {label} ({effort} effort) for topic ideas...")
+            ideas, cost = suggest_script_topics(api_key, dict(options, model=model, effort=effort))
+            log_info(f"{label} suggested {len(ideas)} topics (~${cost:.2f}).")
+            emit("script_ideas", ideas=ideas, cost=f"~${cost:.2f}")
+            return 0
+
+        log_info(f"{label} is writing the script ({effort} effort)...")
+        state = {"text": "", "last": 0.0}
+
+        def on_text(piece: str):
+            state["text"] += piece
+            now = time.time()
+            if now - state["last"] >= 0.25:
+                state["last"] = now
+                emit("script_progress", words=spoken_words(state["text"]), text=state["text"])
+
+        script, usage = claude_stream_text(api_key, model, effort, SCRIPT_SYSTEM_PROMPT, script_messages(options),
+                                           on_text)
+        if not script.strip():
+            raise RuntimeError("Claude returned an empty script.")
+        title = script_title(script, options.get("topic", ""))
+        path = save_script(script, title, options.get("out_dir") or SCRIPT_HOME, options.get("previous_path", ""))
+        words = spoken_words(script)
+        cost = claude_cost(model, usage)
+        log_info(f"{label} wrote {words:,} words, about {words / SCRIPT_WPM:.1f} minutes (~${cost:.2f}): "
+                 f"{os.path.basename(path)}")
+        emit("script_ready", path=path, title=title, text=script, words=words, cost=f"~${cost:.2f}")
+        return 0
+    except Exception as e:
+        log_error(f"Script writer: {e}")
+        emit("script_error", message=str(e))
+        return 1
+
+
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 
@@ -4952,6 +5256,8 @@ def main():
             return regenerate_music(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("options") or {})
         if mode == "broll_images":
             return broll_images(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("options") or {})
+        if mode == "script":
+            return write_script(cfg.get("secrets", {}), cfg.get("options") or {})
         if mode == "redo_pipeline":
             return redo_pipeline(cfg)
         if mode == "export_premiere":

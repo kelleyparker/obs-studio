@@ -213,6 +213,18 @@ void OBSBasic::CreateHotkeys()
 		this);
 	LoadHotkey(youtubeBrollMarkHotkey, "OBSBasic.YouTubeMarkBroll");
 
+	youtubeTeleprompterHotkey = obs_hotkey_register_frontend(
+		"OBSBasic.YouTubeTeleprompter", "YouTube: Teleprompter play/pause",
+		[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed) {
+				QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
+							  &YouTubeWorkflowManager::ToggleTeleprompter,
+							  Qt::QueuedConnection);
+			}
+		},
+		this);
+	LoadHotkey(youtubeTeleprompterHotkey, "OBSBasic.YouTubeTeleprompter");
+
 	replayBufHotkeys =
 		obs_hotkey_pair_register_frontend("OBSBasic.StartReplayBuffer", Str("Basic.Main.StartReplayBuffer"),
 						  "OBSBasic.StopReplayBuffer", Str("Basic.Main.StopReplayBuffer"),
@@ -391,6 +403,7 @@ void OBSBasic::ClearHotkeys()
 	obs_hotkey_unregister(splitFileHotkey);
 	obs_hotkey_unregister(addChapterHotkey);
 	obs_hotkey_unregister(youtubeBrollMarkHotkey);
+	obs_hotkey_unregister(youtubeTeleprompterHotkey);
 	obs_hotkey_pair_unregister(replayBufHotkeys);
 	obs_hotkey_unregister(saveReplayBufferHotkey);
 	for (const auto &slot : canvasSlots) {

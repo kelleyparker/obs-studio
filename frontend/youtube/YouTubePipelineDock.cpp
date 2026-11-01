@@ -3,7 +3,9 @@
 #include "YouTubeCutEditor.hpp"
 #include "YouTubeHeartbeat.hpp"
 #include "YouTubeMusicPicker.hpp"
+#include "YouTubeScriptWriter.hpp"
 #include "YouTubeSettingsWidget.hpp"
+#include "YouTubeTeleprompter.hpp"
 #include "YouTubeTerminalWidget.hpp"
 #include "YouTubeThumbnailPicker.hpp"
 #include "YouTubeVideoPreview.hpp"
@@ -119,6 +121,31 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	});
 	connect(openRecentBtn, &QPushButton::clicked, this, &YouTubePipelineDock::OpenRecentProject);
 	connect(openProjectBtn, &QPushButton::clicked, this, &YouTubePipelineDock::ShowOpenProjectDialog);
+
+	/* Before recording: Claude writes the script, read from the teleprompter */
+	QHBoxLayout *scriptRow = new QHBoxLayout();
+	QPushButton *scriptBtn = new QPushButton("📝 Script…", container);
+	scriptBtn->setToolTip("Have Claude write the script for your next video (or suggest topics), then read it "
+			      "from the teleprompter");
+	QPushButton *prompterBtn = new QPushButton("🖥 Teleprompter", container);
+	prompterBtn->setToolTip("Open the teleprompter with your last script");
+	scriptRow->addWidget(scriptBtn);
+	scriptRow->addWidget(prompterBtn);
+	mainLayout->addLayout(scriptRow);
+	connect(scriptBtn, &QPushButton::clicked, this, [this]() {
+		if (!scriptWriter) {
+			scriptWriter = new YouTubeScriptWriter(window());
+		}
+		scriptWriter->show();
+		scriptWriter->raise();
+		scriptWriter->activateWindow();
+	});
+	connect(prompterBtn, &QPushButton::clicked, this, []() {
+		YouTubeTeleprompter *prompter = YouTubeTeleprompter::Get();
+		prompter->show();
+		prompter->raise();
+		prompter->activateWindow();
+	});
 
 	// 1b. Step | Auto toggle and AI thumbnail source (both apply to the next run)
 	QHBoxLayout *modeRow = new QHBoxLayout();

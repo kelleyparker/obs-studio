@@ -535,6 +535,7 @@ private:
 		togglePreviewHotkeys, contextBarHotkeys;
 	obs_hotkey_id forceStreamingStopHotkey, splitFileHotkey, addChapterHotkey, saveReplayBufferHotkey;
 	obs_hotkey_id youtubeBrollMarkHotkey = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id youtubeTeleprompterHotkey = OBS_INVALID_HOTKEY_ID;
 
 	void InitHotkeys();
 	void CreateHotkeys();

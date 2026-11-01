@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QProcess>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -53,6 +54,10 @@ struct YouTubeWorkflowConfig {
 	double brollMaxCoverage = 0.40;
 	int brollAmount = 2;              // AI pictures dial: 0 (Off) to 5 (Lots)
 	QString brollImageSource = "sd"; // "sd" (this PC), "gemini" or "gemini_pro"; Auto always uses this
+
+	// Script writer (before recording): Claude model and effort, with the Claude key from the Vault
+	QString scriptModel = "claude-opus-5-5"; // "claude-opus-5-5", "claude-sonnet-5-5" or "claude-fable-5-1"
+	QString scriptEffort = "high";           // "low", "medium", "high", "xhigh" or "max"
 
 	// How AI thumbnails are tweaked (remembered for the next video): "Leave out" text, and the
 	// person composited on top ("none", "video" or "photo") with the photo and side
@@ -166,6 +171,17 @@ eview carries
 	void OnMainRecordingStopped();
 	/* "YouTube: Mark B-roll moment" hotkey */
 	void MarkBrollMoment();
+	/* "YouTube: Teleprompter play/pause" hotkey */
+	void ToggleTeleprompter();
+
+	/* Claude writes a video script, or topic ideas, in its own worker process (not the video job's):
+	 * {"action": "ideas"|"write"|"revise", "topic", "notes", "minutes", "tone", "previous", "previous_path",
+	 * "feedback", "title_dirs"}; the model and effort default to the Settings ones */
+	void WriteScript(const QJsonObject &options);
+	void StopScript();
+	bool IsWritingScript() const;
+	/* %USERPROFILE%\OBSYouTubeScripts, where scripts are saved */
+	static QString ScriptsFolder();
 
 signals:
 	void WorkflowArmedChanged(bool armed);
@@ -205,6 +221,16 @@ signals:
 	void BrollImagesFinished();
 	void LogMessageReceived(const QString &level, const QString &message);
 	void OAuthStatusUpdated(bool connected, const QString &channelTitle, const QString &message);
+	/* The main recording started (whether or not the YouTube workflow is armed) */
+	void RecordingStarted();
+	void TeleprompterToggleRequested();
+	void ScriptWriterStarted();
+	void ScriptWriterFinished();
+	/* The script so far, while Claude writes it */
+	void ScriptProgress(int words, const QString &text);
+	void ScriptReady(const QString &path, const QString &title, const QString &text, const QString &cost);
+	void ScriptIdeasReady(const QJsonArray &ideas, const QString &cost);
+	void ScriptFailed(const QString &message);
 
 private:
 	explicit YouTubeWorkflowManager(QObject *parent = nullptr);
@@ -212,6 +238,7 @@ private:
 
 	QString ResolvePipelineScriptPath() const;
 	void HandleStdoutLines();
+	void HandleScriptStdout();
 	void ProcessJsonEvent(const QByteArray &line);
 	bool LaunchPipelineWorker(QJsonObject payload);
 	void OnBrollRecorderStopped(int code);
@@ -236,6 +263,8 @@ private:
 	QList<double> lastJoins;
 	QByteArray stdoutBuffer;
 	QPointer<QProcess> workerProcess;
+	QByteArray scriptStdoutBuffer;
+	QPointer<QProcess> scriptProcess;
 
 	YouTubeBrollRecorder *brollRecorder = nullptr;
 	uint64_t mainRecordingStartNs = 0;

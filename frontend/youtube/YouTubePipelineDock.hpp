@@ -14,6 +14,7 @@ class YouTubeCutEditor;
 class YouTubeHeartbeat;
 class YouTubeTerminalWidget;
 class YouTubeMusicPicker;
+class YouTubeScriptWriter;
 class YouTubeThumbnailPicker;
 class YouTubeVideoPreview;
 class QComboBox;
@@ -116,6 +117,7 @@ private:
 	YouTubeMusicPicker *musicPicker = nullptr;
 	YouTubeThumbnailPicker *thumbnailPicker = nullptr;
 	QPointer<YouTubeCutEditor> cutEditor;
+	QPointer<YouTubeScriptWriter> scriptWriter;
 	QString reviewGate;
 	QString reviewState;
 	QString reviewData;

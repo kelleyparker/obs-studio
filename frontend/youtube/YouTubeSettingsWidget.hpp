@@ -77,6 +77,9 @@ private:
 	QCheckBox *musicEnabledCheck = nullptr;
 	QComboBox *musicSourceCombo = nullptr;
 	QComboBox *autoFinishCombo = nullptr;
+	QComboBox *scriptModelCombo = nullptr;
+	QComboBox *scriptEffortCombo = nullptr;
+	QLabel *scriptCostLabel = nullptr;
 	QComboBox *whisperModelCombo = nullptr;
 	QComboBox *ollamaModelCombo = nullptr;
 

@@ -194,6 +194,14 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (brollImageSource && *brollImageSource) {
 		config.brollImageSource = QString::fromUtf8(brollImageSource);
 	}
+	const char *scriptModel = config_get_string(cfg, "YouTubeWorkflow", "ScriptModel");
+	if (scriptModel && *scriptModel) {
+		config.scriptModel = QString::fromUtf8(scriptModel);
+	}
+	const char *scriptEffort = config_get_string(cfg, "YouTubeWorkflow", "ScriptEffort");
+	if (scriptEffort && *scriptEffort) {
+		config.scriptEffort = QString::fromUtf8(scriptEffort);
+	}
 }
 
 void YouTubeWorkflowManager::SaveConfig()
@@ -242,6 +250,8 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_double(cfg, "YouTubeWorkflow", "BrollMaxCoverage", config.brollMaxCoverage);
 	config_set_int(cfg, "YouTubeWorkflow", "BrollAmount", config.brollAmount);
 	config_set_string(cfg, "YouTubeWorkflow", "BrollImageSource", config.brollImageSource.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ScriptModel", config.scriptModel.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "ScriptEffort", config.scriptEffort.toUtf8().constData());
 
 	config_save_safe(cfg, "tmp", nullptr);
 }
@@ -334,6 +344,7 @@ bool YouTubeWorkflowManager::IsPipelineRunning() const
 void YouTubeWorkflowManager::OnRecordingStarted()
 {
 	mainRecordingStartNs = os_gettime_ns();
+	emit RecordingStarted();
 	if (!workflowArmed) {
 		return;
 	}
@@ -1182,6 +1193,141 @@ bool YouTubeWorkflowManager::LaunchPipelineWorker(QJsonObject payload)
 	SecureZeroMemory(jsonLine.data(), jsonLine.size());
 #endif
 	return true;
+}
+
+void YouTubeWorkflowManager::WriteScript(const QJsonObject &options)
+{
+	if (IsWritingScript()) {
+		emit LogMessageReceived("warning", "The script writer is already working.");
+		return;
+	}
+	QString scriptPath = ResolvePipelineScriptPath();
+	if (!QFileInfo::exists(scriptPath)) {
+		emit ScriptFailed(QString("Could not find the pipeline script at %1").arg(scriptPath));
+		return;
+	}
+
+	/* Its own process, so a script can be written while a video job runs or waits at a review */
+	scriptProcess = new QProcess(this);
+	scriptStdoutBuffer.clear();
+	connect(scriptProcess, &QProcess::readyReadStandardOutput, this, &YouTubeWorkflowManager::HandleScriptStdout);
+	connect(scriptProcess, &QProcess::readyReadStandardError, this, [this]() {
+		if (!scriptProcess) {
+			return;
+		}
+		QString errText = QString::fromUtf8(scriptProcess->readAllStandardError()).trimmed();
+		if (!errText.isEmpty()) {
+			emit LogMessageReceived("warning", errText);
+		}
+	});
+	connect(scriptProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+		[this](int, QProcess::ExitStatus) {
+			HandleScriptStdout();
+			if (scriptProcess) {
+				scriptProcess->deleteLater();
+				scriptProcess = nullptr;
+			}
+			emit ScriptWriterFinished();
+		});
+
+	SetPythonUtf8Environment(scriptProcess);
+	scriptProcess->start(QStringLiteral("python"), {scriptPath, QStringLiteral("--stdin-config")});
+	if (!scriptProcess->waitForStarted(5000)) {
+		scriptProcess->deleteLater();
+		scriptProcess = nullptr;
+		emit ScriptFailed("Failed to start python.exe for the script writer.");
+		emit ScriptWriterFinished();
+		return;
+	}
+	emit ScriptWriterStarted();
+
+	/* Only the Claude key is needed; decrypted in local scope and wiped once it's on the pipe */
+	QString claudeKey = GetVaultKeyDecrypted("ClaudeKey");
+	QJsonObject secretsObj;
+	secretsObj["claude_key"] = claudeKey;
+	YouTubeSecretVault::WipeString(claudeKey);
+
+	QJsonObject withDefaults = options;
+	if (withDefaults.value("model").toString().isEmpty()) {
+		withDefaults["model"] = config.scriptModel;
+	}
+	if (withDefaults.value("effort").toString().isEmpty()) {
+		withDefaults["effort"] = config.scriptEffort;
+	}
+	QJsonObject payload;
+	payload["mode"] = "script";
+	payload["options"] = withDefaults;
+	payload["secrets"] = secretsObj;
+
+	QByteArray jsonLine = QJsonDocument(payload).toJson(QJsonDocument::Compact) + "\n";
+	scriptProcess->write(jsonLine);
+	scriptProcess->closeWriteChannel();
+#ifdef _WIN32
+	SecureZeroMemory(jsonLine.data(), jsonLine.size());
+#endif
+}
+
+void YouTubeWorkflowManager::StopScript()
+{
+	if (!IsWritingScript()) {
+		return;
+	}
+	QProcess *proc = scriptProcess;
+	scriptProcess = nullptr;
+	disconnect(proc, nullptr, this, nullptr);
+	proc->kill();
+	proc->waitForFinished(2000);
+	proc->deleteLater();
+	emit LogMessageReceived("warning", "Stopped the script writer.");
+	emit ScriptWriterFinished();
+}
+
+bool YouTubeWorkflowManager::IsWritingScript() const
+{
+	return scriptProcess && scriptProcess->state() != QProcess::NotRunning;
+}
+
+void YouTubeWorkflowManager::HandleScriptStdout()
+{
+	if (!scriptProcess) {
+		return;
+	}
+	scriptStdoutBuffer.append(scriptProcess->readAllStandardOutput());
+	while (true) {
+		int nl = scriptStdoutBuffer.indexOf('\n');
+		if (nl < 0) {
+			break;
+		}
+		QByteArray line = scriptStdoutBuffer.left(nl).trimmed();
+		scriptStdoutBuffer.remove(0, nl + 1);
+		if (line.isEmpty()) {
+			continue;
+		}
+		QJsonObject obj = QJsonDocument::fromJson(line).object();
+		QString type = obj.value("type").toString();
+		if (type == "log") {
+			emit LogMessageReceived(obj.value("level").toString("info"), obj.value("message").toString());
+		} else if (type == "script_progress") {
+			emit ScriptProgress(obj.value("words").toInt(), obj.value("text").toString());
+		} else if (type == "script_ready") {
+			emit ScriptReady(obj.value("path").toString(), obj.value("title").toString(),
+					 obj.value("text").toString(), obj.value("cost").toString());
+		} else if (type == "script_ideas") {
+			emit ScriptIdeasReady(obj.value("ideas").toArray(), obj.value("cost").toString());
+		} else if (type == "script_error") {
+			emit ScriptFailed(obj.value("message").toString());
+		}
+	}
+}
+
+QString YouTubeWorkflowManager::ScriptsFolder()
+{
+	return QDir(QDir::homePath()).filePath("OBSYouTubeScripts");
+}
+
+void YouTubeWorkflowManager::ToggleTeleprompter()
+{
+	emit TeleprompterToggleRequested();
 }
 
 void YouTubeWorkflowManager::StartOAuthLogin()
