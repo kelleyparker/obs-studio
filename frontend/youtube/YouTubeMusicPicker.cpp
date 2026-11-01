@@ -1,4 +1,5 @@
 #include "YouTubeMusicPicker.hpp"
+#include "YouTubeHeartbeat.hpp"
 #include "YouTubeSettingsWidget.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
@@ -209,6 +210,7 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 
 	useButton = new QPushButton("✅ Use this music", this);
 	useButton->setStyleSheet("font-weight: bold;");
+	new YouTubeHeartbeat(useButton);
 	layout->addWidget(useButton);
 
 	player = new QMediaPlayer(this);

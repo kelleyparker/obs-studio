@@ -1,4 +1,5 @@
 #include "YouTubeBrollReview.hpp"
+#include "YouTubeHeartbeat.hpp"
 #include "YouTubeSettingsWidget.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
@@ -109,6 +110,7 @@ YouTubeBrollReview::YouTubeBrollReview(QWidget *parent) : QGroupBox("🎞 B-roll
 	QHBoxLayout *btnRow = new QHBoxLayout();
 	renderBtn = new QPushButton("🎬 Render && Upload", this);
 	renderBtn->setStyleSheet("QPushButton { font-weight: bold; }");
+	new YouTubeHeartbeat(renderBtn);
 	skipBtn = new QPushButton("Skip B-roll", this);
 	btnRow->addWidget(renderBtn, 1);
 	btnRow->addWidget(skipBtn);

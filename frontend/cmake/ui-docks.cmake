@@ -15,6 +15,8 @@ target_sources(
     youtube/YouTubeBrollReview.hpp
     youtube/YouTubeCutEditor.cpp
     youtube/YouTubeCutEditor.hpp
+    youtube/YouTubeHeartbeat.cpp
+    youtube/YouTubeHeartbeat.hpp
     youtube/YouTubeMusicPicker.cpp
     youtube/YouTubeMusicPicker.hpp
     youtube/YouTubePipelineDock.cpp

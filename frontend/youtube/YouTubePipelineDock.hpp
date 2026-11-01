@@ -9,6 +9,7 @@ class QGroupBox;
 class QLabel;
 class YouTubeBrollReview;
 class YouTubeCutEditor;
+class YouTubeHeartbeat;
 class YouTubeTerminalWidget;
 class YouTubeMusicPicker;
 class YouTubeThumbnailPicker;
@@ -75,6 +76,8 @@ private:
 	QLabel *youtubeUrlLabel = nullptr;
 	QLabel *statsLabel = nullptr;
 	QPushButton *submitBtn = nullptr;
+	/* Beats only as Approve & Continue at the metadata gate */
+	YouTubeHeartbeat *submitHeart = nullptr;
 	QPlainTextEdit *consoleLog = nullptr;
 	YouTubeBrollReview *brollReview = nullptr;
 	YouTubeTerminalWidget *terminal = nullptr;
@@ -88,6 +91,8 @@ private:
 	QGroupBox *reviewPanel = nullptr;
 	QLabel *reviewLabel = nullptr;
 	QPushButton *openCutEditorBtn = nullptr;
+	/* Quiet while the cut editor is open: its Approve & Render beats instead */
+	YouTubeHeartbeat *openCutHeart = nullptr;
 	QPushButton *reviewWatchBtn = nullptr;
 	QWidget *publishRow = nullptr;
 	YouTubeMusicPicker *musicPicker = nullptr;

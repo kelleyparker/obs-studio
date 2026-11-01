@@ -1,4 +1,5 @@
 #include "YouTubeThumbnailPicker.hpp"
+#include "YouTubeHeartbeat.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QAbstractButton>
@@ -153,6 +154,7 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("ðŸ–
 
 	useButton = new QPushButton("âœ… Use this thumbnail", this);
 	useButton->setStyleSheet("font-weight: bold;");
+	new YouTubeHeartbeat(useButton);
 	layout->addWidget(useButton);
 
 	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();

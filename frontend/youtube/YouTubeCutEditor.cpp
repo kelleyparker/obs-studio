@@ -1,4 +1,5 @@
 #include "YouTubeCutEditor.hpp"
+#include "YouTubeHeartbeat.hpp"
 
 #include <OBSApp.hpp>
 
@@ -402,6 +403,7 @@ YouTubeCutEditor::YouTubeCutEditor(QWidget *parent) : QDialog(parent)
 
 	QPushButton *approveButton = new QPushButton("✅ Approve && Render", this);
 	approveButton->setStyleSheet("font-weight: bold;");
+	new YouTubeHeartbeat(approveButton);
 	QPushButton *closeButton = new QPushButton("Close (keep waiting)", this);
 	QLabel *legend = new QLabel(
 		"<span style='color:#cd323c'>■</span> dead air &nbsp; <span style='color:#eb8c28'>■</span> retake &nbsp; "

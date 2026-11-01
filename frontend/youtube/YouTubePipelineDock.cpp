@@ -1,6 +1,7 @@
 #include "YouTubePipelineDock.hpp"
 #include "YouTubeBrollReview.hpp"
 #include "YouTubeCutEditor.hpp"
+#include "YouTubeHeartbeat.hpp"
 #include "YouTubeMusicPicker.hpp"
 #include "YouTubeSettingsWidget.hpp"
 #include "YouTubeTerminalWidget.hpp"
@@ -160,6 +161,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	reviewLayout->addWidget(reviewLabel);
 	openCutEditorBtn = new QPushButton("✂ Open Cut Editor", reviewPanel);
 	reviewLayout->addWidget(openCutEditorBtn);
+	openCutHeart = new YouTubeHeartbeat(openCutEditorBtn);
 	connect(openCutEditorBtn, &QPushButton::clicked, this, [this]() { OpenCutEditor(false); });
 	reviewWatchBtn = new QPushButton("▶ Watch Edit", reviewPanel);
 	reviewWatchBtn->setToolTip("Play the rendered edit before exporting or uploading");
@@ -167,6 +169,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	connect(reviewWatchBtn, &QPushButton::clicked, this, &YouTubePipelineDock::WatchEdit);
 	continueBtn = new QPushButton("▶ Continue", reviewPanel);
 	continueBtn->setStyleSheet("font-weight: bold;");
+	new YouTubeHeartbeat(continueBtn);
 	continueBtn->setToolTip("Run the rest of the job from where it stopped");
 	continueBtn->hide();
 	reviewLayout->addWidget(continueBtn);
@@ -179,6 +182,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	publishGrid->setContentsMargins(0, 0, 0, 0);
 	QPushButton *uploadNowBtn = new QPushButton("⬆ Upload to YouTube", publishRow);
 	uploadNowBtn->setStyleSheet("font-weight: bold;");
+	new YouTubeHeartbeat(uploadNowBtn);
 	QPushButton *exportBtn = new QPushButton("🎬 Export to Premiere Pro", publishRow);
 	exportBtn->setToolTip("Write a Premiere Pro sequence of the edit and open it on Premiere Pro's timeline; the job "
 			      "keeps waiting so you can upload later");
@@ -345,6 +349,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	submitBtn = new QPushButton("✅ Submit to YouTube", metaGroup);
 	submitBtn->setToolTip("Push the title and description above to the uploaded video");
 	submitBtn->setEnabled(false);
+	submitHeart = new YouTubeHeartbeat(submitBtn);
+	submitHeart->SetWanted(false);
 	connect(submitBtn, &QPushButton::clicked, this, [this]() {
 		submitBtn->setEnabled(false);
 		if (reviewGate == "metadata") {
@@ -490,6 +496,7 @@ void YouTubePipelineDock::OnReviewReady(const QString &gate, const QString &stat
 	publishRow->setVisible(gate == "publish");
 	RefreshEditButtons();
 	submitBtn->setText("✅ Submit to YouTube");
+	submitHeart->SetWanted(gate == "metadata");
 	if (gate == "cuts") {
 		reviewLabel->setText("Review the dead-air and retake cuts in the Cut Editor. Nothing is rendered until "
 				     "you click Approve & Render there.");
@@ -527,6 +534,7 @@ void YouTubePipelineDock::OnReviewCleared()
 	thumbnailPicker->hide();
 	brollReview->hide();
 	submitBtn->setText("✅ Submit to YouTube");
+	submitHeart->SetWanted(false);
 	cancelBtn->setText("⏹ Cancel");
 	if (cutEditor) {
 		cutEditor->close();
@@ -542,6 +550,7 @@ void YouTubePipelineDock::OpenCutEditor(bool reload)
 	if (fresh) {
 		cutEditor = new YouTubeCutEditor(window());
 		cutEditor->setAttribute(Qt::WA_DeleteOnClose, false);
+		openCutHeart->SetQuietWhileVisible(cutEditor);
 		connect(cutEditor, &YouTubeCutEditor::Approved, this, [](const QString &statePath) {
 			YouTubeWorkflowManager::Instance()->ResumePipeline(statePath);
 		});
