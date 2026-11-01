@@ -547,6 +547,86 @@ Times in the transcript are seconds. Respond ONLY with valid JSON matching this 
   ]
 }"""
 
+# Generated B-roll: an AI picture that illustrates what is being said
+BROLL_IMAGE_MIN_SEC = 3.0
+BROLL_IMAGE_MAX_SEC = 6.0
+BROLL_IMAGE_CANDIDATE_SEC = 15.0   # the planner suggests about one spot per this many seconds; the dial picks from them
+# The Fewer <-> More dial (0-5): about one picture per this many seconds of the edit (0 = none)
+BROLL_AMOUNT_EVERY_SEC = [0, 120, 90, 60, 40, 25]
+BROLL_AMOUNT_DEFAULT = 2
+BROLL_IMAGE_SOURCES = {"sd": "Stable Diffusion (this PC)", "gemini": "Nano Banana 2", "gemini_pro": "Nano Banana Pro"}
+BROLL_IMAGE_STYLE = "cinematic editorial illustration, clean composition, soft lighting, rich detail, 16:9"
+BROLL_IMAGE_CLOUD_RULES = "No text, letters, captions or logos in the image. No real or identifiable people."
+
+BROLL_IMAGE_SYSTEM_PROMPT = """You are a video editor planning illustrated B-roll for a talking-head video.
+For moments where the speaker explains an idea, a thing, a place, a process or a comparison, an AI-made
+picture shown for a few seconds helps the viewer understand or remember it.
+
+Pick such moments from the transcript and write an image prompt for each: a concrete visual scene or metaphor
+for the idea (subjects, setting, mood), one or two sentences. Never ask for text, words, logos, screenshots,
+real brands or real or identifiable people, and never the speaker. Do NOT pick the opening hook, greetings,
+calls to subscribe, or personal asides with nothing to picture. Lines tagged [MARK] are moments the creator
+flagged live as needing B-roll: strongly prefer them. Rate each moment's value from 0 to 1 as "confidence".
+Suggest up to {count} moments, spread over the whole video; each covers one spoken line of 3 to 6 seconds.
+
+Times in the transcript are seconds. Respond ONLY with valid JSON matching this schema:
+{{
+  "inserts": [
+    {{"start": 12.4, "end": 17.0, "quote": "exact words spoken", "reason": "short reason",
+     "confidence": 0.8, "prompt": "visual scene for the image"}}
+  ]
+}}"""
+
+
+def broll_amount(broll_cfg: dict) -> int:
+    """The dial (0-5). Jobs saved before pictures existed have no "amount" and stay screen-only."""
+    try:
+        return max(0, min(len(BROLL_AMOUNT_EVERY_SEC) - 1, int(broll_cfg.get("amount", 0))))
+    except (TypeError, ValueError):
+        return BROLL_AMOUNT_DEFAULT
+
+
+def broll_target_count(amount: int, edited_total: float) -> int:
+    """How many pictures the dial asks for in an edit this long."""
+    every = BROLL_AMOUNT_EVERY_SEC[max(0, min(len(BROLL_AMOUNT_EVERY_SEC) - 1, amount))]
+    return max(1, math.ceil(edited_total / every)) if every and edited_total > 0 else 0
+
+
+def pick_broll_spots(inserts: list[dict], amount: int, edited_total: float, budget_sec: float | None = None) -> list[str]:
+    """
+    Ids of the picture spots the dial picks: the most valuable ones, kept apart so they spread over the
+    video (half the average spacing), then the next best to reach the count, within `budget_sec` of screen
+    time. YouTubeBrollReview::PickSpots does the same so the panel's dial matches.
+    """
+    target = broll_target_count(amount, edited_total)
+    if not target or not inserts:
+        return []
+    gap = edited_total / target / 2.0
+    ranked = sorted(inserts, key=lambda i: (-float(i.get("confidence", 0)), i["edited_start"]))
+    chosen, used = [], 0.0
+    for spaced in (True, False):
+        for ins in ranked:
+            if len(chosen) >= target:
+                break
+            length = ins["edited_end"] - ins["edited_start"]
+            if ins in chosen or (budget_sec is not None and used + length > budget_sec + 1e-6):
+                continue
+            if spaced and any(abs(ins["edited_start"] - c["edited_start"]) < gap for c in chosen):
+                continue
+            chosen.append(ins)
+            used += length
+    return [c["id"] for c in sorted(chosen, key=lambda c: c["start"])]
+
+
+def plan_broll_images_heuristic(segments: list[dict], markers: list[float]) -> list[dict]:
+    """Without a planner, every spoken line long enough to picture is a spot; its own words are the prompt."""
+    marked = lambda s: any(s["start"] - 1.0 <= m <= s["end"] + 1.0 for m in markers)
+    return [{
+        "start": s["start"], "end": s["end"], "quote": s["text"].strip(),
+        "reason": "Marked live with the B-roll hotkey" if marked(s) else "A line with something to picture",
+        "confidence": 0.85 if marked(s) else 0.4, "prompt": f"An illustration of: {s['text'].strip()}"
+    } for s in segments if s["end"] - s["start"] >= 2.0 and len(s.get("text", "").split()) >= 5]
+
 
 def raw_to_edited(t: float, keep_intervals: list[tuple]) -> float:
     """Map a raw-recording time to the edited video's timeline (times inside a cut snap forward)."""
@@ -675,12 +755,17 @@ def apply_broll_guardrails(
     words: list[tuple[float, float]],
     screen_range: tuple[float, float],
     max_coverage: float,
-    hook_sec: float = BROLL_HOOK_SEC
+    hook_sec: float = BROLL_HOOK_SEC,
+    min_sec: float = BROLL_MIN_SEC,
+    max_sec: float = BROLL_MAX_SEC,
+    merge: bool = True
 ) -> list[dict]:
     """
     Turn raw planner output into safe inserts: word-snapped, inside the screen recording,
     clear of the opening hook, 2-12 s long on the edited timeline, merged when close,
     and capped at `max_coverage` of the edited video (highest confidence wins).
+    Generated images pass their own `min_sec`/`max_sec` (short lines are stretched to `min_sec`)
+    and `merge=False`, since two ideas next to each other are two different pictures.
     """
     if not keep_intervals:
         return []
@@ -698,22 +783,28 @@ def apply_broll_guardrails(
         s = max(snap_to_words(s, words, "start"), lo, hook_raw)
         e = min(snap_to_words(e, words, "end"), hi)
         es, ee = raw_to_edited(s, keep_intervals), raw_to_edited(e, keep_intervals)
-        if ee - es > BROLL_MAX_SEC:
-            e = edited_to_raw(es + BROLL_MAX_SEC, keep_intervals)
-            ee = es + BROLL_MAX_SEC
-        if ee - es < BROLL_MIN_SEC:
+        if ee - es > max_sec:
+            e = edited_to_raw(es + max_sec, keep_intervals)
+            ee = es + max_sec
+        if ee - es < min_sec and not merge:
+            ee = min(es + min_sec, raw_to_edited(hi, keep_intervals))
+            e = edited_to_raw(ee, keep_intervals)
+        if ee - es < min_sec:
             continue
-        cleaned.append({
+        entry = {
             "start": s, "end": e, "edited_start": es, "edited_end": ee,
             "quote": str(c.get("quote", "")).strip(), "reason": str(c.get("reason", "")).strip(),
             "confidence": confidence
-        })
+        }
+        if str(c.get("prompt", "")).strip():
+            entry["prompt"] = str(c["prompt"]).strip()
+        cleaned.append(entry)
 
     merged = []
     for c in sorted(cleaned, key=lambda x: x["start"]):
         prev = merged[-1] if merged else None
-        if prev and c["edited_start"] - prev["edited_end"] < BROLL_MERGE_GAP_SEC \
-                and max(prev["edited_end"], c["edited_end"]) - prev["edited_start"] <= BROLL_MAX_SEC:
+        if merge and prev and c["edited_start"] - prev["edited_end"] < BROLL_MERGE_GAP_SEC \
+                and max(prev["edited_end"], c["edited_end"]) - prev["edited_start"] <= max_sec:
             if c["end"] > prev["end"]:
                 prev["end"], prev["edited_end"] = c["end"], c["edited_end"]
             if c["quote"] and c["quote"] not in prev["quote"]:
@@ -754,6 +845,19 @@ def grab_frame(video_path: str, t: float, out_jpg: str, width: int = 320) -> boo
     return res.returncode == 0 and os.path.exists(out_jpg)
 
 
+def transcript_lines_for_broll(segments: list[dict], markers: list[float]) -> str:
+    marker_lines = set()
+    for m in markers:
+        for i, s in enumerate(segments):
+            if s["start"] - 1.0 <= m <= s["end"] + 1.0:
+                marker_lines.add(i)
+    lines = [
+        f"[{s['start']:.1f}-{s['end']:.1f}]{' [MARK]' if i in marker_lines else ''} {s['text']}"
+        for i, s in enumerate(segments)
+    ]
+    return "TRANSCRIPT (seconds):\n" + "\n".join(lines)
+
+
 def plan_broll(
     broll_cfg: dict,
     input_video: str,
@@ -765,72 +869,249 @@ def plan_broll(
     plan_path: str,
     thumbs_dir: str
 ) -> dict | None:
-    """Builds and saves the B-roll plan for the screen recording, or returns None when there is nothing to plan."""
+    """
+    Builds and saves the B-roll plan, or returns None when there is nothing to plan. Two kinds of insert:
+    "screen" cuts to the screen recording (when one was made), "image" shows an AI picture of what is
+    said (when the dial in `amount` is above 0). Picture spots the dial picks have "picked": true.
+    """
     screen_video = broll_cfg.get("screen_video", "")
-    if not screen_video or not os.path.exists(screen_video):
-        log_warn(f"B-roll screen recording not found ({screen_video or 'none'}); skipping B-roll.")
+    has_screen = bool(screen_video and os.path.exists(screen_video))
+    if screen_video and not has_screen:
+        log_warn(f"B-roll screen recording not found ({screen_video}); planning pictures only.")
+    amount = broll_amount(broll_cfg)
+    if not has_screen and not amount:
+        update_step("broll", 100, "Skipped (no screen recording, and B-roll pictures are set to Off).")
+        return None
+    if not keep_intervals:
         return None
 
-    update_step("broll", 10, "Syncing screen recording with the webcam...")
-    offset = estimate_broll_offset(input_video, screen_video, broll_cfg.get("start_delta_sec", 0.0))
-    screen_duration = get_video_duration(screen_video)
-    screen_range = (max(0.0, -offset), max(0.0, screen_duration - offset - 0.1))
     markers = [float(m) for m in broll_cfg.get("markers", []) if isinstance(m, (int, float))]
+    max_coverage = float(broll_cfg.get("max_coverage", 0.40))
+    words = flatten_words(segments)
+    edited_total = sum(b - a for a, b in keep_intervals)
+    providers = []
 
-    candidates = []
-    provider = "Heuristic cue phrases"
-    if segments:
-        marker_lines = set()
-        for m in markers:
-            for i, s in enumerate(segments):
-                if s["start"] - 1.0 <= m <= s["end"] + 1.0:
-                    marker_lines.add(i)
-        lines = [
-            f"[{s['start']:.1f}-{s['end']:.1f}]{' [MARK]' if i in marker_lines else ''} {s['text']}"
-            for i, s in enumerate(segments)
-        ]
-        user_text = "TRANSCRIPT (seconds):\n" + "\n".join(lines)
-        update_step("broll", 20, "Finding moments to show your screen...")
+    screen_inserts, offset = [], 0.0
+    if has_screen:
+        update_step("broll", 10, "Syncing screen recording with the webcam...")
+        offset = estimate_broll_offset(input_video, screen_video, broll_cfg.get("start_delta_sec", 0.0))
+        screen_duration = get_video_duration(screen_video)
+        screen_range = (max(0.0, -offset), max(0.0, screen_duration - offset - 0.1))
+
+        candidates = []
+        provider = "Heuristic cue phrases"
+        if segments:
+            update_step("broll", 20, "Finding moments to show your screen...")
+            res, badge = run_llm_chain(
+                priority_list, secrets, ollama_model, BROLL_SYSTEM_PROMPT, transcript_lines_for_broll(segments, markers),
+                step="broll", validate=lambda r: isinstance(r.get("inserts"), list)
+            )
+            if res is not None:
+                candidates = [c for c in res["inserts"] if isinstance(c, dict)]
+                provider = badge
+                # Live markers always count, even if the model skipped them
+                covered = lambda m: any(float(c.get("start", 0)) - 1.0 <= m <= float(c.get("end", 0)) + 1.0 for c in candidates)
+                candidates.extend(marker_candidates(segments, [m for m in markers if not covered(m)]))
+            else:
+                candidates = plan_broll_heuristic(segments, markers)
+        else:
+            candidates = marker_candidates(segments, markers)
+        providers.append(provider)
+
+        screen_inserts = apply_broll_guardrails(candidates, keep_intervals, words, screen_range, max_coverage)
+        os.makedirs(thumbs_dir, exist_ok=True)
+        for ins in screen_inserts:
+            thumb = os.path.join(thumbs_dir, f"screen_{ins['start']:.1f}.jpg")
+            mid = (ins["start"] + ins["end"]) / 2.0 + offset
+            ins.update(kind="screen", thumb=thumb if grab_frame(screen_video, mid, thumb) else "")
+
+    image_inserts = []
+    if amount and segments:
+        count = max(3, math.ceil(edited_total / BROLL_IMAGE_CANDIDATE_SEC))
+        update_step("broll", 30, "Finding ideas to illustrate...")
         res, badge = run_llm_chain(
-            priority_list, secrets, ollama_model, BROLL_SYSTEM_PROMPT, user_text,
+            priority_list, secrets, ollama_model, BROLL_IMAGE_SYSTEM_PROMPT.format(count=count),
+            transcript_lines_for_broll(segments, markers),
             step="broll", validate=lambda r: isinstance(r.get("inserts"), list)
         )
         if res is not None:
-            candidates = [c for c in res["inserts"] if isinstance(c, dict)]
-            provider = badge
-            # Live markers always count, even if the model skipped them
-            covered = lambda m: any(float(c.get("start", 0)) - 1.0 <= m <= float(c.get("end", 0)) + 1.0 for c in candidates)
-            candidates.extend(marker_candidates(segments, [m for m in markers if not covered(m)]))
+            candidates = [c for c in res["inserts"] if isinstance(c, dict) and str(c.get("prompt", "")).strip()]
+            providers.append(badge)
         else:
-            candidates = plan_broll_heuristic(segments, markers)
-    else:
-        candidates = marker_candidates(segments, markers)
+            candidates = plan_broll_images_heuristic(segments, markers)
+            providers.append("Spoken lines")
+        # Never on top of the screen: what is on screen is the better B-roll there
+        taken = [(i["start"], i["end"]) for i in screen_inserts]
+        image_inserts = [
+            ins for ins in apply_broll_guardrails(
+                candidates, keep_intervals, words, (0.0, float(keep_intervals[-1][1])), 1.0,
+                min_sec=BROLL_IMAGE_MIN_SEC, max_sec=BROLL_IMAGE_MAX_SEC, merge=False)
+            if not any(ins["start"] < e and s < ins["end"] for s, e in taken)
+        ]
+        source = broll_cfg.get("image_source") if broll_cfg.get("image_source") in BROLL_IMAGE_SOURCES else "sd"
+        for ins in image_inserts:
+            ins.update(kind="image", source=source, image="", thumb="", made_by="")
 
-    inserts = apply_broll_guardrails(
-        candidates, keep_intervals, flatten_words(segments), screen_range,
-        float(broll_cfg.get("max_coverage", 0.40))
-    )
-
-    os.makedirs(thumbs_dir, exist_ok=True)
-    for ins in inserts:
-        thumb = os.path.join(thumbs_dir, f"insert_{ins['id']}.jpg")
-        mid = (ins["start"] + ins["end"]) / 2.0 + offset
-        ins["thumb"] = thumb if grab_frame(screen_video, mid, thumb) else ""
+    inserts = sorted(screen_inserts + image_inserts, key=lambda i: i["start"])
+    for idx, ins in enumerate(inserts, start=1):
+        ins["id"] = f"b{idx:02d}"
         ins["status"] = "proposed"
+    # The dial picks pictures within what is left of the B-roll budget after the likely screen inserts
+    screen_sec = sum(i["edited_end"] - i["edited_start"] for i in screen_inserts
+                     if i["confidence"] >= BROLL_ACCEPT_CONFIDENCE)
+    picked = set(pick_broll_spots(image_inserts, amount, edited_total, max(0.0, max_coverage * edited_total - screen_sec)))
+    for ins in image_inserts:
+        ins["picked"] = ins["id"] in picked
 
     plan = {
-        "version": 1,
+        "version": 2,
         "main_video": os.path.abspath(input_video),
-        "screen_video": os.path.abspath(screen_video),
+        "screen_video": os.path.abspath(screen_video) if has_screen else "",
         "offset_sec": round(offset, 3),
         "style": broll_cfg.get("style", "pip") if broll_cfg.get("style") in ("pip", "cutaway") else "pip",
-        "provider": provider,
+        "amount": amount,
+        "max_coverage": max_coverage,
+        "edited_total": round(edited_total, 3),
+        "provider": " + ".join(providers),
         "inserts": inserts
     }
     write_json_file(plan_path, plan)
-    covered_sec = sum(i["edited_end"] - i["edited_start"] for i in inserts)
-    update_step("broll", 90, f"{len(inserts)} B-roll moments planned ({covered_sec:.0f}s, {provider}).")
+    parts = []
+    if has_screen:
+        parts.append(f"{len(screen_inserts)} screen moments")
+    if amount:
+        parts.append(f"{len(picked)} of {len(image_inserts)} picture spots picked")
+    update_step("broll", 40, f"{', '.join(parts)} ({plan['provider']}).")
     return plan
+
+
+def broll_image_prompt(prompt: str, cloud: bool) -> str:
+    text = f"{prompt.strip().rstrip('.')}. {BROLL_IMAGE_STYLE}."
+    return f"{text} {BROLL_IMAGE_CLOUD_RULES}" if cloud else text
+
+
+def make_broll_images(config: dict, plan: dict, ids: list[str], out_dir: str, notes: list,
+                      progress: tuple = (40, 50)) -> int:
+    """
+    Makes the pictures for the plan's image inserts in `ids`, each with its own "source". Only the
+    insert's text prompt is sent to a cloud model, never a frame. A cloud picture that fails is made on
+    this PC instead; Stable Diffusion makes all of its pictures in one batch so the model loads once.
+    Updates the inserts in place (image, thumb, made_by) and returns how many pictures were made.
+    """
+    by_id = {i["id"]: i for i in plan.get("inserts", []) if i.get("kind") == "image"}
+    todo = [by_id[i] for i in ids if i in by_id and str(by_id[i].get("prompt", "")).strip()]
+    if not todo:
+        return 0
+    os.makedirs(out_dir, exist_ok=True)
+    secrets = config.get("secrets", {})
+    stamp = time.strftime("%H%M%S")
+    made, cloud_made, local = 0, {}, []
+
+    def save(ins, image, made_by):
+        path = os.path.join(out_dir, f"{ins['id']}_{stamp}.png")
+        image.convert("RGB").save(path)
+        old = ins.get("image")
+        if old and old != path and os.path.dirname(os.path.abspath(old)) == os.path.abspath(out_dir):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        ins.update(image=path, thumb=path, made_by=made_by)
+
+    cloud = [i for i in todo if i.get("source") in CLOUD_IMAGE_PRICE]
+    for n, ins in enumerate(cloud, start=1):
+        source = ins["source"]
+        update_step("broll", progress[0] + int(progress[1] * 0.4 * (n - 1) / len(cloud)),
+                    f"B-roll picture {n}/{len(cloud)} with {CLOUD_IMAGE_MODELS[source][0]}...")
+        if not secrets.get(CLOUD_IMAGE_KEYS[source]):
+            log_warn(f"No Gemini key for {CLOUD_IMAGE_MODELS[source][0]}; making picture {ins['id']} on this PC.")
+            local.append(ins)
+            continue
+        try:
+            image, src, model = generate_cloud_image(source, secrets, broll_image_prompt(ins["prompt"], True))
+            save(ins, image, CLOUD_IMAGE_MODELS[src][0])
+            cloud_made[src] = cloud_made.get(src, 0) + 1
+            made += 1
+        except Exception as e:
+            log_warn(f"{CLOUD_IMAGE_MODELS[source][0]} couldn't make picture {ins['id']} ({short_cloud_error(e)}); "
+                     "making it on this PC.")
+            notes.append(f"{ins['id']}: made on this PC ({short_cloud_error(e)[:120]})")
+            local.append(ins)
+    for src, n in cloud_made.items():
+        log_info(f"{CLOUD_IMAGE_MODELS[src][0]} made {n} B-roll picture{'s' if n != 1 else ''} "
+                 f"(~${n * CLOUD_IMAGE_PRICE.get(src, 0):.2f}).")
+
+    local += [i for i in todo if i.get("source") not in CLOUD_IMAGE_PRICE]
+    if local:
+        batch_dir = os.path.join(out_dir, "sd_batch")
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        os.makedirs(batch_dir, exist_ok=True)
+        start = progress[0] + (int(progress[1] * 0.4) if cloud else 0)
+        try:
+            generate_sd_images(config, [broll_image_prompt(i["prompt"], False) for i in local], batch_dir,
+                               "B-roll pictures", notes=notes, step_name="broll",
+                               progress=(start, progress[0] + progress[1] - start))
+        except Exception as e:
+            log_warn(f"Stable Diffusion couldn't make the B-roll pictures: {e}")
+            notes.append(f"Stable Diffusion failed: {str(e)[:200]}")
+        from PIL import Image
+        for n, ins in enumerate(local, start=1):
+            path = os.path.join(batch_dir, f"sd_{n}.png")
+            if os.path.exists(path):
+                with Image.open(path) as image:
+                    save(ins, image, BROLL_IMAGE_SOURCES["sd"])
+                made += 1
+        shutil.rmtree(batch_dir, ignore_errors=True)
+    return made
+
+
+def make_still_clip(image_path: str, seconds: float, width: int, height: int, fps: str, out_path: str,
+                    n: int = 0) -> bool:
+    """
+    A slow zoom over a still (Ken Burns): `seconds` long at the edit's size and frame rate. The move
+    changes with `n` (in, drift right, drift left, out) so pictures in a row don't all move the same way.
+    The picture is scaled up first so zoompan's whole-pixel steps don't make it shake.
+    """
+    num, _, den = str(fps).partition("/")
+    rate = float(num) / float(den or 1)
+    frames = max(1, math.ceil(seconds * rate))
+    span = max(1, frames - 1)
+    centre = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    moves = [
+        f"z='1+0.08*on/{span}':{centre}",
+        f"z='1.08':x='(iw-iw/zoom)*on/{span}':y='ih/2-(ih/zoom/2)'",
+        f"z='1.08':x='(iw-iw/zoom)*(1-on/{span})':y='ih/2-(ih/zoom/2)'",
+        f"z='1.08-0.08*on/{span}':{centre}",
+    ]
+    vf = (f"scale={width * 4}:{height * 4}:force_original_aspect_ratio=increase,crop={width * 4}:{height * 4},"
+          f"zoompan={moves[n % len(moves)]}:d={frames}:s={width}x{height}:fps={fps},setsar=1,format=yuv420p")
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", image_path, "-vf", vf, "-frames:v", str(frames),
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", out_path]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        log_warn(f"Could not animate {os.path.basename(image_path)}: {(res.stderr or '').strip()[-300:]}")
+    return res.returncode == 0 and os.path.exists(out_path)
+
+
+def accepted_image_inserts(plan: dict) -> list[tuple[float, float, str]]:
+    """(raw start, raw end, picture) for the accepted picture inserts that have a picture, clear of screen inserts."""
+    screen = [(float(i["start"]), float(i["end"])) for i in plan.get("inserts", [])
+              if i.get("status") == "accepted" and i.get("kind", "screen") == "screen"]
+    spans = []
+    for ins in sorted(plan.get("inserts", []), key=lambda i: float(i.get("start", 0))):
+        if ins.get("status") != "accepted" or ins.get("kind") != "image":
+            continue
+        image = ins.get("image") or ""
+        try:
+            s, e = float(ins["start"]), float(ins["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e - s < 0.5 or not os.path.exists(image) or any(s < b and a < e for a, b in screen):
+            continue
+        if spans and s < spans[-1][1]:
+            continue
+        spans.append((s, e, image))
+    return sorted(spans)
 
 
 def accepted_broll_inserts(plan: dict, screen_duration: float) -> list[tuple[float, float]]:
@@ -839,7 +1120,7 @@ def accepted_broll_inserts(plan: dict, screen_duration: float) -> list[tuple[flo
     lo, hi = max(0.0, -offset), max(0.0, screen_duration - offset - 0.1)
     spans = []
     for ins in plan.get("inserts", []):
-        if ins.get("status") != "accepted":
+        if ins.get("status") != "accepted" or ins.get("kind", "screen") != "screen":
             continue
         try:
             s, e = max(float(ins["start"]), lo), min(float(ins["end"]), hi)
@@ -909,10 +1190,17 @@ def build_broll_filter(keep_intervals: list[tuple], broll: dict, width: int, hei
     """
     Video: A-roll and screen pieces concatenated per keep interval (screen scaled/padded to the
     output size, optional webcam bubble). Audio: one atrim per keep interval from the A-roll,
-    so the soundtrack (and chapter timing) is identical to the non-B-roll edit.
+    so the soundtrack (and chapter timing) is identical to the non-B-roll edit. Picture inserts come from
+    their own slow-zoom clips (`broll["images"]`, [(raw start, raw end, clip)]), inputs after the screen's.
     """
-    offset = float(broll["offset"])
-    spans = broll["inserts"]
+    offset = float(broll.get("offset", 0.0))
+    screen_spans = list(broll.get("inserts") or []) if broll.get("screen_path") else []
+    # (start, end, input, trim offset): the screen is input 1 shifted by the sync offset; each clip starts at its insert
+    first_clip = 2 if screen_spans else 1
+    sources = [(s, e, 1, offset) for s, e in screen_spans]
+    sources += [(s, e, first_clip + n, -s) for n, (s, e, _) in enumerate(broll.get("images") or [])]
+    sources.sort()
+    spans = [(s, e) for s, e, _, _ in sources]
     pip = broll.get("style", "pip") == "pip"
     norm = f"fps={fps},setsar=1,format=yuv420p"
     fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
@@ -925,12 +1213,19 @@ def build_broll_filter(keep_intervals: list[tuple], broll: dict, width: int, hei
         for s, e, is_broll in split_interval_for_broll(a, b, spans):
             if not is_broll:
                 parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,{norm}[p{p}];")
-            elif pip:
-                parts.append(f"[1:v]trim=start={s + offset:.3f}:end={e + offset:.3f},setpts=PTS-STARTPTS,{fit},{norm}[s{p}];")
+                video_labels.append(f"[p{p}]")
+                p += 1
+                continue
+            mid = (s + e) / 2.0
+            _, _, src, shift = next((x for x in sources if x[0] <= mid <= x[1]), sources[0])
+            # A trim can't start before 0 (a piece can start a hair before its insert after snapping)
+            ts, te = max(0.0, s + shift), max(0.0, s + shift) + (e - s)
+            if pip:
+                parts.append(f"[{src}:v]trim=start={ts:.3f}:end={te:.3f},setpts=PTS-STARTPTS,{fit},{norm}[s{p}];")
                 parts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,scale={bubble_w}:-2,{norm}[c{p}];")
                 parts.append(f"[s{p}][c{p}]overlay=x=W-w-{margin}:y=H-h-{margin}:shortest=1[p{p}];")
             else:
-                parts.append(f"[1:v]trim=start={s + offset:.3f}:end={e + offset:.3f},setpts=PTS-STARTPTS,{fit},{norm}[p{p}];")
+                parts.append(f"[{src}:v]trim=start={ts:.3f}:end={te:.3f},setpts=PTS-STARTPTS,{fit},{norm}[p{p}];")
             video_labels.append(f"[p{p}]")
             p += 1
         parts.append(f"[0:a]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{idx}];")
@@ -1007,20 +1302,26 @@ def render_edited_video(
     """
     Uses FFmpeg filter_complex trim/atrim + concat to cut dead air and retakes
     accurately using NVIDIA NVENC hardware encoding (with x264 fallback), with the fades at both ends.
-    `broll` = {"screen_path", "offset", "inserts": [(raw_start, raw_end)], "style"} adds screen B-roll.
+    `broll` = {"screen_path", "offset", "inserts": [(raw_start, raw_end)], "style"} adds screen B-roll,
+    and "images": [(raw_start, raw_end, slow-zoom clip)] adds picture B-roll.
     `gain_db` brings the voice to YouTube's loudness (see voice_gain_db).
     """
     if not keep_intervals:
         return False
 
-    use_broll = bool(broll and broll.get("inserts") and broll.get("screen_path"))
+    screen = bool(broll and broll.get("inserts") and broll.get("screen_path"))
+    use_broll = bool(screen or (broll and broll.get("images")))
     kept_sum = sum(b - a for a, b in keep_intervals)
 
     inputs = ["-i", input_path]
     if use_broll:
         width, height, fps = probe_video_geometry(input_path)
+        broll = dict(broll, inserts=broll.get("inserts") if screen else [], screen_path=broll.get("screen_path") if screen else "")
         filter_Parts_str = build_broll_filter(keep_intervals, broll, width, height, fps)
-        inputs += ["-i", broll["screen_path"]]
+        if screen:
+            inputs += ["-i", broll["screen_path"]]
+        for _, _, clip in broll.get("images") or []:
+            inputs += ["-i", clip]
     else:
         filter_parts = []
         concat_inputs = []
@@ -1847,6 +2148,8 @@ CLOUD_IMAGE_MODELS = {
                    ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]),
     "openai": ("OpenAI GPT Image", ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"]),
 }
+# USD per 1K image on Google's paid tier (ai.google.dev/gemini-api/docs/pricing, Oct 2026)
+CLOUD_IMAGE_PRICE = {"gemini": 0.067, "gemini_pro": 0.134}
 _working_cloud_model = {}
 # When a source runs out of quota or its key is refused, these are tried next (only those with a key)
 CLOUD_IMAGE_FALLBACK_ORDER = ["gemini_pro", "gemini", "openai"]
@@ -2160,10 +2463,11 @@ def imagegen_command(config: dict) -> tuple[list, dict, int]:
 
 def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, init_images: list | None = None,
                        strength: float = 0.5, negative_prompt: str = SD_NEGATIVE_PROMPT,
-                       notes: list | None = None) -> list:
+                       notes: list | None = None, step_name: str = "thumbnail", progress: tuple = (30, 55)) -> list:
     """
     Local Stable Diffusion (youtube_imagegen.py in its own venv): text-to-image, or image-to-image
-    when `init_images` is given. Shows a countdown in the thumbnail step. Returns PIL images.
+    when `init_images` is given. Shows a countdown in `step_name`, from progress[0] over progress[1] points.
+    Returns PIL images; image i is also saved as out_dir/sd_{i+1}.png.
     """
     import queue
     import threading
@@ -2209,10 +2513,10 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
             left = sd_eta_seconds(timings, count, finished, phase, time.time() - phase_started, step, steps,
                                   image_times[-1] if image_times else None, work, step_rate)
             if phase == "loading":
-                update_step("thumbnail", 30, f"Loading Stable Diffusion… ~{_fmt_clock(left)} left")
+                update_step(step_name, progress[0], f"Loading Stable Diffusion… ~{_fmt_clock(left)} left")
             else:
                 done = finished + (step / steps if steps else 0.0)
-                update_step("thumbnail", 30 + int(55 * done / count),
+                update_step(step_name, progress[0] + int(progress[1] * done / count),
                             f"AI image {min(finished + 1, count)}/{count} · {_fmt_clock(left)} left")
 
         show()
@@ -3832,10 +4136,77 @@ def stage_broll_plan(config: dict, ctx: dict, gates: set) -> str | None:
     ctx["broll_plan_path"] = paths["broll_plan"]
     if "broll" in gates:
         return "broll"
+    # Auto: the screen moments the planner is sure of, and a picture for each spot the dial picked
+    picked = [i["id"] for i in plan["inserts"] if i.get("kind") == "image" and i.get("picked")]
+    if picked:
+        notes = []
+        made = make_broll_images(config, plan, picked, paths["broll_thumbs"], notes)
+        update_step("broll", 90, f"Made {made} of {len(picked)} B-roll pictures.")
     for ins in plan["inserts"]:
-        ins["status"] = "accepted" if ins.get("confidence", 0) >= BROLL_ACCEPT_CONFIDENCE else "rejected"
+        if ins.get("kind") == "image":
+            ok = ins.get("picked") and ins.get("image")
+        else:
+            ok = ins.get("confidence", 0) >= BROLL_ACCEPT_CONFIDENCE
+        ins["status"] = "accepted" if ok else "rejected"
     write_json_file(paths["broll_plan"], plan)
     return None
+
+
+def broll_images(state_path: str, secrets: dict, options: dict) -> int:
+    """
+    At the B-roll gate: make (or remake) the pictures for options["ids"], with the prompts and sources the
+    panel sent, then wait at the B-roll gate again.
+    """
+    state = load_state(state_path)
+    if state is None:
+        return 1
+    config = dict(state.get("config", {}))
+    config["secrets"] = secrets or {}
+    ctx = state.get("ctx", {})
+    if ctx.get("pending_gate") != "broll" or not ctx.get("broll_plan_path"):
+        emit("error", message="This job isn't waiting at the B-roll step.")
+        return 1
+    plan_path = ctx["broll_plan_path"]
+    plan = read_json_file(plan_path)
+    prompts, sources = options.get("prompts") or {}, options.get("sources") or {}
+    for ins in plan.get("inserts", []):
+        if ins.get("kind") != "image":
+            continue
+        if str(prompts.get(ins["id"], "")).strip():
+            ins["prompt"] = str(prompts[ins["id"]]).strip()
+        if sources.get(ins["id"]) in BROLL_IMAGE_SOURCES:
+            ins["source"] = sources[ins["id"]]
+    ids = [str(i) for i in options.get("ids") or []]
+
+    update_step("broll", 2, "Getting ready...")
+    notes = []
+    try:
+        made = make_broll_images(config, plan, ids, pipeline_paths(ctx["input_video"])["broll_thumbs"], notes,
+                                 progress=(5, 90))
+    except Exception as e:
+        log_error(f"Making B-roll pictures failed: {e}")
+        made = 0
+    write_json_file(plan_path, plan)
+    state_file = pause_for_review(config, ctx, "broll")
+    update_step("broll", 100, f"Made {made} of {len(ids)} B-roll pictures. Waiting for your review.")
+    emit("broll_plan_ready", plan_path=plan_path, state_path=state_file, insert_count=len(plan["inserts"]),
+         made=made, notes=notes)
+    return 0
+
+
+def broll_still_clips(plan: dict, clip_dir: str, width: int, height: int, fps: str) -> list[tuple[float, float, str]]:
+    """Slow-zoom clips for the accepted pictures: [(raw start, raw end, clip)]."""
+    spans = accepted_image_inserts(plan)
+    if spans:
+        shutil.rmtree(clip_dir, ignore_errors=True)
+        os.makedirs(clip_dir, exist_ok=True)
+    clips = []
+    for n, (s, e, image) in enumerate(spans):
+        update_step("broll", 95, f"Animating B-roll picture {n + 1}/{len(spans)}...")
+        clip = os.path.join(clip_dir, f"clip_{n + 1:02d}.mp4")
+        if make_still_clip(image, e - s + 0.2, width, height, fps, clip, n):
+            clips.append((s, e, clip))
+    return clips
 
 
 def stage_render(config: dict, ctx: dict) -> None:
@@ -3855,14 +4226,23 @@ def stage_render(config: dict, ctx: dict) -> None:
             plan = read_json_file(ctx["broll_plan_path"])
             screen_video = plan.get("screen_video", "")
             spans = accepted_broll_inserts(plan, get_video_duration(screen_video)) if os.path.exists(screen_video) else []
-            if spans:
+            clips = []
+            if accepted_image_inserts(plan):
+                width, height, fps = probe_video_geometry(input_video)
+                clips = broll_still_clips(plan, os.path.join(pipeline_paths(input_video)["broll_thumbs"], "clips"),
+                                          width, height, fps)
+            ctx["broll_clips"] = [list(c) for c in clips]
+            if spans or clips:
                 broll = {
-                    "screen_path": screen_video,
+                    "screen_path": screen_video if spans else "",
                     "offset": float(plan.get("offset_sec", 0.0)),
                     "inserts": spans,
+                    "images": clips,
                     "style": plan.get("style", "pip"),
                 }
-                update_step("broll", 100, f"{len(spans)} B-roll inserts accepted ({plan.get('style', 'pip')}).")
+                counts = [f"{len(spans)} screen" if spans else "", f"{len(clips)} picture" if clips else ""]
+                update_step("broll", 100, f"{' + '.join(c for c in counts if c)} B-roll inserts accepted "
+                                          f"({plan.get('style', 'pip')}).")
             else:
                 update_step("broll", 100, "No B-roll inserts accepted.")
         except (OSError, ValueError) as e:
@@ -4106,12 +4486,15 @@ def export_premiere_project(ctx: dict, open_in_premiere: bool = False) -> str:
     if ctx.get("broll_plan_path") and os.path.exists(ctx["broll_plan_path"]):
         plan = read_json_file(ctx["broll_plan_path"])
         screen = plan.get("screen_video", "")
-        if os.path.exists(screen):
-            spans = accepted_broll_inserts(plan, get_video_duration(screen))
+        spans = accepted_broll_inserts(plan, get_video_duration(screen)) if os.path.exists(screen) else []
+        # The slow-zoom clips the render made for the pictures
+        images = [(float(s), float(e), clip, premiere_export.probe_media(clip))
+                  for s, e, clip in ctx.get("broll_clips") or [] if os.path.exists(clip)]
+        if spans or images:
+            broll = {"style": plan.get("style", "pip"), "pip_width": BROLL_PIP_WIDTH, "images": images}
             if spans:
-                broll = {"path": screen, "probe": premiere_export.probe_media(screen),
-                         "offset": float(plan.get("offset_sec", 0.0)), "inserts": spans,
-                         "style": plan.get("style", "pip"), "pip_width": BROLL_PIP_WIDTH}
+                broll.update(path=screen, probe=premiere_export.probe_media(screen),
+                             offset=float(plan.get("offset_sec", 0.0)), inserts=spans)
 
     # Where each cut was, on the edited timeline, so it can be checked in Premiere
     cut_marks = []
@@ -4567,6 +4950,8 @@ def main():
                                          cfg.get("action", "generate"), cfg.get("options") or {})
         if mode == "music_regen":
             return regenerate_music(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("options") or {})
+        if mode == "broll_images":
+            return broll_images(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("options") or {})
         if mode == "redo_pipeline":
             return redo_pipeline(cfg)
         if mode == "export_premiere":

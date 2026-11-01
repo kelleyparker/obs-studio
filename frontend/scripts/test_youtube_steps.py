@@ -303,6 +303,18 @@ class PremiereXmlTests(unittest.TestCase):
         self.assertEqual(screen.find(".//parameter/value").text, "75.0")
         self.assertEqual(len(tracks[2].findall("clipitem")), 1)
 
+    def test_pictures_go_on_v2_from_the_start_of_their_clip(self):
+        clip_probe = dict(self.PROBE, duration=2.2)
+        broll = {"style": "cutaway", "pip_width": 0.22,
+                 "images": [(9.0, 11.0, r"G:\obs rec\clip_01.mp4", clip_probe)]}
+        tracks = self.build(broll=broll).findall("sequence/media/video/track")
+        self.assertEqual(len(tracks), 2)  # cutaway: no webcam bubble track
+        picture = tracks[1].find("clipitem")
+        self.assertEqual(picture.findtext("name"), "Picture 1")
+        self.assertEqual(int(picture.findtext("start")), 150 + 30)
+        self.assertEqual(int(picture.findtext("in")), 0)
+        self.assertIsNone(picture.find(".//parameter"))  # made at the edit's size: no scaling
+
 
 class ChapterTests(unittest.TestCase):
     def test_parse_chapters(self):

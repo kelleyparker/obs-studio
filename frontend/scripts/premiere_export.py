@@ -180,11 +180,11 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
                        music: dict | None = None) -> str:
     """
     The edit as FCP 7 XML. keep_intervals are (start, end) seconds of the recording; broll is None or
-    {path, probe, offset, inserts: [(start, end) in recording seconds], style: "pip"|"cutaway", pip_width};
+    {path, probe, offset, inserts: [(start, end) in recording seconds], style: "pip"|"cutaway", pip_width,
+    images: [(start, end, slow-zoom clip, its probe)]} (the screen keys only when there is screen B-roll);
     chapters are (seconds, title) and cut_marks (seconds, name, comment), both on the edited timeline.
-    V1 gets a Cross Dissolve from black at the start and to black at the end, the audio a Cross Fade
-    (+3dB) at the end, each fade_sec long (0 for none) or as long as the first or last clip if that is
-    shorter. music is None or {path, probe}: a song as long as the edit, put on its own tracks.
+    V1 gets a Cross Dissolve from black at the start and to black at the end, each fade_sec long (0 for none)
+    or as long as the first or last clip if that is shorter. music is None or {path, probe}: a song as long as the edit, put on its own tracks.
     """
     fps = probe["fps"]
 
@@ -246,23 +246,31 @@ def build_premiere_xml(recording: str, probe: dict, keep_intervals: list, broll:
     if fade_out:
         _transition(v1, "Cross Dissolve", "video", total - fade_out, total, "end-black", fps)
 
+    # Each B-roll source: (start, end, source offset, name, file id, path, probe). The screen recording is
+    # shifted by its sync offset; a picture's slow-zoom clip starts at its insert.
+    sources = []
     if broll and broll.get("inserts"):
-        screen_probe = broll["probe"]
-        fit = min(probe["width"] / screen_probe["width"], probe["height"] / screen_probe["height"]) * 100
+        sources += [(s, e, broll["offset"], "Screen", "file-2", broll["path"], broll["probe"]) for s, e in broll["inserts"]]
+    if broll:
+        sources += [(s, e, -s, "Picture", f"file-picture-{k + 1}", path, clip_probe)
+                    for k, (s, e, path, clip_probe) in enumerate(broll.get("images") or [])]
+    sources.sort(key=lambda x: x[0])
+    if sources:
         v2 = _sub(video, "track")
         v3 = _sub(video, "track") if broll.get("style", "pip") == "pip" else None
         n = 0
         for part in parts:
-            for s, e in broll["inserts"]:
+            for s, e, offset, label, file_id, path, source_probe in sources:
                 s, e = max(s, part["a"]), min(e, part["b"])
                 if e - s < 1.0 / fps:
                     continue
                 n += 1
                 start = part["start"] + frames(s) - part["in"]
                 end = start + frames(e) - frames(s)
-                screen = _clipitem(v2, f"clipitem-v2-{n}", f"Screen {n}", fps, start, end,
-                                   frames(s + broll["offset"]), frames(s + broll["offset"]) + end - start,
-                                   "file-2", broll["path"], screen_probe, defined)
+                screen = _clipitem(v2, f"clipitem-v2-{n}", f"{label} {n}", fps, start, end,
+                                   frames(s + offset), frames(s + offset) + end - start,
+                                   file_id, path, source_probe, defined)
+                fit = min(probe["width"] / source_probe["width"], probe["height"] / source_probe["height"]) * 100
                 if abs(fit - 100) > 0.5:
                     _motion(screen, fit)
                 if v3 is not None:
