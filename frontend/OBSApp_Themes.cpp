@@ -17,6 +17,7 @@
 
 #include "OBSApp.hpp"
 
+#include <utility/AppMode.hpp>
 #include <utility/OBSProxyStyle.hpp>
 #include <utility/OBSThemeVariable.hpp>
 #include <utility/platform.hpp>
@@ -1140,7 +1141,11 @@ bool OBSApp::InitTheme()
 		}
 	}
 
-	QString themeName = config_get_string(userConfig, "Appearance", "Theme");
+	/* Each mode has its own theme, picked in Settings > Appearance */
+	QString themeName = config_get_string(userConfig, "Appearance", AppModeThemeKey());
+	if (themeName.isEmpty()) {
+		themeName = AppModeDefaultTheme(CurrentAppMode());
+	}
 
 	if (themeName.isEmpty() || !GetTheme(themeName)) {
 		if (!themeName.isEmpty()) {

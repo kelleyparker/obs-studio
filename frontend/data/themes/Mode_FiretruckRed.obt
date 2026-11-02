@@ -1,0 +1,28 @@
+/* YouTube mode's theme: dark fire-engine reds with a firetruck red accent.
+ * Hand-written, so frontend/tools/generate_themes.py leaves it alone. */
+
+@OBSThemeMeta {
+    name: 'Firetruck Red';
+    id: 'com.obsproject.Themes.FiretruckRed';
+    extends: 'com.obsproject.Yami';
+    author: 'cliffgoat';
+    dark: 'true';
+}
+
+@OBSThemeVars {
+    --grey1: rgb(140,43,48);
+    --grey2: rgb(122,35,40);
+    --grey3: rgb(106,29,34);
+    --grey4: rgb(90,24,28);
+    --grey5: rgb(74,19,22);
+    --grey6: rgb(58,14,17);
+    --grey7: rgb(44,10,12);
+    --grey8: rgb(28,6,7);
+    --primary: rgb(206,32,41);
+    --primary_light: rgb(229,59,67);
+    --primary_lighter: rgb(240,106,112);
+    --primary_dark: rgb(168,22,30);
+    --primary_darker: rgb(130,15,21);
+    --text_muted: rgb(222,170,172);
+    --border_color: rgb(122,35,40);
+}

@@ -1,0 +1,7 @@
+@OBSThemeMeta {
+    name: 'Default';
+    id: 'com.obsproject.Themes.CliffgoatGold.Default';
+    extends: 'com.obsproject.Themes.CliffgoatGold';
+    author: 'cliffgoat';
+    dark: 'true';
+}

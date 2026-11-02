@@ -23,6 +23,7 @@
 #endif
 #include <utility/BaseLexer.hpp>
 #include <utility/OBSTranslator.hpp>
+#include <utility/AppMode.hpp>
 #include <utility/platform.hpp>
 
 #include <qt-wrappers.hpp>
@@ -77,9 +78,12 @@ bool opt_disable_missing_files_check = false;
 string opt_starting_collection;
 string opt_starting_profile;
 string opt_starting_scene;
+string opt_app_mode;
 
 bool restart = false;
 bool restart_safe = false;
+/* The mode to restart in (vanilla, youtube or cliffgoat), or empty to keep the same one */
+string restart_app_mode;
 static QStringList arguments;
 
 string CurrentTimeString()
@@ -703,6 +707,13 @@ static int run_program(fstream &logFile, int argc, char *argv[])
 		} else {
 			arguments.removeAll("--safe-mode");
 		}
+
+		if (!restart_app_mode.empty()) {
+			for (AppMode mode : {AppMode::Vanilla, AppMode::YouTube, AppMode::Cliffgoat}) {
+				arguments.removeAll(QStringLiteral("--") + AppModeKey(mode));
+			}
+			arguments.append(QString::fromStdString("--" + restart_app_mode));
+		}
 	}
 
 	return ret;
@@ -1023,6 +1034,10 @@ int main(int argc, char *argv[])
 		} else if (arg_is(argv[i], "--steam", nullptr)) {
 			steam = true;
 
+		} else if (arg_is(argv[i], "--vanilla", nullptr) || arg_is(argv[i], "--youtube", nullptr) ||
+			   arg_is(argv[i], "--cliffgoat", nullptr)) {
+			opt_app_mode = argv[i] + 2;
+
 		} else if (arg_is(argv[i], "--help", "-h")) {
 			std::string help =
 				"--help, -h: Get list of available commands.\n\n"
@@ -1036,6 +1051,9 @@ int main(int argc, char *argv[])
 				"--scene <string>: Start with specific scene.\n\n"
 				"--studio-mode: Enable studio mode.\n"
 				"--minimize-to-tray: Minimize to system tray.\n"
+				"--vanilla: Open in Vanilla mode, without the YouTube pipeline.\n"
+				"--youtube: Open in YouTube mode, with the YouTube pipeline.\n"
+				"--cliffgoat: Open in cliffgoat mode, with the YouTube pipeline.\n"
 #if ALLOW_PORTABLE_MODE
 				"--portable, -p: Use portable mode.\n"
 #endif

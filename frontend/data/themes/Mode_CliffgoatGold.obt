@@ -1,0 +1,33 @@
+/* cliffgoat mode's theme: royal blue panels with gold accents, borders and
+ * highlights. Hand-written, so frontend/tools/generate_themes.py leaves it
+ * alone. */
+
+@OBSThemeMeta {
+    name: 'Cliffgoat Gold';
+    id: 'com.obsproject.Themes.CliffgoatGold';
+    extends: 'com.obsproject.Yami';
+    author: 'cliffgoat';
+    dark: 'true';
+}
+
+@OBSThemeVars {
+    --grey1: rgb(62,88,184);
+    --grey2: rgb(52,76,163);
+    --grey3: rgb(43,65,143);
+    --grey4: rgb(35,55,123);
+    --grey5: rgb(28,45,104);
+    --grey6: rgb(22,36,85);
+    --grey7: rgb(16,27,67);
+    --grey8: rgb(10,18,48);
+    --primary: rgb(184,134,11);
+    --primary_light: rgb(212,160,23);
+    --primary_lighter: rgb(255,215,0);
+    --primary_dark: rgb(154,112,9);
+    --primary_darker: rgb(122,88,7);
+    --text_muted: rgb(217,194,122);
+    --border_color: rgb(154,112,9);
+    --input_border: rgb(184,134,11);
+    --input_border_hover: rgb(212,160,23);
+    --highlight_color: rgb(255,215,0);
+}
+
