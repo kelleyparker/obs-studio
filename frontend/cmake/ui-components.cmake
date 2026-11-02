@@ -83,6 +83,8 @@ target_sources(
     components/SourceTreeModel.hpp
     components/TextSourceToolbar.cpp
     components/TextSourceToolbar.hpp
+    components/ThemeLogoOverlay.cpp
+    components/ThemeLogoOverlay.hpp
     components/UIValidation.cpp
     components/UIValidation.hpp
     components/UrlPushButton.cpp

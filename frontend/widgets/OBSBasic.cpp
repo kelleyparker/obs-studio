@@ -39,6 +39,7 @@
 #include <docks/SystemMonitorDock.hpp>
 #endif
 #include <docks/CanvasDocks.hpp>
+#include <components/ThemeLogoOverlay.hpp>
 #include <utility/AppMode.hpp>
 #include <youtube/YouTubePipelineDock.hpp>
 #include <dialogs/OBSCanvasSettings.hpp>
@@ -1207,6 +1208,8 @@ void OBSBasic::OBSInit()
 
 	/* setup the extra canvases */
 	SetupCanvasSlots();
+
+	new ThemeLogoOverlay(this);
 
 	/* settings backup and restore, placed after "Show Profile Folder" */
 	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);

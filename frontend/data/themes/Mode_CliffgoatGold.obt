@@ -31,3 +31,23 @@
     --highlight_color: rgb(255,215,0);
 }
 
+/* The cliffgoat logo behind the main window, showing through its panels,
+ * which are see-through royal blue here. Dialogs and menus stay solid. */
+OBSBasic {
+    background-color: var(--bg_window);
+    background-image: url(theme:Cliffgoat/logo.png);
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+OBSBasic OBSDock > QWidget,
+OBSBasic QAbstractItemView,
+OBSBasic OBSBasicStatusBar,
+OBSBasic QGroupBox,
+OBSBasic #contextContainer {
+    background: rgba(22,36,85,0.72);
+}
+
+OBSBasic QMenuBar {
+    background: rgba(16,27,67,0.85);
+}
