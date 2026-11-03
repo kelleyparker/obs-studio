@@ -3841,7 +3841,8 @@ def connect_music_server(cmd: list, env: dict, flags: int, ace_dir: str, job: di
             info = read_json_file(info_path)
         except (OSError, ValueError):
             info = {}
-        if info.get("pid") == proc.pid and info.get("port"):
+        # Known by its token, not its pid: a venv's python.exe starts the real Python as a child
+        if info.get("token") == token and info.get("port"):
             return send(int(info["port"]), {"token": token, "job": job}), False
         time.sleep(0.2)
     proc.kill()

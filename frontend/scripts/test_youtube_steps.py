@@ -1043,18 +1043,20 @@ class MusicServerTests(unittest.TestCase):
         except OSError:
             return []
 
-    def command(self, uuid="GPU-3050"):
+    def command(self, uuid="GPU-3050", launcher=False):
         script = os.path.join(os.path.dirname(os.path.abspath(yp.__file__)), "youtube_musicgen.py")
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         gpu = {"name": "NVIDIA GeForce RTX 3050", "gb": 8.0, "uuid": uuid, "bus": "", "monitor": False}
-        return [sys.executable, script], env, 0, self.ace_dir, gpu
+        # A venv's python.exe is a launcher that runs the real Python as a child, under another pid
+        start = [sys.executable, "-c", "import subprocess, sys; sys.exit(subprocess.call([sys.executable] + sys.argv[1:]))"]
+        return (start if launcher else [sys.executable]) + [script], env, 0, self.ace_dir, gpu
 
-    def make(self, duration=11.0, uuid="GPU-3050", caption="calm piano"):
+    def make(self, duration=11.0, uuid="GPU-3050", caption="calm piano", launcher=False):
         out = os.path.join(self.tmp, f"song_{len(os.listdir(self.tmp))}.wav")
         songs = [{"caption": caption, "lyrics": "", "instrumental": True, "bpm": 80, "keyscale": "C major",
                   "duration": duration, "seed": 1, "out": out, "label": "song 1/1", "group": "Song 1"}]
         notes = []
-        with mock.patch.object(yp, "musicgen_command", return_value=self.command(uuid)), \
+        with mock.patch.object(yp, "musicgen_command", return_value=self.command(uuid, launcher)), \
                 contextlib.redirect_stdout(io.StringIO()) as log:
             made = yp.generate_songs({}, songs, notes)
         self.assertEqual((made, notes), ({out}, []))
@@ -1071,6 +1073,13 @@ class MusicServerTests(unittest.TestCase):
         self.assertEqual(self.loads(), ["dit True True"])
         # Loading took no time, which isn't what a cold start takes
         self.assertEqual(set(timings), {"rate"})
+
+    def test_a_venv_python_that_runs_the_real_one_as_a_child(self):
+        self.make(launcher=True)
+        first = self.server_pid()
+        log, _ = self.make(launcher=True)
+        self.assertIn("ACE-Step is still loaded from the last music", log)
+        self.assertEqual(self.server_pid(), first)
 
     def test_the_song_planning_lm_loads_the_first_time_its_needed(self):
         self.make(11.0)
