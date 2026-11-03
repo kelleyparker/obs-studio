@@ -97,6 +97,9 @@ void YouTubeWorkflowManager::LoadConfig()
 		config.musicSource = QString::fromUtf8(musicSource);
 	}
 
+	const char *musicGpu = config_get_string(cfg, "YouTubeWorkflow", "MusicGpu");
+	config.musicGpu = musicGpu ? QString::fromUtf8(musicGpu) : QString();
+
 	const char *imageModel = config_get_string(cfg, "YouTubeWorkflow", "ThumbnailImageModel");
 	if (imageModel && *imageModel) {
 		config.thumbnailImageModel = QString::fromUtf8(imageModel);
@@ -221,6 +224,7 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_bool(cfg, "YouTubeWorkflow", "CloudImageFallback", config.cloudImageFallback);
 	config_set_bool(cfg, "YouTubeWorkflow", "MusicEnabled", config.musicEnabled);
 	config_set_string(cfg, "YouTubeWorkflow", "MusicSource", config.musicSource.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "MusicGpu", config.musicGpu.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPhotoPath", config.thumbPhotoPath.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonMode", config.thumbPersonMode.toUtf8().constData());
@@ -491,6 +495,7 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["cloud_image_fallback"] = config.cloudImageFallback;
 	payload["music_enabled"] = config.musicEnabled;
 	payload["music_source"] = config.musicSource;
+	payload["music_gpu"] = config.musicGpu;
 	payload["thumb_options"] = thumbOptions;
 	payload["auto_finish"] = config.autoFinish;
 	payload["review_gates"] = stepMode ? QJsonArray{"cuts", "broll", "metadata", "music", "thumbnail", "publish"}
@@ -672,6 +677,7 @@ void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const Q
 	payload["mode"] = "resume_pipeline";
 	payload["state_path"] = statePath;
 	payload["music_source"] = config.musicSource;
+	payload["music_gpu"] = config.musicGpu;
 	if (!review.isEmpty()) {
 		payload["review"] = review;
 	}
@@ -734,6 +740,7 @@ void YouTubeWorkflowManager::RegenerateMusic(const QJsonObject &options)
 	if (withSource.value("music_source").toString().isEmpty()) {
 		withSource["music_source"] = config.musicSource;
 	}
+	withSource["music_gpu"] = config.musicGpu;
 	payload["options"] = withSource;
 	if (!LaunchPipelineWorker(payload)) {
 		musicRegenActive = false;
@@ -989,6 +996,7 @@ void YouTubeWorkflowManager::ContinuePipeline(const QString &statePathRef)
 	payload["mode"] = "resume_pipeline";
 	payload["state_path"] = statePath;
 	payload["music_source"] = config.musicSource;
+	payload["music_gpu"] = config.musicGpu;
 	LaunchPipelineWorker(payload);
 }
 
@@ -1102,6 +1110,20 @@ void YouTubeWorkflowManager::SetMusicSource(const QString &source)
 		config_save_safe(cfg, "tmp", nullptr);
 	}
 	emit MusicSourceChanged(source);
+}
+
+void YouTubeWorkflowManager::SetMusicGpu(const QString &gpu)
+{
+	if (config.musicGpu == gpu) {
+		return;
+	}
+	config.musicGpu = gpu;
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_string(cfg, "YouTubeWorkflow", "MusicGpu", gpu.toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+	emit MusicGpuChanged(gpu);
 }
 
 QString YouTubeWorkflowManager::MusicSourceLabel(const QString &source)

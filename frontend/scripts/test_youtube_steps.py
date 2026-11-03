@@ -824,6 +824,298 @@ def lyria_job(tmp, label="song 1/1", group="Song 1", **extra):
                  "label": label, "group": group}, **extra)
 
 
+GPUS = [{"name": "NVIDIA GeForce RTX 3050", "gb": 8.0, "uuid": "GPU-3050", "bus": "00000000:17:00.0"},
+        {"name": "NVIDIA GeForce RTX 5070", "gb": 11.9, "uuid": "GPU-5070", "bus": "00000000:65:00.0"}]
+
+# Stands in for youtube_musicgen.py: keeps the job it was given and "makes" each song
+FAKE_MUSICGEN = """import json, sys
+job = json.loads(sys.stdin.read())
+json.dump(job, open(sys.argv[1], "w"))
+print(json.dumps({"type": "loaded", "seconds": 1.0, "lm": bool(job["lm"])}), flush=True)
+for i, song in enumerate(job["songs"]):
+    open(song["out"], "wb").write(b"RIFF")
+    print(json.dumps({"type": "song", "index": i}), flush=True)
+"""
+
+
+class MusicGpuTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yt_music_gpu_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_auto_picks_the_most_memory(self):
+        self.assertEqual(yp.pick_music_gpu(GPUS)["uuid"], "GPU-5070")
+        self.assertIsNone(yp.pick_music_gpu([]))
+
+    def test_auto_picks_the_gpu_with_no_monitor(self):
+        monitors = {"nvidia geforce rtx 5070"}
+        self.assertEqual(yp.pick_music_gpu(GPUS, "", monitors)["uuid"], "GPU-3050")
+        # Unless it's too small, or every GPU has a monitor
+        small = [dict(GPUS[0], gb=4.0), GPUS[1]]
+        self.assertEqual(yp.pick_music_gpu(small, "", monitors)["uuid"], "GPU-5070")
+        self.assertEqual(yp.pick_music_gpu(GPUS, "", monitors | {"nvidia geforce rtx 3050"})["uuid"], "GPU-5070")
+        # A GPU picked in the dock wins
+        self.assertEqual(yp.pick_music_gpu(GPUS, "NVIDIA GeForce RTX 5070", monitors)["uuid"], "GPU-5070")
+
+    def test_windows_says_which_gpus_have_monitors(self):
+        monitors = yp.gpus_with_monitors()
+        if os.name == "nt":
+            self.assertIsInstance(monitors, set)
+        else:
+            self.assertIsNone(monitors)
+
+    def test_the_gpu_picked_in_the_dock(self):
+        self.assertEqual(yp.pick_music_gpu(GPUS, "NVIDIA GeForce RTX 3050")["uuid"], "GPU-3050")
+        self.assertEqual(yp.pick_music_gpu(GPUS, "rtx 3050")["uuid"], "GPU-3050")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(yp.pick_music_gpu(GPUS, "NVIDIA GeForce RTX 4090")["uuid"], "GPU-5070")
+        self.assertIn("isn't in this PC now", out.getvalue())
+
+    def test_what_stays_on_the_gpu(self):
+        # (offload, offload_dit): the 5070 keeps the music model and swaps the LM, the 3050 swaps both
+        self.assertEqual(yp.music_memory_plan(11.9, lm=True), (True, False))
+        self.assertEqual(yp.music_memory_plan(11.9, lm=False), (False, False))
+        self.assertEqual(yp.music_memory_plan(8.0, lm=True), (True, True))
+        self.assertEqual(yp.music_memory_plan(8.0, lm=False), (True, True))
+        self.assertEqual(yp.music_memory_plan(24.0, lm=True), (False, False))
+
+    def test_gpus_come_from_the_cuda_driver(self):
+        line = json.dumps({"type": "gpus", "gpus": GPUS})
+        cmd = [sys.executable, "-c", f"print('loading noise'); print({line!r})"]
+        env = dict(os.environ, CUDA_VISIBLE_DEVICES="GPU-5070")
+        self.assertEqual(yp.list_music_gpus(cmd, env, 0), GPUS)
+
+    def test_a_driver_that_hangs_stops_the_music_step(self):
+        cmd = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with self.assertRaisesRegex(RuntimeError, "NVIDIA driver isn't answering"):
+            yp.list_music_gpus(cmd, dict(os.environ), 0, timeout=1)
+
+    def test_ace_step_sees_only_the_chosen_gpu_below_normal_priority(self):
+        config = {"music_python": sys.executable, "music_ace_dir": self.tmp, "music_gpu": ""}
+        with mock.patch.object(yp, "list_music_gpus", return_value=GPUS),                 mock.patch.object(yp, "gpus_with_monitors", return_value={"nvidia geforce rtx 5070"}):
+            cmd, env, flags, ace_dir, gpu = yp.musicgen_command(config)
+        self.assertEqual((env["CUDA_VISIBLE_DEVICES"], gpu["name"]), ("GPU-3050", "NVIDIA GeForce RTX 3050"))
+        self.assertIs(gpu["monitor"], False)
+        if os.name == "nt":
+            self.assertTrue(flags & subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+
+    def run_songs(self, duration, gpus=GPUS, wanted=""):
+        script = os.path.join(self.tmp, "fake_musicgen.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(FAKE_MUSICGEN)
+        job_file = os.path.join(self.tmp, "job.json")
+        songs = [{"caption": "calm piano", "lyrics": "", "instrumental": True, "bpm": 80, "keyscale": "C major",
+                  "duration": duration, "seed": 1, "out": os.path.join(self.tmp, "song.wav"), "label": "song 1/1",
+                  "group": "Song 1"}]
+        gpu = dict(yp.pick_music_gpu(gpus, wanted), monitor=wanted != "")
+        with mock.patch.object(yp, "musicgen_command",
+                               return_value=([sys.executable, script, job_file], dict(os.environ), 0, self.tmp, gpu)), \
+                mock.patch.object(yp, "unload_ollama_models"), mock.patch.object(yp, "save_music_timings") as saved, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            made = yp.generate_songs({"music_keep_loaded": False}, songs, [])
+        self.assertEqual(made, {songs[0]["out"]})
+        with open(job_file, encoding="utf-8") as f:
+            return json.load(f), saved.call_args.kwargs, out.getvalue()
+
+    def test_short_songs_skip_the_song_planning_lm(self):
+        job, timings, out = self.run_songs(11.0)
+        self.assertEqual((job["lm"], job["offload"], job["offload_dit"]), ("", False, False))
+        self.assertIn("load_no_lm_s", timings)
+        self.assertIn("on the NVIDIA GeForce RTX 5070 (11.9 GB, no monitor on it), without the song-planning LM", out)
+        self.assertNotIn("without its song-planning LM", out)
+
+    def test_longer_songs_keep_it(self):
+        job, timings, out = self.run_songs(70.0, wanted="NVIDIA GeForce RTX 3050")
+        self.assertEqual((job["lm"], job["offload"], job["offload_dit"]), (yp.MUSIC_LM_MODEL, True, True))
+        self.assertIn("on the NVIDIA GeForce RTX 3050 (8 GB).", out)
+        self.assertIn("load_s", timings)
+
+    def test_the_dock_choice_reaches_a_paused_job(self):
+        state = os.path.join(self.tmp, "x_yt_state.json")
+        video = os.path.join(self.tmp, "x.mp4")
+        open(video, "wb").close()
+        yp.write_json_file(state, {"version": 2, "config": {"music_gpu": ""},
+                                   "ctx": {"input_video": video, "next_stage": "music"}})
+        seen = {}
+
+        def run_stages(config, ctx, *args, **kwargs):
+            seen.update(config)
+            return 0
+
+        with mock.patch.object(yp, "run_stages", side_effect=run_stages), \
+                contextlib.redirect_stdout(io.StringIO()):
+            yp.resume_pipeline(state, {}, None, "", "NVIDIA GeForce RTX 3050")
+        self.assertEqual(seen.get("music_gpu"), "NVIDIA GeForce RTX 3050")
+
+
+# Stands in for ACE-Step: notes each model load, and takes its time over a "slow" song
+FAKE_ACESTEP = {
+    "__init__.py": "",
+    "handler.py": """import os
+class AceStepHandler:
+    def initialize_service(self, **kwargs):
+        with open(os.path.join(os.path.dirname(__file__), "loads.txt"), "a") as f:
+            f.write("dit " + str(kwargs.get("offload_to_cpu")) + " " + str(kwargs.get("offload_dit_to_cpu")) + "\\n")
+        return "", True
+""",
+    "llm_inference.py": """import os
+class LLMHandler:
+    llm_initialized = False
+    def initialize(self, **kwargs):
+        with open(os.path.join(os.path.dirname(__file__), "loads.txt"), "a") as f:
+            f.write("lm\\n")
+        self.llm_initialized = True
+        return "", True
+""",
+    "inference.py": """import os, time
+class GenerationParams:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+class GenerationConfig(GenerationParams):
+    pass
+def generate_music(dit, llm, params, config, save_dir, progress):
+    progress(0.5, "halfway")
+    if "slow" in params.caption:
+        time.sleep(60)
+    path = os.path.join(save_dir, "song.wav")
+    with open(path, "wb") as f:
+        f.write(b"RIFF")
+    return GenerationParams(success=True, audios=[{"path": path}], error="", status_message="")
+""",
+}
+
+
+def process_alive(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    code = ctypes.c_ulong()
+    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return code.value == 259  # STILL_ACTIVE
+
+
+class MusicServerTests(unittest.TestCase):
+    """The ACE-Step that stays loaded between music steps, run for real around a stand-in for ACE-Step."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yt_music_server_")
+        self.ace_dir = os.path.join(self.tmp, "ace")
+        os.makedirs(os.path.join(self.ace_dir, "acestep"))
+        os.makedirs(os.path.join(self.ace_dir, "checkpoints", yp.MUSIC_LM_MODEL))
+        open(os.path.join(self.ace_dir, "checkpoints", yp.MUSIC_LM_MODEL, "model.safetensors"), "wb").close()
+        for name, code in FAKE_ACESTEP.items():
+            with open(os.path.join(self.ace_dir, "acestep", name), "w", encoding="utf-8") as f:
+                f.write(code)
+        self.home = os.path.join(self.tmp, "home")
+        for patcher in (mock.patch.object(yp, "MUSIC_HOME", self.home),
+                        mock.patch.object(yp, "unload_ollama_models"),
+                        mock.patch.object(yp, "save_music_timings")):
+            self.saved = patcher.start()
+            self.addCleanup(patcher.stop)
+        self.pids = set()
+        self.addCleanup(self.stop_servers)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def stop_servers(self):
+        for pid in self.pids:
+            if process_alive(pid):
+                os.kill(pid, 9)
+                yp._wait_for_exit(pid, 10)
+
+    def server_pid(self) -> int:
+        pid = yp.read_json_file(os.path.join(self.home, "server.json"))["pid"]
+        self.pids.add(pid)
+        return pid
+
+    def loads(self) -> list[str]:
+        try:
+            with open(os.path.join(self.ace_dir, "acestep", "loads.txt"), encoding="utf-8") as f:
+                return f.read().split("\n")[:-1]
+        except OSError:
+            return []
+
+    def command(self, uuid="GPU-3050"):
+        script = os.path.join(os.path.dirname(os.path.abspath(yp.__file__)), "youtube_musicgen.py")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        gpu = {"name": "NVIDIA GeForce RTX 3050", "gb": 8.0, "uuid": uuid, "bus": "", "monitor": False}
+        return [sys.executable, script], env, 0, self.ace_dir, gpu
+
+    def make(self, duration=11.0, uuid="GPU-3050", caption="calm piano"):
+        out = os.path.join(self.tmp, f"song_{len(os.listdir(self.tmp))}.wav")
+        songs = [{"caption": caption, "lyrics": "", "instrumental": True, "bpm": 80, "keyscale": "C major",
+                  "duration": duration, "seed": 1, "out": out, "label": "song 1/1", "group": "Song 1"}]
+        notes = []
+        with mock.patch.object(yp, "musicgen_command", return_value=self.command(uuid)), \
+                contextlib.redirect_stdout(io.StringIO()) as log:
+            made = yp.generate_songs({}, songs, notes)
+        self.assertEqual((made, notes), ({out}, []))
+        return log.getvalue(), self.saved.call_args.kwargs
+
+    def test_the_models_stay_loaded_for_the_next_music(self):
+        log, timings = self.make()
+        first = self.server_pid()
+        self.assertNotIn("still loaded", log)
+        self.assertIn("load_no_lm_s", timings)
+        log, timings = self.make()
+        self.assertIn("ACE-Step is still loaded from the last music", log)
+        self.assertEqual(self.server_pid(), first)
+        self.assertEqual(self.loads(), ["dit True True"])
+        # Loading took no time, which isn't what a cold start takes
+        self.assertEqual(set(timings), {"rate"})
+
+    def test_the_song_planning_lm_loads_the_first_time_its_needed(self):
+        self.make(11.0)
+        self.make(70.0)
+        self.make(70.0)
+        self.assertEqual(self.loads(), ["dit True True", "lm"])
+
+    def test_another_gpu_gets_its_own(self):
+        self.make(uuid="GPU-3050")
+        first = self.server_pid()
+        self.make(uuid="GPU-OTHER")
+        self.assertNotEqual(self.server_pid(), first)
+        self.assertFalse(process_alive(first))
+        self.assertEqual(len(self.loads()), 2)
+
+    def test_stop_in_obs_ends_it_mid_job(self):
+        self.make()
+        pid = self.server_pid()
+        cmd, env, flags, ace_dir, gpu = self.command()
+        job = {"ace_dir": ace_dir, "dit": yp.MUSIC_DIT_MODEL, "lm": "", "offload": True, "offload_dit": True,
+               "key": {"gpu": gpu["uuid"], "dit": yp.MUSIC_DIT_MODEL, "offload": True, "offload_dit": True},
+               "songs": [{"caption": "slow piano", "duration": 11.0, "seed": 1,
+                          "out": os.path.join(self.tmp, "slow.wav")}]}
+        sock, running = yp.connect_music_server(cmd, env, flags, ace_dir, job)
+        self.assertTrue(running)
+        stream = sock.makefile("r", encoding="utf-8")
+        while json.loads(stream.readline())["type"] != "progress":
+            pass
+        stream.close()
+        sock.close()  # what killing the pipeline does
+        yp._wait_for_exit(pid, 15)
+        self.assertFalse(process_alive(pid))
+
+    def test_someone_without_the_token_is_turned_away(self):
+        import socket
+
+        self.make()
+        info = yp.read_json_file(os.path.join(self.home, "server.json"))
+        self.pids.add(info["pid"])
+        with socket.create_connection(("127.0.0.1", info["port"]), timeout=5) as sock:
+            sock.sendall(b'{"token": "wrong", "quit": true}\n')
+            self.assertEqual(sock.recv(100), b"")
+        self.assertTrue(process_alive(info["pid"]))
+
+
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not on PATH")
 class LyriaTests(unittest.TestCase):
     def setUp(self):

@@ -109,6 +109,8 @@ private:
 	QPushButton *stepModeBtn = nullptr;
 	QPushButton *autoModeBtn = nullptr;
 	QComboBox *imageSourceCombo = nullptr;
+	/* The GPU ACE-Step makes the music on, in the music step's row */
+	QComboBox *musicGpuCombo = nullptr;
 
 	/* Step mode review gates */
 	QGroupBox *reviewPanel = nullptr;

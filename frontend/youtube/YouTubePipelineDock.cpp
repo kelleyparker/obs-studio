@@ -50,6 +50,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 
 #ifdef _WIN32
@@ -62,6 +63,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <dxgi.h>
+#include <wrl/client.h>
 #endif
 
 /* What the dock shows with no job, at startup and after New Project */
@@ -74,6 +77,70 @@ static const char *const NOT_UPLOADED = "YouTube Link: <i>Not uploaded yet</i>";
 static QString MusicStepTitle(const QString &source)
 {
 	return QString("6. Background Music (%1)").arg(YouTubeWorkflowManager::MusicSourceLabel(source));
+}
+
+struct MusicGpu {
+	QString name;
+	quint64 memory = 0;
+	bool monitor = false;
+};
+
+/* The NVIDIA GPUs, from DXGI (not the CUDA driver, which can hang) */
+static QList<MusicGpu> NvidiaGpus()
+{
+	QList<MusicGpu> gpus;
+#ifdef _WIN32
+	Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+	if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+		return gpus;
+	}
+	Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+	for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+		DXGI_ADAPTER_DESC1 desc;
+		if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != 0x10DE || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+			continue;
+		}
+		QString name = QString::fromWCharArray(desc.Description).trimmed();
+		bool seen = std::any_of(gpus.begin(), gpus.end(), [&](const MusicGpu &g) { return g.name == name; });
+		/* DXGI lists only the outputs that show the desktop */
+		Microsoft::WRL::ComPtr<IDXGIOutput> output;
+		bool monitor = SUCCEEDED(adapter->EnumOutputs(0, &output));
+		if (!seen) {
+			gpus.append({name, (quint64)desc.DedicatedVideoMemory, monitor});
+		}
+	}
+#endif
+	return gpus;
+}
+
+static void FillMusicGpus(QComboBox *combo, const QString &chosen)
+{
+	QList<MusicGpu> gpus = NvidiaGpus();
+	/* What Auto picks in youtube_pipeline.py: the biggest GPU with no monitor (a 6 GB card or bigger), else the biggest */
+	auto bigger = [](const MusicGpu &a, const MusicGpu &b) {
+		return a.memory < b.memory;
+	};
+	QList<MusicGpu> spare;
+	std::copy_if(gpus.begin(), gpus.end(), std::back_inserter(spare),
+		     [](const MusicGpu &g) { return !g.monitor && g.memory >= 5632ull * 1024 * 1024; });
+	auto autoGpu = spare.isEmpty() ? std::max_element(gpus.begin(), gpus.end(), bigger)
+				       : std::max_element(spare.begin(), spare.end(), bigger);
+	bool haveAuto = !gpus.isEmpty();
+	auto shortName = [](QString name) {
+		return name.remove("NVIDIA ").remove("GeForce ");
+	};
+	combo->addItem(haveAuto ? QString("Auto (%1)").arg(shortName(autoGpu->name)) : QString("Auto"), QString());
+	for (const MusicGpu &gpu : gpus) {
+		combo->addItem(QString("%1 · %2 GB · %3")
+				       .arg(shortName(gpu.name))
+				       .arg(qRound(gpu.memory / 1073741824.0))
+				       .arg(gpu.monitor ? "has your monitors" : "no monitor"),
+			       gpu.name);
+	}
+	if (!chosen.isEmpty() && combo->findData(chosen) < 0) {
+		combo->addItem(QString("%1 (not found)").arg(shortName(chosen)), chosen);
+	}
+	combo->setCurrentIndex(std::max(0, combo->findData(chosen)));
 }
 
 YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
@@ -284,6 +351,26 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		QLabel *dLabel = new QLabel("Waiting", rowWidget);
 		dLabel->setStyleSheet("color: #b8a8c8; font-size: 11px;");
 		headerRow->addWidget(tLabel);
+		if (def.key == "music") {
+			musicGpuCombo = new QComboBox(rowWidget);
+			FillMusicGpus(musicGpuCombo, mgr->GetConfig().musicGpu);
+			musicGpuCombo->setToolTip(
+				"The GPU ACE-Step makes the music on (it isn't used for Lyria).\nAuto picks a GPU with no "
+				"monitor on it, so the desktop and OBS's preview don't stutter while it works, else the "
+				"one with the most memory.\nA smaller card is slower. Applies to the next songs, also "
+				"for a job that's paused.");
+			headerRow->addWidget(new QLabel("on", rowWidget));
+			headerRow->addWidget(musicGpuCombo);
+			connect(musicGpuCombo, QOverload<int>::of(&QComboBox::activated), this, [this, mgr](int index) {
+				mgr->SetMusicGpu(musicGpuCombo->itemData(index).toString());
+			});
+			connect(mgr, &YouTubeWorkflowManager::MusicGpuChanged, this, [this](const QString &gpu) {
+				int idx = musicGpuCombo->findData(gpu);
+				if (idx >= 0) {
+					musicGpuCombo->setCurrentIndex(idx);
+				}
+			});
+		}
 		headerRow->addStretch();
 		headerRow->addWidget(dLabel);
 

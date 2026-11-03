@@ -3393,6 +3393,13 @@ DEFAULT_MUSIC_PYTHON = os.path.join(MUSIC_HOME, "venv", "Scripts" if os.name == 
 MUSIC_ACE_DIR = os.path.join(MUSIC_HOME, "ACE-Step-1.5")
 MUSIC_DIT_MODEL = "acestep-v15-turbo"
 MUSIC_LM_MODEL = "acestep-5Hz-lm-0.6B"  # the song-planning LM that fits next to the DiT on a 12 GB card
+MUSIC_LM_MIN_SONG = 30.0  # shorter songs skip the song-planning LM: it takes longer to load than they do to make
+MUSIC_KEEP_ALL_GB = 20.0  # GPUs this big keep every ACE-Step model loaded (ACE-Step's own advice)
+MUSIC_KEEP_NO_LM_GB = 10.0  # ...and these, when there's no LM (the rest is about 6 GB)
+MUSIC_OFFLOAD_DIT_GB = 10.0  # GPUs smaller than this also move the music model off between songs
+MUSIC_GPU_TIMEOUT = 30  # seconds the CUDA driver gets to list the GPUs before ACE-Step would hang too
+MUSIC_SERVER_START_S = 60  # seconds the kept-loaded ACE-Step gets to start listening
+MUSIC_SPARE_GPU_MIN_GB = 5.5  # Auto makes the music on a GPU with no monitor on it when it's a 6 GB card or bigger
 MUSIC_MIN_SECTION = 10.0  # ACE-Step's shortest song
 MUSIC_MAX_SECTION = 240.0  # longer videos get several sections (ACE-Step can do 480 s here, but long songs wander)
 MUSIC_CROSSFADE = 6.0  # between sections
@@ -3404,7 +3411,7 @@ STEP_MUSIC_OPTIONS = 3
 REGEN_MUSIC_OPTIONS = 2
 # ACE-Step's seconds to load the models and seconds of work per second of music, and Lyria's seconds per
 # song; replaced by this PC's own after a run
-MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "rate": 1.0, "lyria_s": 30.0}
+MUSIC_TIMINGS_DEFAULT = {"load_s": 90.0, "load_no_lm_s": 45.0, "rate": 1.0, "lyria_s": 30.0}
 
 # Google's Lyria through the Gemini API (the same key as the titles), newest first. About 2 minutes of
 # music per call, billed per call; no free tier. Only the text prompt is sent.
@@ -3624,19 +3631,95 @@ def music_briefs(config: dict, ctx: dict, count: int) -> tuple[list[dict], str]:
     return briefs, source
 
 
-def largest_gpu_index() -> str:
-    """nvidia-smi index (PCI bus order) of the GPU with the most memory, e.g. an RTX 5070 next to a smaller card."""
+def list_music_gpus(cmd: list, env: dict, flags: int, timeout: float = MUSIC_GPU_TIMEOUT) -> list[dict]:
+    """
+    The NVIDIA GPUs ({name, gb, uuid, bus}) from youtube_musicgen.py --list-gpus, which asks the CUDA driver.
+    A driver that doesn't answer in `timeout` would hang ACE-Step as well, so that stops the music step.
+    """
+    probe_env = {k: v for k, v in env.items() if k != "CUDA_VISIBLE_DEVICES"}
+    proc = subprocess.Popen(cmd + ["--list-gpus"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env=probe_env, creationflags=flags, text=True,
+                            encoding="utf-8", errors="replace")
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=15).stdout
-        rows = [(int(a), float(b)) for a, b in (line.split(",") for line in out.strip().splitlines())]
-        return str(max(rows, key=lambda r: r[1])[0])
-    except Exception:
-        return ""
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()  # not waited for: a process stuck in the driver may never exit
+        raise RuntimeError(f"The NVIDIA driver isn't answering (it didn't list the GPUs in {timeout:.0f} s), so "
+                           "ACE-Step would hang. Restart the PC, then make the music again.") from None
+    for line in reversed(out.splitlines()):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "gpus":
+            return [g for g in ev.get("gpus") or [] if isinstance(g, dict) and g.get("uuid")]
+    return []
 
 
-def musicgen_command(config: dict) -> tuple[list, dict, int, str]:
-    """Command line, environment, creation flags and folder for youtube_musicgen.py in the ACE-Step venv."""
+def gpus_with_monitors() -> set[str] | None:
+    """
+    Names (lower case) of the graphics cards that drive a monitor, from Windows (not the NVIDIA driver, which
+    can hang); None if it can't tell.
+    """
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class DisplayDevice(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32), ("DeviceString", wintypes.WCHAR * 128),
+                    ("StateFlags", wintypes.DWORD), ("DeviceID", wintypes.WCHAR * 128),
+                    ("DeviceKey", wintypes.WCHAR * 128)]
+
+    names = set()
+    try:
+        for i in range(64):
+            dev = DisplayDevice()
+            dev.cb = ctypes.sizeof(dev)
+            if not ctypes.windll.user32.EnumDisplayDevicesW(None, i, ctypes.byref(dev), 0):
+                break
+            if dev.StateFlags & 0x1:  # DISPLAY_DEVICE_ATTACHED_TO_DESKTOP: a monitor shows the desktop on it
+                names.add(dev.DeviceString.strip().lower())
+    except (OSError, AttributeError):
+        return None
+    return names
+
+
+def pick_music_gpu(gpus: list[dict], wanted: str = "", with_monitors: set[str] | None = None) -> dict | None:
+    """
+    The GPU named `wanted` (as the dock lists it). Else (Auto) the biggest one with no monitor on it, so the
+    desktop doesn't stutter while the music is made, if it has MUSIC_SPARE_GPU_MIN_GB; else the biggest.
+    `with_monitors` is gpus_with_monitors(), None if that isn't known.
+    """
+    if not gpus:
+        return None
+    largest = max(gpus, key=lambda g: float(g.get("gb") or 0))
+    want = (wanted or "").strip().lower()
+    if not want:
+        spare = [g for g in gpus if with_monitors is not None and str(g.get("name", "")).strip().lower()
+                 not in with_monitors and float(g.get("gb") or 0) >= MUSIC_SPARE_GPU_MIN_GB]
+        return max(spare, key=lambda g: float(g.get("gb") or 0)) if spare else largest
+    for match in (lambda n: n == want, lambda n: want in n or n in want):
+        found = [g for g in gpus if match(str(g.get("name", "")).strip().lower())]
+        if found:
+            return found[0]
+    log_warn(f"The music GPU you picked ({wanted}) isn't in this PC now; using the {largest['name']}.")
+    return largest
+
+
+def music_memory_plan(gb: float, lm: bool) -> tuple[bool, bool]:
+    """(offload, offload_dit) for ACE-Step on a GPU with `gb` of memory, with or without the song-planning LM."""
+    if gb >= MUSIC_KEEP_ALL_GB or (not lm and gb >= MUSIC_KEEP_NO_LM_GB):
+        return False, False
+    return True, gb < MUSIC_OFFLOAD_DIT_GB
+
+
+def musicgen_command(config: dict) -> tuple[list, dict, int, str, dict | None]:
+    """
+    Command line, environment, creation flags, folder and GPU ({name, gb, ...}, or None if it couldn't
+    tell) for youtube_musicgen.py in the ACE-Step venv. It runs below normal priority, so the desktop and
+    OBS stay responsive while it works.
+    """
     python = config.get("music_python") or DEFAULT_MUSIC_PYTHON
     ace_dir = config.get("music_ace_dir") or MUSIC_ACE_DIR
     if not os.path.exists(python) or not os.path.isdir(ace_dir):
@@ -3648,13 +3731,18 @@ def musicgen_command(config: dict) -> tuple[list, dict, int, str]:
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_musicgen.py")
     env = dict(os.environ, HF_HUB_DISABLE_TELEMETRY="1", PYTHONIOENCODING="utf-8", TOKENIZERS_PARALLELISM="false",
                PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True", CUDA_DEVICE_ORDER="PCI_BUS_ID")
-    gpu = largest_gpu_index()
-    if gpu:
-        env["CUDA_VISIBLE_DEVICES"] = gpu
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    return [python, script], env, flags, ace_dir
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
+    cmd = [python, script]
+    with_monitors = gpus_with_monitors()
+    gpu = pick_music_gpu(list_music_gpus(cmd, env, flags), config.get("music_gpu", ""), with_monitors)
+    if gpu and with_monitors is not None:
+        gpu = dict(gpu, monitor=gpu["name"].strip().lower() in with_monitors)
+    if gpu:
+        # By UUID: ACE-Step assumes GPU 0, so it only gets to see this one
+        env["CUDA_VISIBLE_DEVICES"] = gpu["uuid"]
+    return cmd, env, flags, ace_dir, gpu
 
 
 def load_music_timings() -> dict:
@@ -3674,42 +3762,154 @@ def save_music_timings(**values):
         pass
 
 
+def _wait_for_exit(pid: int, timeout: float):
+    """Waits up to `timeout` seconds for process `pid` to end (so the GPU memory it held is free)."""
+    if not pid:
+        return
+    if os.name == "nt":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if handle:
+            ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+            ctypes.windll.kernel32.CloseHandle(handle)
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.2)
+
+
+def connect_music_server(cmd: list, env: dict, flags: int, ace_dir: str, job: dict):
+    """
+    Sends `job` to the ACE-Step that stays loaded between music steps (youtube_musicgen.py --serve) and
+    returns (the connection its events come back on, whether it was running already). It starts one if
+    none is running, or if the one running was started for another GPU or setup (which it stops first).
+    It stops when OBS does; Stop in OBS stops it too, as the connection goes away mid-job.
+    """
+    import secrets
+    import socket
+
+    info_path = os.path.join(MUSIC_HOME, "server.json")
+
+    def send(port: int, request: dict):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        sock.settimeout(None)
+        return sock
+
+    try:
+        info = read_json_file(info_path)
+    except (OSError, ValueError):
+        info = {}
+    if info.get("port") and info.get("token"):
+        try:
+            if info.get("key") == job["key"]:
+                return send(int(info["port"]), {"token": info["token"], "job": job}), True
+            send(int(info["port"]), {"token": info["token"], "quit": True}).close()
+            _wait_for_exit(int(info.get("pid") or 0), 30)
+        except (OSError, ValueError):
+            pass  # it isn't running any more
+
+    os.makedirs(MUSIC_HOME, exist_ok=True)
+    try:
+        os.remove(info_path)
+    except OSError:
+        pass
+    log_path = os.path.join(MUSIC_HOME, "server_log.txt")
+    token = secrets.token_hex(16)
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        # Its own process group, and none of our handles: it outlives this pipeline run
+        proc = subprocess.Popen(cmd + ["--serve"], cwd=ace_dir, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=log_file, env=env, text=True, encoding="utf-8",
+                                creationflags=flags | (subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0))
+    proc.stdin.write(json.dumps({"token": token, "key": job["key"], "info": info_path, "obs_pid": os.getppid()}))
+    proc.stdin.close()
+    deadline = time.time() + MUSIC_SERVER_START_S
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as f:
+                    tail = f.read()[-300:].strip()
+            except OSError:
+                tail = ""
+            raise RuntimeError("ACE-Step didn't start" + (f": {tail}" if tail else ""))
+        try:
+            info = read_json_file(info_path)
+        except (OSError, ValueError):
+            info = {}
+        if info.get("pid") == proc.pid and info.get("port"):
+            return send(int(info["port"]), {"token": token, "job": job}), False
+        time.sleep(0.2)
+    proc.kill()
+    raise RuntimeError(f"ACE-Step didn't start in {MUSIC_SERVER_START_S} s")
+
+
 def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int = 86) -> set:
     """
     Makes the songs ({caption, lyrics, instrumental, bpm, keyscale, duration, seed, out, label}) with
-    ACE-Step, counting down in the music step. Returns the paths it wrote.
+    ACE-Step, counting down in the music step. Returns the paths it wrote. On a GPU with no monitor on it,
+    ACE-Step stays loaded for the next music step (see connect_music_server); else it's started and closed.
     """
     import queue
     import threading
 
-    cmd, env, flags, ace_dir = musicgen_command(config)
-    job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL, "offload": True, "parent_pid": os.getpid(),
+    cmd, env, flags, ace_dir, gpu = musicgen_command(config)
+    use_lm = max(s["duration"] for s in songs) >= MUSIC_LM_MIN_SONG
+    offload, offload_dit = music_memory_plan(float(gpu["gb"]) if gpu else 0.0, use_lm)
+    if gpu:
+        log_info(f"Making the music on the {gpu['name']} ({gpu['gb']:g} GB"
+                 + (", no monitor on it)" if gpu.get("monitor") is False else ")")
+                 + ("" if use_lm else ", without the song-planning LM (the songs are short)") + ".")
+    job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL if use_lm else "", "offload": offload,
+           "offload_dit": offload_dit, "parent_pid": os.getpid(),
            "songs": [{k: v for k, v in s.items() if k not in ("label", "group")} for s in songs]}
     timings = load_music_timings()
+    load_key = "load_s" if use_lm else "load_no_lm_s"
     total = sum(s["duration"] for s in songs) or 1.0
     unload_ollama_models()
 
     made = set()
     done_audio, current, fraction = 0.0, 0, 0.0
-    phase_started, gen_started, load_s = time.time(), None, None
-    err_path = os.path.join(os.path.dirname(songs[0]["out"]), "musicgen_log.txt")
-    with open(err_path, "w", encoding="utf-8") as err_file:
-        proc = subprocess.Popen(cmd, cwd=ace_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_file,
-                                env=env, creationflags=flags, text=True, encoding="utf-8", errors="replace")
+    phase_started, gen_started, load_s, warm = time.time(), None, None, False
+    keep_loaded = bool(config.get("music_keep_loaded", True) and gpu and gpu.get("monitor") is False)
+    proc = sock = None
+    if keep_loaded:
+        job["key"] = {"gpu": gpu["uuid"], "dit": job["dit"], "offload": offload, "offload_dit": offload_dit}
+        err_path = os.path.join(MUSIC_HOME, "server_log.txt")
+        sock, running = connect_music_server(cmd, env, flags, ace_dir, job)
+        if running:
+            log_info("ACE-Step is still loaded from the last music, so it starts right away.")
+        expected_load = 0.0 if running else timings[load_key]
+        stream = sock.makefile("r", encoding="utf-8", errors="replace")
+    else:
+        err_path = os.path.join(os.path.dirname(songs[0]["out"]), "musicgen_log.txt")
+        expected_load = timings[load_key]
+        with open(err_path, "w", encoding="utf-8") as err_file:
+            proc = subprocess.Popen(cmd, cwd=ace_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_file,
+                                    env=env, creationflags=flags, text=True, encoding="utf-8", errors="replace")
         proc.stdin.write(json.dumps(job))
         proc.stdin.close()
+        stream = proc.stdout
+    try:
         lines = queue.Queue()
 
         def pump():
-            for raw in proc.stdout:
-                lines.put(raw)
+            try:
+                for raw in stream:
+                    lines.put(raw)
+            except (OSError, ValueError):
+                pass
             lines.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
 
         def show():
             if gen_started is None:
-                left = max(0.0, timings["load_s"] - (time.time() - phase_started)) + total * timings["rate"]
+                left = max(0.0, expected_load - (time.time() - phase_started)) + total * timings["rate"]
                 update_step("music", lo, f"Loading ACE-Step… ~{_fmt_clock(left)} left")
                 return
             audio_done = done_audio + fraction * songs[current]["duration"]
@@ -3733,8 +3933,8 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
                 continue
             kind = ev.get("type")
             if kind == "loaded":
-                load_s, gen_started = float(ev.get("seconds", 0.0)), time.time()
-                if not ev.get("lm"):
+                load_s, gen_started, warm = float(ev.get("seconds", 0.0)), time.time(), bool(ev.get("warm"))
+                if use_lm and not ev.get("lm"):
                     log_warn("ACE-Step is making the songs without its song-planning LM.")
             elif kind == "progress":
                 current = min(int(ev.get("index", 0)), len(songs) - 1)
@@ -3754,10 +3954,17 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
                 else:
                     notes.append(f"ACE-Step failed: {ev.get('message', '')}")
             show()
-        proc.wait()
+        if proc:
+            proc.wait()
+    finally:
+        if sock:
+            stream.close()
+            sock.close()
 
     if made and load_s is not None and gen_started is not None:
-        save_music_timings(load_s=round(load_s, 1), rate=round((time.time() - gen_started) / max(1.0, done_audio), 3))
+        # A load time is only saved when everything was loaded from disk
+        save_music_timings(**({} if warm else {load_key: round(load_s, 1)}),
+                           rate=round((time.time() - gen_started) / max(1.0, done_audio), 3))
     if not made:
         try:
             with open(err_path, encoding="utf-8", errors="replace") as f:
@@ -4079,6 +4286,8 @@ def regenerate_music(state_path: str, secrets: dict, options: dict) -> int:
     config["secrets"] = secrets or {}
     if options.get("music_source"):
         config["music_source"] = options["music_source"]
+    if "music_gpu" in options:
+        config["music_gpu"] = options["music_gpu"]
     ctx = state.get("ctx", {})
     if ctx.get("pending_gate") != "music":
         emit("error", message="This job isn't waiting at the music step.")
@@ -5176,7 +5385,8 @@ def load_state(state_path: str) -> dict | None:
     return state
 
 
-def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, music_source: str = "") -> int:
+def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, music_source: str = "",
+                    music_gpu: str | None = None) -> int:
     """Continue a paused run after the user reviewed a gate in OBS."""
     state = load_state(state_path)
     if state is None:
@@ -5186,6 +5396,8 @@ def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, 
     if music_source:
         # The music source picked in OBS now, not the one the job started with
         config["music_source"] = music_source
+    if music_gpu is not None:
+        config["music_gpu"] = music_gpu
     ctx = state.get("ctx", {})
     if state.get("version", 1) < 2:
         # Version 1 only ever paused for the B-roll review, right before rendering
@@ -5423,7 +5635,7 @@ def main():
                 return 0
         if mode == "resume_pipeline":
             return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("review"),
-                                   cfg.get("music_source", ""))
+                                   cfg.get("music_source", ""), cfg.get("music_gpu"))
         if mode == "thumbnail_regen":
             return regenerate_thumbnails(cfg.get("state_path", ""), cfg.get("secrets", {}),
                                          cfg.get("action", "generate"), cfg.get("options") or {})

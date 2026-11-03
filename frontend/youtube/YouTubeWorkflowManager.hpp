@@ -31,6 +31,8 @@ struct YouTubeWorkflowConfig {
 	// Lyria with the Gemini key, billed per song; ACE-Step stands in for any song it can't make)
 	bool musicEnabled = true;
 	QString musicSource = "acestep";
+	// The GPU ACE-Step makes the music on, by name ("NVIDIA GeForce RTX 3050"); empty for the one with the most memory
+	QString musicGpu;
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
@@ -155,6 +157,7 @@ eview carries
 	void SetPipelineMode(const QString &mode);
 	void SetThumbnailImageSource(const QString &source);
 	void SetMusicSource(const QString &source);
+	void SetMusicGpu(const QString &gpu);
 	/* "ACE-Step, on this PC" or "Lyria, Google cloud", for the music step's title */
 	static QString MusicSourceLabel(const QString &source);
 	void StartOAuthLogin();
@@ -202,6 +205,7 @@ signals:
 	void PipelineModeChanged(const QString &mode);
 	void ThumbnailImageSourceChanged(const QString &source);
 	void MusicSourceChanged(const QString &source);
+	void MusicGpuChanged(const QString &gpu);
 	void VideoUpdateFinished(bool ok, const QString &message);
 	void VideoDeleteFinished(bool ok, const QString &message);
 	/* The edit has been rendered and can be watched */
