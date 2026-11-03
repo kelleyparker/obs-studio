@@ -20,6 +20,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileSystemWatcher>
 #include <QMessageBox>
 #include <QProcess>
 #include <QRadioButton>
@@ -44,6 +45,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSplitter>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -58,6 +60,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 #endif
 
@@ -147,7 +150,7 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		prompter->activateWindow();
 	});
 
-	// 1b. Step | Auto toggle and AI thumbnail source (both apply to the next run)
+	// 1b. Step | Auto toggle and the default thumbnail model (both apply to the next run)
 	QHBoxLayout *modeRow = new QHBoxLayout();
 	stepModeBtn = new QPushButton("👣 Step", container);
 	autoModeBtn = new QPushButton("⚡ Auto", container);
@@ -161,12 +164,14 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	modeGroup->setExclusive(true);
 	imageSourceCombo = new QComboBox(container);
 	YouTubeSettingsWidget::FillThumbnailImageSources(imageSourceCombo);
-	imageSourceCombo->setToolTip("Where AI thumbnail images come from (also in Settings → YouTube Automation)");
+	imageSourceCombo->setToolTip("The image model for thumbnails: Auto mode makes one with it, and Step mode starts "
+				     "with it (you can pick another, write the prompt and add reference images at the "
+				     "thumbnail step). Also in Settings → YouTube Automation.");
 	modeRow->addWidget(new QLabel("Mode:", container));
 	modeRow->addWidget(stepModeBtn);
 	modeRow->addWidget(autoModeBtn);
 	modeRow->addSpacing(10);
-	modeRow->addWidget(new QLabel("AI thumbnails:", container));
+	modeRow->addWidget(new QLabel("Thumbnail model:", container));
 	modeRow->addWidget(imageSourceCombo, 1);
 	mainLayout->addLayout(modeRow);
 
@@ -329,6 +334,37 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		"QLabel { background-color: #191222; border: 1px dashed #6b4c85; border-radius: 4px; color: #9a88ab; }");
 	metaLayout->addWidget(thumbnailPreview);
 
+	QHBoxLayout *thumbRow = new QHBoxLayout();
+	editThumbBtn = new QPushButton("✏ Edit", metaGroup);
+	editThumbBtn->setToolTip("Open the thumbnail in your image editor. Save it there and the preview updates; after "
+				 "the upload, Submit to YouTube replaces it on the video.\nThe same picture without the "
+				 "text is next to it as _yt_thumb_bg.jpg.");
+	showThumbBtn = new QPushButton("📂 Show file", metaGroup);
+	showThumbBtn->setToolTip("Show the thumbnail file in File Explorer");
+	editThumbBtn->setEnabled(false);
+	showThumbBtn->setEnabled(false);
+	thumbRow->addWidget(editThumbBtn);
+	thumbRow->addWidget(showThumbBtn);
+	metaLayout->addLayout(thumbRow);
+	thumbWatcher = new QFileSystemWatcher(this);
+	connect(editThumbBtn, &QPushButton::clicked, this, &YouTubePipelineDock::EditThumbnail);
+	connect(showThumbBtn, &QPushButton::clicked, this, [this]() {
+		QProcess::startDetached("explorer.exe", {"/select,", QDir::toNativeSeparators(currentThumbnailPath)});
+	});
+	connect(thumbWatcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
+		if (path != currentThumbnailPath) {
+			return;
+		}
+		/* Editors often save by replacing the file, which drops it from the watcher; give them a moment */
+		QTimer::singleShot(400, this, [this]() {
+			if (QFileInfo::exists(currentThumbnailPath) && !thumbWatcher->files().contains(currentThumbnailPath)) {
+				thumbWatcher->addPath(currentThumbnailPath);
+			}
+			/* The pipeline writes it too; only a change made while nothing runs is an edit */
+			ShowThumbnail(!YouTubeWorkflowManager::Instance()->IsPipelineRunning());
+		});
+	});
+
 	QLabel *titleLbl = new QLabel("Generated Title (Current #1 Preferred):", metaGroup);
 	titleEdit = new QLineEdit(metaGroup);
 	titleEdit->setPlaceholderText("AI-generated YouTube title will appear here...");
@@ -380,7 +416,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	metaLayout->addWidget(statsLabel);
 
 	submitBtn = new QPushButton("✅ Submit to YouTube", metaGroup);
-	submitBtn->setToolTip("Push the title and description above to the uploaded video");
+	submitBtn->setToolTip("Push the title and description above to the uploaded video, and the thumbnail if you "
+			      "edited it");
 	submitBtn->setEnabled(false);
 	submitHeart = new YouTubeHeartbeat(submitBtn);
 	submitHeart->SetWanted(false);
@@ -391,7 +428,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 			return;
 		}
 		YouTubeWorkflowManager::Instance()->SubmitVideoEdits(titleEdit->text().trimmed(),
-								      descriptionEdit->toPlainText());
+								      descriptionEdit->toPlainText(),
+								      thumbnailEdited ? currentThumbnailPath : QString());
 	});
 	metaLayout->addWidget(submitBtn);
 
@@ -667,14 +705,49 @@ void YouTubePipelineDock::OnMetadataGenerated(const QString &title, const QStrin
 
 void YouTubePipelineDock::OnThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge)
 {
+	if (!thumbWatcher->files().isEmpty()) {
+		thumbWatcher->removePaths(thumbWatcher->files());
+	}
 	currentThumbnailPath = thumbnailPath;
+	thumbnailEdited = false;
 	providerBadgeLabel->setText(providerBadgeLabel->text() + QString(" | Thumbnail: %1").arg(providerBadge));
 	if (QFileInfo::exists(thumbnailPath)) {
-		QPixmap pix(thumbnailPath);
-		if (!pix.isNull()) {
-			thumbnailPreview->setPixmap(
-				pix.scaled(thumbnailPreview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+		thumbWatcher->addPath(thumbnailPath);
+	}
+	ShowThumbnail(false);
+}
+
+void YouTubePipelineDock::ShowThumbnail(bool edited)
+{
+	bool exists = !currentThumbnailPath.isEmpty() && QFileInfo::exists(currentThumbnailPath);
+	editThumbBtn->setEnabled(exists);
+	showThumbBtn->setEnabled(exists);
+	if (!exists) {
+		return;
+	}
+	QPixmap pix(currentThumbnailPath);
+	if (!pix.isNull()) {
+		thumbnailPreview->setPixmap(
+			pix.scaled(thumbnailPreview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+	}
+	if (edited && !thumbnailEdited) {
+		thumbnailEdited = true;
+		bool uploaded = !YouTubeWorkflowManager::Instance()->GetLastVideoId().isEmpty();
+		OnLogMessageReceived("info", uploaded ? "The thumbnail changed. Submit to YouTube puts it on the video."
+						      : "The thumbnail changed. The upload will use your edit.");
+		if (uploaded && reviewGate.isEmpty()) {
+			submitBtn->setEnabled(true);
 		}
+	}
+}
+
+void YouTubePipelineDock::EditThumbnail()
+{
+	/* The "edit" verb opens the image editor for JPEGs (Paint by default), not the viewer */
+	std::wstring path = QDir::toNativeSeparators(currentThumbnailPath).toStdWString();
+	HINSTANCE result = ShellExecuteW(nullptr, L"edit", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(result) <= 32) {
+		QDesktopServices::openUrl(QUrl::fromLocalFile(currentThumbnailPath));
 	}
 }
 
@@ -822,6 +895,12 @@ void YouTubePipelineDock::ResetJobView()
 	}
 	currentEditedVideoPath.clear();
 	currentThumbnailPath.clear();
+	thumbnailEdited = false;
+	if (!thumbWatcher->files().isEmpty()) {
+		thumbWatcher->removePaths(thumbWatcher->files());
+	}
+	editThumbBtn->setEnabled(false);
+	showThumbBtn->setEnabled(false);
 	statusBanner->setText(IDLE_BANNER);
 	cancelBtn->setEnabled(YouTubeWorkflowManager::Instance()->IsPipelineRunning());
 	RefreshEditButtons();
@@ -1277,6 +1356,9 @@ void YouTubePipelineDock::OnUploadStatsReady(const QString &statsText)
 
 void YouTubePipelineDock::OnVideoUpdateFinished(bool ok, const QString &message)
 {
+	if (ok) {
+		thumbnailEdited = false;
+	}
 	/* Re-enable so a failed submit (e.g. needs Google reconnect) can be retried. */
 	submitBtn->setEnabled(true);
 	OnLogMessageReceived(ok ? "info" : "error", message);

@@ -18,6 +18,7 @@ class YouTubeScriptWriter;
 class YouTubeThumbnailPicker;
 class YouTubeVideoPreview;
 class QComboBox;
+class QFileSystemWatcher;
 class QLineEdit;
 class QPlainTextEdit;
 class QProgressBar;
@@ -58,6 +59,9 @@ private:
 	void ResetJobView();
 	/* Shows a saved job as it was left: its details, progress, and the review it waits at (or Continue) */
 	void RestoreJobView(const QString &statePath);
+	/* Shows the thumbnail file again; edited: it changed on disk outside the pipeline */
+	void ShowThumbnail(bool edited);
+	void EditThumbnail();
 	void ShowOpenProjectDialog();
 	/* Reopens the newest saved job (or offers to start the newest unstarted recording), e.g. after a crash */
 	void OpenRecentProject();
@@ -101,7 +105,7 @@ private:
 	YouTubeBrollReview *brollReview = nullptr;
 	YouTubeTerminalWidget *terminal = nullptr;
 
-	/* Step | Auto toggle and the AI thumbnail source, applied to the next run */
+	/* Step | Auto toggle and the default thumbnail model, applied to the next run */
 	QPushButton *stepModeBtn = nullptr;
 	QPushButton *autoModeBtn = nullptr;
 	QComboBox *imageSourceCombo = nullptr;
@@ -135,4 +139,9 @@ private:
 
 	QString currentEditedVideoPath;
 	QString currentThumbnailPath;
+	/* The thumbnail can be edited in an image editor; a change after the upload is pushed by Submit */
+	QPushButton *editThumbBtn = nullptr;
+	QPushButton *showThumbBtn = nullptr;
+	QFileSystemWatcher *thumbWatcher = nullptr;
+	bool thumbnailEdited = false;
 };

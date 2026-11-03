@@ -160,8 +160,9 @@ eview carries
 	void StartOAuthLogin();
 	void CancelPipeline();
 
-	/* Pushes an edited title/description to the most recently uploaded video. */
-	void SubmitVideoEdits(const QString &title, const QString &description);
+	/* Pushes an edited title/description to the most recently uploaded video, and the thumbnail file when
+	 * thumbnailPath is given (it was edited after the upload). */
+	void SubmitVideoEdits(const QString &title, const QString &description, const QString &thumbnailPath = QString());
 
 	QString GetLastVideoPath() const { return lastVideoPath; }
 	QString GetLastVideoId() const { return lastVideoId; }
@@ -215,6 +216,9 @@ signals:
 	void ProjectOpened(const QString &statePath);
 	void ThumbnailRegenStarted();
 	void ThumbnailRegenFinished();
+	/* Local Stable Diffusion needs IP-Adapter (sizeGb) for reference images; action made nothing and can run
+	 * again with {"allow_download": true} once the user agrees */
+	void ReferenceDownloadNeeded(const QString &action, double sizeGb);
 	void MusicRegenStarted();
 	void MusicRegenFinished();
 	void BrollImagesStarted();

@@ -11,6 +11,9 @@ Jobs:
       text-to-image, writes sd_1.png, sd_2.png, ... in out_dir
   the same plus "init_images": [...] (one per prompt) and "strength"
       image-to-image (Refine), same outputs
+  either plus "ip_adapter_images": [...], "ip_adapter_scale" and "allow_download"
+      guided by reference images through IP-Adapter; when its weights (about 3 GB) aren't downloaded yet and
+      allow_download is off, nothing is made and {"type": "error", "code": "ip_adapter_missing"} is printed
   {"task": "cutout", "image", "out"}
       removes the background of a photo of a person and writes an RGBA PNG cropped to the person
 """
@@ -51,6 +54,24 @@ def load_pipeline(model: str, device: str, img2img: bool):
     return pipe.to(device)
 
 
+# IP-Adapter for SDXL with the ViT-H image encoder (the smaller of the two encoders)
+IP_ADAPTER_REPO = "h94/IP-Adapter"
+IP_ADAPTER_FILES = ("sdxl_models/ip-adapter_sdxl_vit-h.safetensors", "models/image_encoder/config.json",
+                    "models/image_encoder/model.safetensors")
+
+
+def ip_adapter_cached() -> bool:
+    from huggingface_hub import try_to_load_from_cache
+
+    return all(isinstance(try_to_load_from_cache(IP_ADAPTER_REPO, f), str) for f in IP_ADAPTER_FILES)
+
+
+def load_ip_adapter(pipe, scale: float, local_only: bool):
+    pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder="sdxl_models", weight_name="ip-adapter_sdxl_vit-h.safetensors",
+                         image_encoder_folder="models/image_encoder", local_files_only=local_only)
+    pipe.set_ip_adapter_scale(scale)
+
+
 def cutout(job: dict) -> int:
     """Background removal with rembg (u2net_human_seg), cropped to the person."""
     try:
@@ -79,22 +100,33 @@ def main() -> int:
     out_dir = job["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
     init_images = job.get("init_images") or []
+    references = job.get("ip_adapter_images") or []
 
     try:
         import torch
 
+        cached = bool(references) and ip_adapter_cached()
+        if references and not cached and not job.get("allow_download"):
+            emit("error", code="ip_adapter_missing", message="IP-Adapter isn't downloaded yet.")
+            return 1
         device = pick_device(torch)
         emit("loading")
         started = time.time()
         pipe = load_pipeline(job["model"], device, bool(init_images))
+        if references:
+            if not cached:
+                emit("downloading", what="ip_adapter")
+            load_ip_adapter(pipe, float(job.get("ip_adapter_scale", 0.6)), cached)
         name = torch.cuda.get_device_name(device) if device.startswith("cuda") else "CPU"
         emit("loaded", device=name, seconds=round(time.time() - started, 1))
     except Exception as e:
         emit("error", message=f"Could not load {job['model']}: {e}")
         return 1
 
-    from PIL import Image
+    from PIL import Image, ImageOps
 
+    # One adapter, several images: they're encoded together and guide every image
+    ref_images = [ImageOps.exif_transpose(Image.open(p)).convert("RGB") for p in references]
     width, height = int(job.get("width", 1344)), int(job.get("height", 768))
     steps = int(job.get("steps", 30))
     last_emit = [0.0]
@@ -115,6 +147,8 @@ def main() -> int:
             args.update(image=init, strength=float(job.get("strength", 0.5)))
         else:
             args.update(width=width, height=height)
+        if ref_images:
+            args.update(ip_adapter_image=[ref_images])
 
         # One retry: a failure is usually a one-off CUDA out-of-memory that clearing the cache fixes
         for attempt in range(2):

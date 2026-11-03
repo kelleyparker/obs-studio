@@ -171,7 +171,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"%USERPROFILE%\\OBSYouTubeImageGen. If local image generation isn't installed or fails, OBS makes free\n"
 		"thumbnails designed by your local LLM on your best video frames instead.\n"
 		"Nano Banana and GPT Image are paid per image (4 per Step run, 2 per refine) and give the best images.\n"
-		"Your photo and video frames are never sent to them: only the text-free background is.");
+		"Your photo and video frames are never sent to them: only your prompt, the text-free background,\n"
+		"and the reference images you attach at the thumbnail step.");
 	modelForm->addRow("AI thumbnail images:", thumbnailImageSourceCombo);
 
 	cloudImageFallbackCheck = new QCheckBox("Try the other cloud image models if one is out of quota or its key fails",
@@ -983,11 +984,11 @@ QString YouTubeSettingsWidget::BrollAmountName(int amount)
 
 void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)
 {
-	combo->addItem("Local Stable Diffusion (free, default)", "sd");
+	combo->addItem("Local Stable Diffusion XL (free, on this PC, default)", "sd");
 	combo->addItem("Local Ollama image model (free, macOS only for now)", "local");
 	combo->addItem("Google Nano Banana 2 (paid)", "gemini");
 	combo->addItem("Google Nano Banana Pro (paid, best quality)", "gemini_pro");
-	combo->addItem("ChatGPT / OpenAI GPT Image 2 (paid)", "openai");
+	combo->addItem("OpenAI GPT Image 2 (paid)", "openai");
 	combo->addItem("Claude design + local render (paid)", "claude");
 	combo->addItem("Off (video frames only)", "off");
 }

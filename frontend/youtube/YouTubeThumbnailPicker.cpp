@@ -1,5 +1,6 @@
 #include "YouTubeThumbnailPicker.hpp"
 #include "YouTubeHeartbeat.hpp"
+#include "YouTubeSettingsWidget.hpp"
 #include "YouTubeWorkflowManager.hpp"
 
 #include <QAbstractButton>
@@ -20,6 +21,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -35,6 +37,8 @@
 namespace {
 constexpr int kColumns = 4;
 const QSize kThumbSize(176, 99);
+constexpr int kMaxReferences = 4;
+const QSize kRefSize(56, 42);
 
 QJsonObject ReadJson(const QString &path)
 {
@@ -72,27 +76,67 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	group = new QButtonGroup(this);
 	group->setExclusive(true);
 
-	/* Tweak the AI images */
-	tweakBox = new QGroupBox("🎨 Tweak the AI images", this);
+	/* Make new AI images: model, prompt and references first */
+	tweakBox = new QGroupBox("🎨 Make your own AI images", this);
 	QFormLayout *form = new QFormLayout(tweakBox);
-	hookEdit = new QLineEdit(tweakBox);
-	hookEdit->setPlaceholderText("Leave empty for no text");
-	form->addRow("Text on thumbnail:", hookEdit);
+	modelCombo = new QComboBox(tweakBox);
+	YouTubeSettingsWidget::FillThumbnailImageSources(modelCombo);
+	modelCombo->setToolTip("The image model for this video's next images. The default for new videos is the "
+			       "dock's Thumbnail model.");
+	form->addRow("Model:", modelCombo);
+
+	QHBoxLayout *promptRow = new QHBoxLayout();
 	promptEdit = new QPlainTextEdit(tweakBox);
-	promptEdit->setPlaceholderText("What the background should show");
-	promptEdit->setFixedHeight(48);
-	form->addRow("Background idea:", promptEdit);
-	avoidEdit = new QLineEdit(tweakBox);
-	avoidEdit->setPlaceholderText("e.g. hands, robots, neon");
-	avoidEdit->setToolTip("Things the AI should leave out of the background");
-	form->addRow("Leave out:", avoidEdit);
+	promptEdit->setPlaceholderText("Describe the image you want");
+	promptEdit->setFixedHeight(64);
+	aiPromptButton = new QPushButton("↺ AI's prompt", tweakBox);
+	aiPromptButton->setToolTip("Put back the prompt the AI wrote from your video");
+	promptRow->addWidget(promptEdit, 1);
+	promptRow->addWidget(aiPromptButton, 0, Qt::AlignTop);
+	form->addRow("Prompt:", promptRow);
+
+	refsBox = new QWidget(tweakBox);
+	QVBoxLayout *refsLayout = new QVBoxLayout(refsBox);
+	refsLayout->setContentsMargins(0, 0, 0, 0);
+	QHBoxLayout *refsTop = new QHBoxLayout();
+	refsTiles = new QHBoxLayout();
+	refsTiles->setSpacing(4);
+	addRefsButton = new QPushButton("📎 Add images…", refsBox);
+	addRefsButton->setToolTip("Images the AI should take the subject, look or style from (up to 4)");
+	refsTop->addLayout(refsTiles);
+	refsTop->addWidget(addRefsButton);
+	refsTop->addStretch(1);
+	refsLayout->addLayout(refsTop);
+	QHBoxLayout *refStrengthRow = new QHBoxLayout();
+	refStrengthSlider = new QSlider(Qt::Horizontal, refsBox);
+	refStrengthSlider->setRange(30, 100);
+	refStrengthSlider->setValue(60);
+	refStrengthSlider->setToolTip("How closely the new images follow the reference images (local Stable Diffusion)");
+	refStrengthRow->addWidget(new QLabel("Follow them: loosely", refsBox));
+	refStrengthRow->addWidget(refStrengthSlider, 1);
+	refStrengthRow->addWidget(new QLabel("closely", refsBox));
+	refsLayout->addLayout(refStrengthRow);
+	refsNote = new QLabel(refsBox);
+	refsNote->setWordWrap(true);
+	refsNote->setStyleSheet("color: #ffb070; font-size: 11px;");
+	refsLayout->addWidget(refsNote);
+	form->addRow("Reference images:", refsBox);
+
 	styleCombo = new QComboBox(tweakBox);
+	styleCombo->addItem("As written (your prompt only)", "as_written");
 	styleCombo->addItem("Mixed (4 different looks)", "mixed");
 	styleCombo->addItem("Cinematic", "cinematic");
 	styleCombo->addItem("Poster", "poster");
 	styleCombo->addItem("Bright", "bright");
 	styleCombo->addItem("Dark & moody", "moody");
 	form->addRow("Style:", styleCombo);
+	hookEdit = new QLineEdit(tweakBox);
+	hookEdit->setPlaceholderText("Leave empty for no text");
+	form->addRow("Text on thumbnail:", hookEdit);
+	avoidEdit = new QLineEdit(tweakBox);
+	avoidEdit->setPlaceholderText("e.g. hands, robots, neon");
+	avoidEdit->setToolTip("Things the AI should leave out of the image");
+	form->addRow("Leave out:", avoidEdit);
 
 	QHBoxLayout *personRow = new QHBoxLayout();
 	personCombo = new QComboBox(tweakBox);
@@ -125,7 +169,7 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 
 	QHBoxLayout *refineRow = new QHBoxLayout();
 	refineButton = new QPushButton(tweakBox);
-	refineButton->setToolTip("Make 2 variations of the selected thumbnail's image, steered by the background idea");
+	refineButton->setToolTip("Make 2 variations of the selected thumbnail's image, steered by the prompt");
 	strengthSlider = new QSlider(Qt::Horizontal, tweakBox);
 	strengthSlider->setRange(30, 80);
 	strengthSlider->setValue(50);
@@ -163,6 +207,12 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	connect(refineButton, &QPushButton::clicked, this, [this]() { Run("refine"); });
 	connect(recomposeButton, &QPushButton::clicked, this, [this]() { Run("recompose"); });
 	connect(attachButton, &QPushButton::clicked, this, &YouTubeThumbnailPicker::AttachPhoto);
+	connect(addRefsButton, &QPushButton::clicked, this, &YouTubeThumbnailPicker::AddReferences);
+	connect(aiPromptButton, &QPushButton::clicked, this, [this]() { promptEdit->setPlainText(aiPrompt); });
+	connect(modelCombo, QOverload<int>::of(&QComboBox::activated), this, [this]() {
+		UpdateModelState();
+		UpdateEtaLabels();
+	});
 	connect(personCombo, QOverload<int>::of(&QComboBox::activated), this, [this]() {
 		if (personCombo->currentData().toString() == "photo" && photoPath.isEmpty()) {
 			AttachPhoto();
@@ -171,8 +221,17 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	connect(strengthSlider, &QSlider::valueChanged, this, &YouTubeThumbnailPicker::UpdateEtaLabels);
 	connect(stopButton, &QPushButton::clicked, mgr, &YouTubeWorkflowManager::CancelPipeline);
 	connect(mgr, &YouTubeWorkflowManager::ThumbnailRegenStarted, this, [this]() { SetBusy(true); });
-	connect(mgr, &YouTubeWorkflowManager::ThumbnailRegenFinished, this, [this]() { SetBusy(false); });
-	connect(mgr, &YouTubeWorkflowManager::ThumbnailImageSourceChanged, this, [this]() { UpdateEtaLabels(); });
+	connect(mgr, &YouTubeWorkflowManager::ThumbnailRegenFinished, this, [this]() {
+		SetBusy(false);
+		if (!downloadAction.isEmpty()) {
+			AskToDownload();
+		}
+	});
+	connect(mgr, &YouTubeWorkflowManager::ReferenceDownloadNeeded, this,
+		[this](const QString &action, double sizeGb) {
+			downloadAction = action;
+			downloadGb = sizeGb;
+		});
 	connect(mgr, &YouTubeWorkflowManager::StepProgressUpdated, this,
 		[this](const QString &step, int percent, const QString &message) {
 			if (step == "thumbnail" && busyRow->isVisible()) {
@@ -181,6 +240,7 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 			}
 		});
 
+	ShowReferences();
 	UpdateEtaLabels();
 	hide();
 }
@@ -236,15 +296,29 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 
 	/* The tweaks this job was made with, else the AI's own text and idea plus your saved defaults */
 	const YouTubeWorkflowConfig &cfg = YouTubeWorkflowManager::Instance()->GetConfig();
-	QJsonObject ctx = ReadJson(statePath).value("ctx").toObject();
+	QJsonObject state = ReadJson(statePath);
+	QJsonObject ctx = state.value("ctx").toObject();
 	QJsonObject meta = ctx.value("metadata").toObject();
 	QJsonObject opts = ctx.value("thumb_options").toObject();
+	/* The model this job uses (picked here earlier, or the default when it started) */
+	QString source = state.value("config").toObject().value("thumbnail_image_source").toString(cfg.thumbnailImageSource);
+	modelCombo->setCurrentIndex(std::max(0, modelCombo->findData(source)));
 	hookEdit->setText(opts.contains("hook") ? opts.value("hook").toString()
 						: meta.value("thumbnail_hook").toString());
+	aiPrompt = meta.value("thumbnail_prompt").toString();
 	QString prompt = opts.value("prompt").toString();
-	promptEdit->setPlainText(prompt.isEmpty() ? meta.value("thumbnail_prompt").toString() : prompt);
+	promptEdit->setPlainText(prompt.isEmpty() ? aiPrompt : prompt);
+	aiPromptButton->setEnabled(!aiPrompt.isEmpty());
+	references.clear();
+	for (const QJsonValue &v : opts.value("references").toArray()) {
+		if (QFileInfo::exists(v.toString())) {
+			references.append(v.toString());
+		}
+	}
+	refStrengthSlider->setValue(int(opts.value("ref_strength").toDouble(0.6) * 100));
+	ShowReferences();
 	avoidEdit->setText(opts.value("avoid").toString(cfg.thumbAvoid));
-	styleCombo->setCurrentIndex(std::max(0, styleCombo->findData(opts.value("style").toString("mixed"))));
+	styleCombo->setCurrentIndex(std::max(0, styleCombo->findData(opts.value("style").toString("as_written"))));
 	personCombo->setCurrentIndex(
 		std::max(0, personCombo->findData(opts.value("person").toString(cfg.thumbPersonMode))));
 	sideCombo->setCurrentIndex(std::max(0, sideCombo->findData(opts.value("side").toString(cfg.thumbPersonSide))));
@@ -270,6 +344,9 @@ bool YouTubeThumbnailPicker::eventFilter(QObject *watched, QEvent *event)
 QJsonObject YouTubeThumbnailPicker::Options() const
 {
 	QJsonObject o;
+	o["source"] = Source();
+	o["references"] = QJsonArray::fromStringList(references);
+	o["ref_strength"] = refStrengthSlider->value() / 100.0;
 	o["hook"] = hookEdit->text().trimmed();
 	o["prompt"] = promptEdit->toPlainText().trimmed();
 	o["avoid"] = avoidEdit->text().trimmed();
@@ -297,7 +374,102 @@ void YouTubeThumbnailPicker::Run(const QString &action)
 			return;
 		}
 	}
-	mgr->RegenerateThumbnails(action, Options());
+	lastAction = action;
+	lastOptions = Options();
+	downloadAction.clear();
+	mgr->RegenerateThumbnails(action, lastOptions);
+}
+
+QString YouTubeThumbnailPicker::Source() const
+{
+	return modelCombo->currentData().toString();
+}
+
+void YouTubeThumbnailPicker::AddReferences()
+{
+	QString start = references.isEmpty() ? QDir::homePath() : QFileInfo(references.last()).absolutePath();
+	QStringList paths = QFileDialog::getOpenFileNames(this, "Reference images for the thumbnail", start,
+							  "Images (*.png *.jpg *.jpeg *.webp)");
+	for (const QString &path : paths) {
+		if (references.size() >= kMaxReferences) {
+			emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
+				"warning", QString("Up to %1 reference images; the rest were left out.").arg(kMaxReferences));
+			break;
+		}
+		if (!references.contains(path)) {
+			references.append(path);
+		}
+	}
+	ShowReferences();
+}
+
+void YouTubeThumbnailPicker::ShowReferences()
+{
+	/* deleteLater: a tile removes itself from inside its own click */
+	while (QLayoutItem *item = refsTiles->takeAt(0)) {
+		if (item->widget()) {
+			item->widget()->deleteLater();
+		}
+		delete item;
+	}
+	for (const QString &path : references) {
+		QToolButton *tile = new QToolButton(refsBox);
+		tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+		tile->setText("✕");
+		tile->setIcon(QIcon(QPixmap(path).scaled(kRefSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+		tile->setIconSize(kRefSize);
+		tile->setToolTip(QString("Click to remove\n%1").arg(path));
+		connect(tile, &QToolButton::clicked, this, [this, path]() {
+			references.removeAll(path);
+			ShowReferences();
+		});
+		refsTiles->addWidget(tile);
+	}
+	addRefsButton->setEnabled(references.size() < kMaxReferences);
+	UpdateModelState();
+}
+
+void YouTubeThumbnailPicker::UpdateModelState()
+{
+	QString source = Source();
+	bool usesRefs = QStringList{"sd", "gemini", "gemini_pro", "openai"}.contains(source);
+	refsBox->setEnabled(usesRefs);
+	refsBox->setToolTip(usesRefs ? QString() : QString("%1 can't use reference images.").arg(modelCombo->currentText()));
+	/* Local Stable Diffusion is the only one with a strength setting */
+	refStrengthSlider->setEnabled(source == "sd");
+	QString note;
+	if (!usesRefs && !references.isEmpty()) {
+		note = "This model can't use reference images, so they're left out.";
+	} else if (source.startsWith("gemini") && !references.isEmpty()) {
+		note = "☁ These images will be sent to Google with your prompt. Video frames and your photo are not.";
+	} else if (source == "openai" && !references.isEmpty()) {
+		note = "☁ These images will be sent to OpenAI with your prompt. Video frames and your photo are not.";
+	}
+	refsNote->setText(note);
+	refsNote->setVisible(!note.isEmpty());
+}
+
+void YouTubeThumbnailPicker::AskToDownload()
+{
+	QString action = downloadAction;
+	downloadAction.clear();
+	if (action != lastAction) {
+		return;
+	}
+	QMessageBox::StandardButton answer = QMessageBox::question(
+		this, "Download reference-image support?",
+		QString("Reference images with local Stable Diffusion need IP-Adapter, a one-time download of about "
+			"%1 GB from Hugging Face into %2.\n\nDownload it now and make the images?")
+			.arg(downloadGb, 0, 'f', 1)
+			.arg(QDir::toNativeSeparators(QDir::homePath() + "/OBSYouTubeImageGen")));
+	if (answer != QMessageBox::Yes) {
+		emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
+			"info", "Not downloaded. Remove the reference images, or pick a cloud model, to make images without it.");
+		return;
+	}
+	QJsonObject options = lastOptions;
+	options["allow_download"] = true;
+	YouTubeWorkflowManager::Instance()->RegenerateThumbnails(action, options);
 }
 
 void YouTubeThumbnailPicker::AttachPhoto()
@@ -345,13 +517,13 @@ void YouTubeThumbnailPicker::UpdateEtaLabels()
 	first = t.value("first_image_s").toDouble(first);
 	image = t.value("image_s").toDouble(image);
 
-	const YouTubeWorkflowConfig &cfg = YouTubeWorkflowManager::Instance()->GetConfig();
-	bool sd = cfg.thumbnailImageSource == "sd" || cfg.thumbnailImageSource == "off";
+	QString source = Source();
+	bool sd = source == "sd" || source == "off";
 	double strength = strengthSlider->value() / 100.0;
 	generateButton->setText(sd ? QString("🎨 Make 4 new AI images (~%1)").arg(Clock(load + first + 3 * image))
 				   : QString("🎨 Make 4 new AI images"));
 	/* With a cloud source, Refine uses the cloud model's edit mode */
-	bool cloud = QStringList{"gemini", "gemini_pro", "openai"}.contains(cfg.thumbnailImageSource);
+	bool cloud = QStringList{"gemini", "gemini_pro", "openai"}.contains(source);
 	refineButton->setText(cloud ? QString("✨ Refine selected")
 				    : QString("✨ Refine selected (~%1)")
 					      .arg(Clock(load + (first + image) * std::max(0.3, strength))));

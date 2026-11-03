@@ -573,6 +573,129 @@ class CloudImageTests(unittest.TestCase):
             self.assertTrue(any("nothing of you is uploaded" in n for n in notes))
 
 
+class FakeImagegen:
+    """Stands in for youtube_imagegen.py's process: keeps the job it was sent and prints `lines`."""
+    jobs = []
+
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __call__(self, *args, **kwargs):
+        proc = mock.MagicMock()
+        proc.stdin = io.StringIO()
+        proc.stdin.close = lambda: FakeImagegen.jobs.append(json.loads(proc.stdin.getvalue()))
+        proc.stdout = iter(json.dumps(line) + "\n" for line in self.lines)
+        proc.returncode = 1
+        return proc
+
+
+class ThumbnailReferenceTests(unittest.TestCase):
+    SECRETS = CloudImageTests.SECRETS
+    META = StableDiffusionThumbnailTests.META
+
+    def setUp(self):
+        yp._working_cloud_model.clear()
+        yp._exhausted_cloud_models.clear()
+        yp._refused_cloud_keys.clear()
+        self.tmp = tempfile.mkdtemp(prefix="yt_refs_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def ref(self, name, color=(10, 200, 10)):
+        from PIL import Image
+
+        path = os.path.join(self.tmp, name)
+        Image.new("RGB", (40, 30), color).save(path)
+        return path
+
+    def test_as_written_keeps_your_prompt(self):
+        prompts, negative = yp.thumbnail_prompts("a red fox on a laptop", 3, {"style": "as_written", "avoid": "neon"})
+        self.assertEqual(prompts, ["a red fox on a laptop, 16:9 YouTube thumbnail, no text"] * 3)
+        self.assertTrue(negative.endswith("neon"))
+        prompts, _ = yp.thumbnail_prompts("a fox", 1, {"style": "as_written", "person": "photo", "side": "left"})
+        self.assertEqual(prompts, ["a fox, empty space on the left side, no people, 16:9 YouTube thumbnail, no text"])
+
+    def test_references_are_stored_with_the_job(self):
+        a, b = self.ref("a.png"), self.ref("b.jpg", (200, 0, 0))
+        refs_dir = os.path.join(self.tmp, "job_yt_refs")
+        with contextlib.redirect_stdout(io.StringIO()):
+            stored = yp.store_references({"references": [a, b, a, os.path.join(self.tmp, "gone.png")]}, refs_dir)
+            self.assertEqual(len(stored), 2)
+            self.assertTrue(all(os.path.dirname(p) == refs_dir and os.path.exists(p) for p in stored))
+            # Stored ones stay where they are
+            self.assertEqual(yp.store_references({"references": stored}, refs_dir), stored)
+
+    def test_gemini_gets_the_references(self):
+        from PIL import Image
+
+        client = mock.MagicMock()
+        client.models.generate_content.return_value = gemini_reply(png_bytes())
+        refs = [Image.new("RGB", (8, 8)), Image.new("RGB", (8, 8))]
+        with mock.patch("google.genai.Client", return_value=client):
+            yp.generate_cloud_image("gemini", self.SECRETS, "a fox", references=refs)
+        contents = client.models.generate_content.call_args.kwargs["contents"]
+        self.assertEqual(contents, ["a fox", *refs])
+
+    def test_openai_sends_several_references_to_edits(self):
+        from PIL import Image
+
+        refs = [Image.new("RGB", (8, 8)), Image.new("RGB", (8, 8))]
+        with mock.patch("urllib.request.urlopen", side_effect=openai_ok) as urlopen:
+            yp.generate_cloud_image("openai", self.SECRETS, "a fox", references=refs)
+        req = urlopen.call_args.args[0]
+        self.assertTrue(req.full_url.endswith("/images/edits"))
+        self.assertEqual(req.data.count(b'name="image[]"'), 2)
+        self.assertIn(b'filename="reference_2.png"', req.data)
+
+    def test_cloud_thumbnails_send_references_and_say_so(self):
+        from PIL import Image
+
+        img = Image.new("RGB", (1536, 1024))
+        options = {"references": [self.ref("a.png")], "style": "as_written", "prompt": "a fox"}
+        with mock.patch.object(yp, "generate_cloud_image", return_value=(img, "gemini", "m")) as cloud, \
+                contextlib.redirect_stdout(io.StringIO()):
+            yp.generate_ai_thumbnails("gemini", 1, {"secrets": self.SECRETS}, self.META, [], self.tmp, options)
+        self.assertIn("a fox", cloud.call_args.args[2])
+        self.assertTrue(cloud.call_args.args[2].endswith(yp.REFERENCE_PROMPT))
+        self.assertEqual(len(cloud.call_args.kwargs["references"]), 1)
+
+    def test_sources_without_reference_support_leave_them_out(self):
+        notes = []
+        with mock.patch.object(yp, "generate_ollama_image", side_effect=RuntimeError("no model")), \
+                mock.patch.object(yp, "call_local_ollama_json", return_value={"designs": []}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            yp.generate_ai_thumbnails("local", 1, {}, self.META, [], self.tmp, {"references": [self.ref("a.png")]},
+                                      notes)
+        self.assertIn("can't use reference images", notes[0])
+
+    def test_sd_job_carries_the_references(self):
+        FakeImagegen.jobs.clear()
+        ref = self.ref("a.png")
+        fake = FakeImagegen([{"type": "error", "code": "ip_adapter_missing", "message": "x"}])
+        with mock.patch.object(yp, "imagegen_command", return_value=(["py"], {}, 0)), \
+                mock.patch.object(yp.subprocess, "Popen", side_effect=fake), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(yp.ReferenceModelMissing):
+                yp.generate_ai_thumbnails("sd", 2, {}, self.META, [], self.tmp,
+                                          {"references": [ref], "ref_strength": 0.8})
+        job = FakeImagegen.jobs[0]
+        self.assertEqual((job["ip_adapter_images"], job["ip_adapter_scale"], job["allow_download"]),
+                         ([ref], 0.8, False))
+
+    def test_submit_replaces_the_thumbnail(self):
+        thumb = self.ref("thumb.jpg")
+        token = json.dumps({"scopes": ["https://www.googleapis.com/auth/youtube"]})
+        youtube = mock.MagicMock()
+        youtube.videos.return_value.list.return_value.execute.return_value = {"items": [{"snippet": {}}]}
+        with mock.patch("googleapiclient.discovery.build", return_value=youtube), \
+                mock.patch.object(yp, "load_youtube_credentials"):
+            yp.update_video_details("abc", "Title", "Desc", token)
+            youtube.thumbnails.return_value.set.assert_not_called()
+            yp.update_video_details("abc", "Title", "Desc", token, thumb)
+        self.assertEqual(youtube.thumbnails.return_value.set.call_args.kwargs["videoId"], "abc")
+
+
 def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-y", "-v", "error", *args], check=True)
 
@@ -1012,6 +1135,46 @@ class StepRunTests(unittest.TestCase):
         state = yp.read_json_file(ready["state_path"])
         self.assertEqual(state["ctx"]["pending_gate"], "thumbnail")
         self.assertEqual(state["ctx"]["thumb_options"], {"hook": "", "avoid": "hands"})
+
+    def test_thumbnail_model_and_references_at_the_thumbnail_step(self):
+        from PIL import Image
+
+        video, evs = self.run_to_end("refs.mp4", ["thumbnail"])
+        ready = [e for e in evs if e["type"] == "review_ready"][0]
+        ref = os.path.join(self.tmp, "my_ref.png")
+        Image.new("RGB", (40, 30), (0, 90, 200)).save(ref)
+        options = {"source": "sd", "references": [ref], "style": "as_written", "prompt": "a fox"}
+
+        # IP-Adapter isn't downloaded: nothing is made, OBS is asked, and the job keeps waiting
+        with mock.patch.object(yp, "generate_sd_images", side_effect=yp.ReferenceModelMissing("needs it")):
+            rc, evs = self.run_with_patches(yp.regenerate_thumbnails, ready["state_path"], {}, "generate", options)
+        need = [e for e in evs if e["type"] == "needs_download"]
+        self.assertEqual((len(need), need[0]["action"]), (1, "generate"))
+        self.assertEqual([e["gate"] for e in evs if e["type"] == "review_ready"], ["thumbnail"])
+
+        made = [Image.new("RGB", (1344, 768), (200, 30, 30)) for _ in range(yp.STEP_AI_THUMBNAILS)]
+        with mock.patch.object(yp, "generate_sd_images", return_value=made) as gen:
+            rc, evs = self.run_with_patches(yp.regenerate_thumbnails, ready["state_path"], {}, "generate",
+                                            {**options, "allow_download": True})
+        kwargs = gen.call_args.kwargs
+        stored = kwargs["references"]
+        refs_dir = yp.pipeline_paths(video)["refs_dir"]
+        self.assertEqual((len(stored), os.path.dirname(stored[0]), kwargs["allow_download"]), (1, refs_dir, True))
+        self.assertIn("a fox", gen.call_args.args[1][0])
+        state = yp.read_json_file(ready["state_path"])
+        # The model you picked is this job's now; the download permission isn't kept
+        self.assertEqual(state["config"]["thumbnail_image_source"], "sd")
+        self.assertEqual(state["ctx"]["thumb_options"]["references"], stored)
+        self.assertNotIn("allow_download", state["ctx"]["thumb_options"])
+        self.assertIn("Stable Diffusion", yp.read_json_file(ready["data_path"])["provider"])
+
+    def test_auto_mode_keeps_the_background_to_edit_over(self):
+        from PIL import Image
+
+        video, _ = self.run_to_end("bg.mp4", [])
+        paths = yp.pipeline_paths(video)
+        self.assertEqual(Image.open(paths["thumbnail_bg"]).size, (1280, 720))
+        self.assertTrue(os.path.exists(paths["thumbnail_jpg"]))
 
     def test_step_mode_music_gate(self):
         import xml.etree.ElementTree as ET

@@ -2498,8 +2498,11 @@ def short_cloud_error(error) -> str:
     return text[:200]
 
 
-def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None):
-    """Nano Banana (Gemini image model) text-to-image, or an edit of init_image. Returns a PIL image."""
+def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None, references: list | None = None):
+    """
+    Nano Banana (Gemini image model) text-to-image, or an edit of init_image, optionally guided by
+    reference images (PIL). Returns a PIL image.
+    """
     if not api_key:
         raise ValueError("No Gemini API key configured.")
     import logging
@@ -2512,7 +2515,7 @@ def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None
     client = genai.Client(api_key=api_key)
     result = client.models.generate_content(
         model=model,
-        contents=[prompt] if init_image is None else [prompt, init_image],
+        contents=[prompt] + ([init_image] if init_image is not None else []) + list(references or []),
         config=types.GenerateContentConfig(
             response_modalities=["TEXT", "IMAGE"],
             image_config=types.ImageConfig(aspect_ratio="16:9")
@@ -2528,13 +2531,16 @@ def generate_gemini_image(api_key: str, prompt: str, model: str, init_image=None
     raise RuntimeError(f"{model} returned no image" + (f": {' '.join(said)[:200]}" if said else "."))
 
 
-def multipart_body(fields: dict, files: dict) -> tuple[bytes, str]:
-    """multipart/form-data for urllib: fields {name: value}, files {name: (filename, bytes, type)}."""
+def multipart_body(fields: dict, files) -> tuple[bytes, str]:
+    """
+    multipart/form-data for urllib: fields {name: value}, files {name: (filename, bytes, type)}, or a list
+    of (name, (filename, bytes, type)) when several files share a name.
+    """
     boundary = "----obs" + os.urandom(12).hex()
     out = io.BytesIO()
     for name, value in fields.items():
         out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8"))
-    for name, (filename, content, ctype) in files.items():
+    for name, (filename, content, ctype) in (files.items() if isinstance(files, dict) else files):
         out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
                   f'Content-Type: {ctype}\r\n\r\n'.encode("utf-8"))
         out.write(content)
@@ -2543,21 +2549,29 @@ def multipart_body(fields: dict, files: dict) -> tuple[bytes, str]:
     return out.getvalue(), f"multipart/form-data; boundary={boundary}"
 
 
-def generate_openai_image(api_key: str, prompt: str, model: str, init_image=None):
-    """GPT Image text-to-image, or an edit of init_image. Returns a PIL image."""
+def generate_openai_image(api_key: str, prompt: str, model: str, init_image=None, references: list | None = None):
+    """
+    GPT Image text-to-image, or an edit of init_image, optionally guided by reference images (PIL).
+    Any input image goes through the edits endpoint. Returns a PIL image.
+    """
     if not api_key:
         raise ValueError("No OpenAI API key configured.")
     from PIL import Image
 
     fields = {"model": model, "prompt": prompt, "n": 1, "size": "1536x1024", "quality": "medium"}
-    if init_image is None:
+    inputs = ([("background.png", init_image)] if init_image is not None else []) + [
+        (f"reference_{i + 1}.png", ref) for i, ref in enumerate(references or [])]
+    if not inputs:
         url = "https://api.openai.com/v1/images/generations"
         body, ctype = json.dumps(fields).encode("utf-8"), "application/json"
     else:
-        png = io.BytesIO()
-        init_image.convert("RGB").save(png, "PNG")
+        files = []
+        for filename, img in inputs:
+            png = io.BytesIO()
+            img.convert("RGB").save(png, "PNG")
+            files.append(("image" if len(inputs) == 1 else "image[]", (filename, png.getvalue(), "image/png")))
         url = "https://api.openai.com/v1/images/edits"
-        body, ctype = multipart_body(fields, {"image": ("background.png", png.getvalue(), "image/png")})
+        body, ctype = multipart_body(fields, files)
     req = urllib.request.Request(url, data=body, headers={"Content-Type": ctype, "Authorization": f"Bearer {api_key}"})
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
@@ -2590,11 +2604,12 @@ def cloud_image_attempts(source: str, secrets: dict, fallback: bool) -> list[tup
     return attempts
 
 
-def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=None, fallback: bool = False):
+def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=None, fallback: bool = False,
+                         references: list | None = None):
     """
-    One image from a cloud source. A model that isn't available or is out of quota moves on to the
-    source's next model; with `fallback`, a quota or key error also moves on to the other cloud sources
-    that have a key. Returns (image, source, model).
+    One image from a cloud source, optionally guided by reference images (PIL) the user attached. A model
+    that isn't available or is out of quota moves on to the source's next model; with `fallback`, a quota
+    or key error also moves on to the other cloud sources that have a key. Returns (image, source, model).
     """
     last = None
     for src, model in cloud_image_attempts(source, secrets, fallback):
@@ -2605,9 +2620,9 @@ def generate_cloud_image(source: str, secrets: dict, prompt: str, init_image=Non
             log_info(f"Trying {CLOUD_IMAGE_MODELS[src][0]} ({model}) instead.")
         try:
             if src == "openai":
-                img = generate_openai_image(secrets.get(key_name, ""), prompt, model, init_image)
+                img = generate_openai_image(secrets.get(key_name, ""), prompt, model, init_image, references)
             else:
-                img = generate_gemini_image(secrets.get(key_name, ""), prompt, model, init_image)
+                img = generate_gemini_image(secrets.get(key_name, ""), prompt, model, init_image, references)
             _working_cloud_model[src] = model
             return img, src, model
         except Exception as e:
@@ -2635,6 +2650,17 @@ DEFAULT_SD_PYTHON = os.path.join(SD_HOME, "venv", "Scripts" if os.name == "nt" e
                                  "python.exe" if os.name == "nt" else "python")
 DEFAULT_SD_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 SD_NEGATIVE_PROMPT = "text, words, letters, caption, watermark, logo, signature, blurry, lowres, deformed, ugly"
+# Reference images for local Stable Diffusion go through IP-Adapter, a one-time download into SD_HOME/hf
+IP_ADAPTER_DOWNLOAD_GB = 3.2
+
+
+class ReferenceModelMissing(RuntimeError):
+    """Local Stable Diffusion was given reference images, but IP-Adapter hasn't been downloaded yet."""
+
+
+# Sources that can follow reference images, and how many a job sends at most
+REFERENCE_SOURCES = ("sd", "gemini", "gemini_pro", "openai")
+MAX_REFERENCE_IMAGES = 4
 
 THUMBNAIL_IMAGE_SOURCE_LABELS = {
     "sd": "Local Stable Diffusion",
@@ -2767,10 +2793,14 @@ def imagegen_command(config: dict) -> tuple[list, dict, int]:
 
 def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, init_images: list | None = None,
                        strength: float = 0.5, negative_prompt: str = SD_NEGATIVE_PROMPT,
-                       notes: list | None = None, step_name: str = "thumbnail", progress: tuple = (30, 55)) -> list:
+                       notes: list | None = None, step_name: str = "thumbnail", progress: tuple = (30, 55),
+                       references: list | None = None, ref_strength: float = 0.6,
+                       allow_download: bool = False) -> list:
     """
     Local Stable Diffusion (youtube_imagegen.py in its own venv): text-to-image, or image-to-image
-    when `init_images` is given. Shows a countdown in `step_name`, from progress[0] over progress[1] points.
+    when `init_images` is given, guided by `references` (image paths) through IP-Adapter. Raises
+    ReferenceModelMissing when IP-Adapter isn't downloaded and `allow_download` is off. Shows a countdown
+    in `step_name`, from progress[0] over progress[1] points.
     Returns PIL images; image i is also saved as out_dir/sd_{i+1}.png.
     """
     import queue
@@ -2786,7 +2816,11 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
     if init_images:
         job.update(init_images=init_images, strength=strength)
         work = strength
+    if references:
+        job.update(ip_adapter_images=list(references), ip_adapter_scale=float(ref_strength),
+                   allow_download=bool(allow_download))
     timings = load_sd_timings()
+    missing = False
     count = len(prompts)
 
     # stderr (library warnings) goes to a file: an unread pipe fills up and stalls the generator
@@ -2816,7 +2850,10 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
         def show():
             left = sd_eta_seconds(timings, count, finished, phase, time.time() - phase_started, step, steps,
                                   image_times[-1] if image_times else None, work, step_rate)
-            if phase == "loading":
+            if phase == "downloading":
+                update_step(step_name, progress[0], f"Downloading IP-Adapter for your reference images (one time, "
+                                                    f"about {IP_ADAPTER_DOWNLOAD_GB:g} GB)…")
+            elif phase == "loading":
                 update_step(step_name, progress[0], f"Loading Stable Diffusion… ~{_fmt_clock(left)} left")
             else:
                 done = finished + (step / steps if steps else 0.0)
@@ -2839,6 +2876,9 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
             kind = event.get("type")
             if kind == "loading":
                 phase_started = time.time()
+            elif kind == "downloading":
+                log_info(f"Downloading IP-Adapter (about {IP_ADAPTER_DOWNLOAD_GB:g} GB, one time) into {SD_HOME}...")
+                phase = "downloading"
             elif kind == "loaded":
                 load_s = float(event.get("seconds") or 0.0)
                 log_info(f"Stable Diffusion loaded on {event.get('device')} in {event.get('seconds')} s.")
@@ -2854,6 +2894,8 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
                 image_times.append(float(event.get("seconds") or 0.0))
                 finished += 1
                 phase_started, step, steps, rate_from = time.time(), 0, 0, None
+            elif kind == "error" and event.get("code") == "ip_adapter_missing":
+                missing = True
             elif kind == "error":
                 message = event.get("message", "")
                 log_warn(f"{label}: {message}")
@@ -2866,12 +2908,16 @@ def generate_sd_images(config: dict, prompts: list, out_dir: str, label: str, in
                     notes.append(message[:200])
             show()
         proc.wait()
+    if missing:
+        os.remove(err_path)
+        raise ReferenceModelMissing(f"Reference images on this PC need IP-Adapter, a one-time download of about "
+                                    f"{IP_ADAPTER_DOWNLOAD_GB:g} GB.")
     if not images:
         with open(err_path, encoding="utf-8", errors="replace") as f:
             tail = f.read().strip().splitlines()[-1:]
         raise RuntimeError(tail[0] if tail else f"no images (exit code {proc.returncode})")
     os.remove(err_path)
-    if not init_images:
+    if not init_images and not references:
         save_sd_timings(load_s, image_times)
     return images
 
@@ -2967,17 +3013,78 @@ def compose_thumbnail(bg, hook: str, person=None, side: str = "right", layout: s
 
 
 def thumbnail_prompts(base_prompt: str, count: int, options: dict) -> tuple[list, str]:
-    """Prompts for `count` AI backgrounds in the chosen style, and the negative prompt."""
-    style = THUMBNAIL_STYLES.get(options.get("style") or "mixed", THUMBNAIL_PROMPT_VARIANTS)
+    """
+    Prompts for `count` AI backgrounds in the chosen style, and the negative prompt. The "as_written"
+    style sends the prompt as typed, with only the format added.
+    """
     with_person = options.get("person", "none") in ("photo", "video")
     room = f", empty space on the {options.get('side', 'right')} side, no people" if with_person else ""
-    prompts = [f"YouTube thumbnail background, {base_prompt}, {style[i % len(style)]}{room}, highly detailed, sharp focus"
-               for i in range(count)]
+    if options.get("style") == "as_written":
+        prompts = [f"{base_prompt}{room}, 16:9 YouTube thumbnail, no text"] * count
+    else:
+        style = THUMBNAIL_STYLES.get(options.get("style") or "mixed", THUMBNAIL_PROMPT_VARIANTS)
+        prompts = [f"YouTube thumbnail background, {base_prompt}, {style[i % len(style)]}{room}, highly detailed, "
+                   f"sharp focus" for i in range(count)]
     negative = SD_NEGATIVE_PROMPT + (", person, people, hands, face" if with_person else "")
     avoid = (options.get("avoid") or "").strip().strip(",")
     if avoid:
         negative += f", {avoid}"
     return prompts, negative
+
+
+def thumbnail_references(options: dict) -> list[str]:
+    """The reference images attached to the thumbnail options that still exist, at most MAX_REFERENCE_IMAGES."""
+    refs = [p for p in (options.get("references") or []) if isinstance(p, str) and os.path.isfile(p)]
+    return refs[:MAX_REFERENCE_IMAGES]
+
+
+def ref_strength(options: dict) -> float:
+    """How strongly the reference images are followed, 0.3 to 1.0."""
+    try:
+        return min(1.0, max(0.3, float(options.get("ref_strength", 0.6))))
+    except (TypeError, ValueError):
+        return 0.6
+
+
+def store_references(options: dict, refs_dir: str) -> list[str]:
+    """
+    Copies the attached reference images into the job's {stem}_yt_refs folder (named by their contents, so
+    attaching one twice keeps one copy) and returns the stored paths, so they stay with the project.
+    """
+    import hashlib
+
+    stored = []
+    for path in (options.get("references") or [])[:MAX_REFERENCE_IMAGES]:
+        if not isinstance(path, str) or not os.path.isfile(path):
+            log_warn(f"Reference image not found, skipped: {path}")
+            continue
+        if os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(os.path.abspath(refs_dir)):
+            stored.append(path)
+            continue
+        with open(path, "rb") as f:
+            digest = hashlib.sha1(f.read()).hexdigest()[:12]
+        os.makedirs(refs_dir, exist_ok=True)
+        dest = os.path.join(refs_dir, f"ref_{digest}{Path(path).suffix.lower() or '.png'}")
+        if not os.path.exists(dest):
+            shutil.copyfile(path, dest)
+        if dest not in stored:
+            stored.append(dest)
+    return stored
+
+
+def load_reference_images(paths: list) -> list:
+    """Reference images as RGB PIL images, at most 1536 px on a side (cloud models don't need more)."""
+    from PIL import Image, ImageOps
+
+    images = []
+    for path in paths:
+        img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+        img.thumbnail((1536, 1536))
+        images.append(img)
+    return images
+
+
+REFERENCE_PROMPT = " Use the attached reference image(s) for the subject, look and style."
 
 
 def thumbnail_hook(metadata: dict, options: dict) -> str:
@@ -3037,7 +3144,9 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
     (ai_1_bg.jpg..) so the text and photo can be changed later. Returns ([{path, bg}], label).
     Local Stable Diffusion and local Ollama are free; Gemini and OpenAI cost API credits. Claude can't
     draw, so it designs frame-based thumbnails. If image generation fails, falls back to free locally
-    designed frame thumbnails.
+    designed frame thumbnails. Reference images in options["references"] guide Stable Diffusion (through
+    IP-Adapter, which raises ReferenceModelMissing until it's downloaded) and the cloud models (they're
+    sent along with the prompt).
     """
     options = options or {}
     notes = notes if notes is not None else []
@@ -3051,14 +3160,22 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
     label = THUMBNAIL_IMAGE_SOURCE_LABELS.get(source, source)
     made = []
     designer = "claude" if source == "claude" else "local"
+    refs = thumbnail_references(options)
+    if refs and source not in REFERENCE_SOURCES:
+        notes.append(f"{label} can't use reference images, so they were left out.")
+        refs = []
 
     if source == "sd":
         model = config.get("thumbnail_sd_model") or DEFAULT_SD_MODEL
-        label = f"Local Stable Diffusion ({model.split('/')[-1]})"
+        label = f"Local Stable Diffusion ({model.split('/')[-1]})" + (" + your references" if refs else "")
         try:
-            for i, img in enumerate(generate_sd_images(config, prompts, out_dir, label,
-                                                       negative_prompt=negative, notes=notes)):
+            for i, img in enumerate(generate_sd_images(config, prompts, out_dir, label, negative_prompt=negative,
+                                                       notes=notes, references=refs,
+                                                       ref_strength=ref_strength(options),
+                                                       allow_download=bool(options.get("allow_download")))):
                 made.append(save_ai_candidate(img, f"ai_{i + 1}", out_dir, hook, person, side))
+        except ReferenceModelMissing:
+            raise
         except Exception as e:
             log_warn(f"{label} failed: {e}")
             notes.append(f"{label} failed: {str(e)[:200]}")
@@ -3073,16 +3190,20 @@ def generate_ai_thumbnails(source: str, count: int, config: dict, metadata: dict
         if source == "local":
             label = f"Local Ollama image ({model})"
         avoid = (options.get("avoid") or "").strip()
+        ref_images = load_reference_images(refs) if refs else []
         for i in range(count):
             prompt = prompts[i].replace("YouTube thumbnail background,", "YouTube thumbnail background, 16:9, no text:")
             if avoid:
                 prompt += f". Do not show: {avoid}"
+            if ref_images:
+                prompt += REFERENCE_PROMPT
             update_step("thumbnail", 30 + 55 * i // count, f"AI image {i + 1}/{count} ({label})...")
             try:
                 if source == "local":
                     img = generate_ollama_image(model, prompt)
                 else:
-                    img, used_source, used = generate_cloud_image(source, secrets, prompt, fallback=fallback)
+                    img, used_source, used = generate_cloud_image(source, secrets, prompt, fallback=fallback,
+                                                                  references=ref_images)
                     label = f"{CLOUD_IMAGE_MODELS[used_source][0]} ({used})"
                     if used_source != source and not made:
                         notes.append(f"{CLOUD_IMAGE_MODELS[source][0]} was out of quota or refused the key, "
@@ -3125,17 +3246,22 @@ def cloud_refine_prompt(base_prompt: str, options: dict, strength: float) -> str
 
 
 def refine_with_cloud(source: str, secrets: dict, bg_path: str, prompt: str, count: int, notes: list,
-                      fallback: bool = True) -> list:
-    """`count` edits of the background by the cloud model. Only the text-free background is sent, never your photo."""
+                      fallback: bool = True, references: list | None = None) -> list:
+    """
+    `count` edits of the background by the cloud model. Only the text-free background and the reference
+    images you attached are sent, never your photo.
+    """
     from PIL import Image
 
     name = CLOUD_IMAGE_MODELS[source][0]
     init = Image.open(bg_path).convert("RGB")
+    if references:
+        prompt += REFERENCE_PROMPT
     images = []
     for i in range(count):
         update_step("thumbnail", 20 + 70 * i // count, f"Refining {i + 1}/{count} with {name}...")
         try:
-            img, _, _ = generate_cloud_image(source, secrets, prompt, init, fallback=fallback)
+            img, _, _ = generate_cloud_image(source, secrets, prompt, init, fallback=fallback, references=references)
             images.append(img)
         except Exception as e:
             log_warn(f"{name} refine {i + 1} failed: {e}")
@@ -3163,15 +3289,19 @@ def refine_thumbnail(config: dict, candidate: dict, metadata: dict, options: dic
     if source in CLOUD_IMAGE_MODELS and shows_you(candidate):
         notes.append("Video frames show you, so this one was refined with local Stable Diffusion "
                      "(nothing of you is uploaded).")
+    refs = thumbnail_references(options)
     if source in CLOUD_IMAGE_MODELS and not shows_you(candidate):
         images = refine_with_cloud(source, config.get("secrets", {}), candidate["bg"],
                                    cloud_refine_prompt(base_prompt, options, strength), count, notes,
-                                   bool(config.get("cloud_image_fallback", True)))
+                                   bool(config.get("cloud_image_fallback", True)),
+                                   load_reference_images(refs) if refs else None)
     else:
         prompts, negative = thumbnail_prompts(base_prompt, count, options)
         label = "Refine (local Stable Diffusion)"
         images = generate_sd_images(config, prompts, out_dir, label, init_images=[candidate["bg"]] * count,
-                                    strength=strength, negative_prompt=negative, notes=notes)
+                                    strength=strength, negative_prompt=negative, notes=notes, references=refs,
+                                    ref_strength=ref_strength(options),
+                                    allow_download=bool(options.get("allow_download")))
         for raw in Path(out_dir).glob("sd_*.png"):
             raw.unlink()
     return [save_ai_candidate(img, f"refined_{first + i}", out_dir, hook, person, side)
@@ -3221,8 +3351,14 @@ def make_thumbnail_candidates(config: dict, video_path: str, metadata: dict, out
     source = config.get("thumbnail_image_source", "sd")
     if ai_count > 0 and source != "off":
         person = resolve_person(config, options, frames, out_dir, notes)
-        made, provider = generate_ai_thumbnails(source, ai_count, config, metadata, frames, out_dir,
-                                                options, notes, person)
+        try:
+            made, provider = generate_ai_thumbnails(source, ai_count, config, metadata, frames, out_dir,
+                                                    options, notes, person)
+        except ReferenceModelMissing as e:
+            log_warn(str(e))
+            notes.append(f"Made without your reference images. {e} Click 'Make 4 new AI images' to download it.")
+            made, provider = generate_ai_thumbnails(source, ai_count, config, metadata, frames, out_dir,
+                                                    {**options, "references": []}, notes, person)
         for i, m in enumerate(made):
             candidates.append({"id": f"ai_{i + 1}", "kind": "ai", "label": f"AI {i + 1}", **m})
 
@@ -4131,8 +4267,12 @@ def upload_to_youtube(
     return video_id, video_url
 
 
-def update_video_details(video_id: str, title: str, description: str, oauth_token_json: str):
-    """Push an edited title/description to an already-uploaded video (Submit button)."""
+def update_video_details(video_id: str, title: str, description: str, oauth_token_json: str,
+                         thumbnail_path: str = ""):
+    """
+    Push an edited title/description to an already-uploaded video (Submit button), and the thumbnail
+    when `thumbnail_path` is given (it was edited after the upload).
+    """
     if not oauth_token_json:
         raise ValueError("YouTube account not connected yet. Open Settings -> YouTube Automation and click 'Connect Google Account'.")
     if not video_id:
@@ -4172,6 +4312,13 @@ def update_video_details(video_id: str, title: str, description: str, oauth_toke
             if key in current:
                 snippet[key] = current[key]
         youtube.videos().update(part="snippet", body={"id": video_id, "snippet": snippet}).execute()
+        if thumbnail_path:
+            if not os.path.exists(thumbnail_path):
+                raise ValueError(f"The thumbnail file is gone: {thumbnail_path}")
+            from googleapiclient.http import MediaFileUpload
+
+            youtube.thumbnails().set(videoId=video_id,
+                                     media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg")).execute()
     except HttpError as e:
         if getattr(e.resp, "status", 0) == 403 and "insufficient" in str(e).lower():
             raise PermissionError(RECONNECT_FOR_EDIT_MESSAGE) from e
@@ -4309,7 +4456,9 @@ def pipeline_paths(input_video: str) -> dict:
     return {
         "edited_video": os.path.join(base_dir, f"{stem}_yt_edited.mp4"),
         "thumbnail_jpg": os.path.join(base_dir, f"{stem}_yt_thumb.jpg"),
+        "thumbnail_bg": os.path.join(base_dir, f"{stem}_yt_thumb_bg.jpg"),
         "thumbs_dir": os.path.join(base_dir, f"{stem}_yt_thumbs"),
+        "refs_dir": os.path.join(base_dir, f"{stem}_yt_refs"),
         "thumbs_file": os.path.join(base_dir, f"{stem}_yt_thumbs.json"),
         "cuts_file": os.path.join(base_dir, f"{stem}_yt_cuts.json"),
         "metadata_file": os.path.join(base_dir, f"{stem}_yt_metadata.json"),
@@ -4663,6 +4812,8 @@ def stage_thumbnails(config: dict, ctx: dict, gates: set) -> str | None:
     step_mode = "thumbnail" in gates
     options = dict(config.get("thumb_options") or {})
     options.update(ctx.get("thumb_options") or {})
+    if options.get("references"):
+        options["references"] = store_references(options, paths["refs_dir"])
     ctx["thumb_options"] = options
     thumbs = make_thumbnail_candidates(
         config, ctx["final_video"], ctx["metadata"], paths["thumbs_dir"],
@@ -4686,6 +4837,14 @@ def use_chosen_thumbnail(ctx: dict):
     chosen = chosen_thumbnail_path(thumbs)
     if chosen:
         shutil.copyfile(chosen, paths["thumbnail_jpg"])
+        # The same picture without the text, at the thumbnail's size, to edit over in an image editor
+        bg = next((c.get("bg", "") for c in thumbs.get("candidates", []) if c.get("path") == chosen), "")
+        if bg and os.path.exists(bg):
+            from PIL import Image, ImageOps
+
+            ImageOps.fit(Image.open(bg).convert("RGB"), (1280, 720)).save(paths["thumbnail_bg"], "JPEG", quality=95)
+        elif os.path.exists(paths["thumbnail_bg"]):
+            os.remove(paths["thumbnail_bg"])
     emit("thumbnail_ready", thumbnail_path=paths["thumbnail_jpg"], provider=ctx.get("thumb_provider", ""))
     update_step("thumbnail", 100, f"Thumbnail ready ({thumbs.get('chosen', '')}, {ctx.get('thumb_provider', '')}).")
 
@@ -5052,6 +5211,9 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
     """
     At the thumbnail gate: make new AI images ("generate"), refine one ("refine"), or redraw every
     candidate with new text and photo ("recompose"). Then wait at the thumbnail gate again.
+    options["source"] picks the image model for this job (else the one it started with), and
+    options["allow_download"] lets local Stable Diffusion download IP-Adapter for reference images;
+    without it a missing IP-Adapter emits needs_download so OBS can ask first.
     """
     state = load_state(state_path)
     if state is None:
@@ -5067,7 +5229,13 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
     thumbs = read_json_file(paths["thumbs_file"])
     opts = dict(ctx.get("thumb_options") or {})
     opts.update(options or {})
+    allow_download = bool(opts.pop("allow_download", False))
+    if opts.get("source") in THUMBNAIL_IMAGE_SOURCE_LABELS or opts.get("source") == "off":
+        config["thumbnail_image_source"] = opts["source"]
+    if opts.get("references"):
+        opts["references"] = store_references(opts, paths["refs_dir"])
     ctx["thumb_options"] = opts
+    run_opts = {**opts, "allow_download": allow_download}
     metadata = ctx["metadata"]
     hook = thumbnail_hook(metadata, opts)
     side = opts.get("side", "right")
@@ -5086,7 +5254,7 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
             if source == "off":
                 source = "sd"
             made, provider = generate_ai_thumbnails(source, STEP_AI_THUMBNAILS, config, metadata, frames,
-                                                    out_dir, opts, notes, person)
+                                                    out_dir, run_opts, notes, person)
             candidates = [c for c in candidates if c.get("kind") == "frame"] + [
                 {"id": f"ai_{i + 1}", "kind": "ai", "label": f"AI {i + 1}", **m} for i, m in enumerate(made)]
             thumbs["provider"] = provider
@@ -5097,7 +5265,7 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
             if not source_cand or not os.path.exists(source_cand.get("bg", "")):
                 raise ValueError("Pick the image to refine first.")
             first = 1 + sum(1 for c in candidates if c.get("kind") == "refined")
-            made = refine_thumbnail(config, source_cand, metadata, opts, out_dir, person, notes, first)
+            made = refine_thumbnail(config, source_cand, metadata, run_opts, out_dir, person, notes, first)
             new = [{"id": f"refined_{first + i}", "kind": "refined", "label": f"Refined {first + i}",
                     "shows_you": shows_you(source_cand), **m} for i, m in enumerate(made)]
             candidates += new
@@ -5107,6 +5275,11 @@ def regenerate_thumbnails(state_path: str, secrets: dict, action: str, options: 
             update_step("thumbnail", 50, "Redrawing the thumbnails...")
             for c in candidates:
                 recompose_candidate(c, hook, person, side)
+    except ReferenceModelMissing as e:
+        # Nothing was made; OBS asks before the download and then runs the same action again
+        log_warn(str(e))
+        notes.append(str(e))
+        emit("needs_download", what="ip_adapter", size_gb=IP_ADAPTER_DOWNLOAD_GB, action=action, message=str(e))
     except Exception as e:
         log_error(f"Thumbnail {action} failed: {e}")
         notes.append(f"{action.capitalize()} failed: {str(e)[:200]}")
@@ -5229,9 +5402,11 @@ def main():
                     video_id=cfg.get("video_id", ""),
                     title=cfg.get("title", ""),
                     description=cfg.get("description", ""),
-                    oauth_token_json=cfg.get("secrets", {}).get("youtube_token_json", "")
+                    oauth_token_json=cfg.get("secrets", {}).get("youtube_token_json", ""),
+                    thumbnail_path=cfg.get("thumbnail_path", "")
                 )
-                emit("update_success", video_id=cfg.get("video_id", ""), title=cfg.get("title", ""))
+                emit("update_success", video_id=cfg.get("video_id", ""), title=cfg.get("title", ""),
+                     thumbnail=bool(cfg.get("thumbnail_path")))
                 return 0
             except Exception as e:
                 log_error(f"YouTube update error: {e}")

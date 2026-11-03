@@ -1380,7 +1380,8 @@ void YouTubeWorkflowManager::StartOAuthLogin()
 #endif
 }
 
-void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QString &description)
+void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QString &description,
+					     const QString &thumbnailPath)
 {
 	if (IsPipelineRunning()) {
 		emit VideoUpdateFinished(false, "Wait for the current job to finish before submitting.");
@@ -1441,6 +1442,9 @@ void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QStrin
 	payload["video_id"] = lastVideoId;
 	payload["title"] = title;
 	payload["description"] = description;
+	if (!thumbnailPath.isEmpty()) {
+		payload["thumbnail_path"] = thumbnailPath;
+	}
 	payload["secrets"] = secretsObj;
 
 	QByteArray jsonLine = QJsonDocument(payload).toJson(QJsonDocument::Compact) + "\n";
@@ -1629,7 +1633,11 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "upload_stats") {
 		emit UploadStatsReady(obj.value("text").toString());
 	} else if (type == "update_success") {
-		emit VideoUpdateFinished(true, QString("Updated on YouTube: %1").arg(obj.value("title").toString()));
+		emit VideoUpdateFinished(true, QString("Updated on YouTube: %1%2")
+						       .arg(obj.value("title").toString(),
+							    obj.value("thumbnail").toBool() ? " (and the thumbnail)" : ""));
+	} else if (type == "needs_download") {
+		emit ReferenceDownloadNeeded(obj.value("action").toString(), obj.value("size_gb").toDouble(3.2));
 	} else if (type == "update_error") {
 		emit VideoUpdateFinished(false, obj.value("message").toString("YouTube update failed"));
 	} else if (type == "oauth_success") {
