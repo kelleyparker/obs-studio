@@ -1,7 +1,6 @@
 #include "OBSBasicControls.hpp"
 #include "OBSBasic.hpp"
 #include "qt-wrappers.hpp"
-#include <utility/AppMode.hpp>
 #include <youtube/YouTubeWorkflowManager.hpp>
 
 #include "moc_OBSBasicControls.cpp"
@@ -29,29 +28,26 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
 	connect(
 		ui->pauseRecordButton, &QPushButton::clicked, this, [this]() { emit this->PauseRecordButtonClicked(); },
 		Qt::DirectConnection);
-	if (YouTubePipelineEnabled()) {
-		connect(
-			ui->youtubeWorkflowButton, &QPushButton::clicked, this,
-			[this, main]() {
-				main->ShowYouTubePipelineDock();
-				if (!main->RecordingActive()) {
-					YouTubeWorkflowManager::Instance()->SetWorkflowArmed(true);
-					emit this->RecordButtonClicked();
-				} else {
-					emit this->RecordButtonClicked();
-				}
-			},
-			Qt::DirectConnection);
-		connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::WorkflowArmedChanged, this,
-			[this](bool armed) {
-				ui->youtubeWorkflowButton->setText(armed ? "⏹ YT" : "▶ YT");
-				ui->youtubeWorkflowButton->setStyleSheet(
-					armed ? "QPushButton { font-weight: bold; color: #ffffff; background-color: #cc2222; }"
-					      : "QPushButton { font-weight: bold; color: #ff3333; }");
-			});
-	} else {
-		ui->youtubeWorkflowButton->setVisible(false);
-	}
+	connect(
+		ui->youtubeWorkflowButton, &QPushButton::clicked, this,
+		[this, main]() {
+			main->ShowYouTubePipelineDock();
+			if (!main->RecordingActive()) {
+				YouTubeWorkflowManager::Instance()->SetWorkflowArmed(true);
+				emit this->RecordButtonClicked();
+			} else {
+				emit this->RecordButtonClicked();
+			}
+		},
+		Qt::DirectConnection);
+	connect(
+		YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::WorkflowArmedChanged, this,
+		[this](bool armed) {
+			ui->youtubeWorkflowButton->setText(armed ? "⏹ YT" : "▶ YT");
+			ui->youtubeWorkflowButton->setStyleSheet(
+				armed ? "QPushButton { font-weight: bold; color: #ffffff; background-color: #cc2222; }"
+				      : "QPushButton { font-weight: bold; color: #ff3333; }");
+		});
 	connect(
 		ui->replayBufferButton, &QPushButton::clicked, this,
 		[this]() { emit this->ReplayBufferButtonClicked(); }, Qt::DirectConnection);

@@ -21,7 +21,6 @@
 
 #include <components/UIValidation.hpp>
 #include <dialogs/OBSRemux.hpp>
-#include <utility/AppMode.hpp>
 #include <youtube/YouTubeWorkflowManager.hpp>
 
 #include <qt-wrappers.hpp>
@@ -49,7 +48,7 @@ extern volatile bool replaybuf_active;
 void OBSBasic::AutoRemux(QString input, bool no_show)
 {
 	auto config = Config();
-	bool ytArmed = YouTubePipelineEnabled() && YouTubeWorkflowManager::Instance()->IsWorkflowArmed();
+	bool ytArmed = YouTubeWorkflowManager::Instance()->IsWorkflowArmed();
 
 	bool autoRemux = config_get_bool(config, "Video", "AutoRemux") || ytArmed;
 
@@ -225,9 +224,7 @@ void OBSBasic::RecordingStart()
 	}
 
 	OnActivate();
-	if (YouTubePipelineEnabled()) {
-		YouTubeWorkflowManager::Instance()->OnRecordingStarted();
-	}
+	YouTubeWorkflowManager::Instance()->OnRecordingStarted();
 
 	blog(LOG_INFO, RECORDING_START);
 
@@ -293,9 +290,7 @@ void OBSBasic::RecordingStop(int code, QString last_error)
 	}
 
 	OnEvent(OBS_FRONTEND_EVENT_RECORDING_STOPPED);
-	if (YouTubePipelineEnabled()) {
-		YouTubeWorkflowManager::Instance()->OnMainRecordingStopped();
-	}
+	YouTubeWorkflowManager::Instance()->OnMainRecordingStopped();
 
 	if (diskFullTimer->isActive()) {
 		diskFullTimer->stop();

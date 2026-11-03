@@ -39,8 +39,6 @@
 #include <docks/SystemMonitorDock.hpp>
 #endif
 #include <docks/CanvasDocks.hpp>
-#include <components/ThemeLogoOverlay.hpp>
-#include <utility/AppMode.hpp>
 #include <youtube/YouTubePipelineDock.hpp>
 #include <dialogs/OBSCanvasSettings.hpp>
 #include <dialogs/NameDialog.hpp>
@@ -103,7 +101,6 @@ extern bool opt_start_virtualcam;
 
 extern volatile long insideEventLoop;
 extern bool restart;
-extern std::string restart_app_mode;
 
 extern bool EncoderAvailable(const char *encoder);
 
@@ -298,13 +295,11 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	systemMonitorDock->resize(420, 420);
 #endif
 
-	if (YouTubePipelineEnabled()) {
-		youtubePipelineDock = new OBSDock();
-		youtubePipelineDock->setObjectName(QStringLiteral("youtubePipelineDock"));
-		youtubePipelineDock->setWindowTitle(QStringLiteral("YouTube Pipeline"));
-		addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
-		youtubePipelineDock->setVisible(true);
-	}
+	youtubePipelineDock = new OBSDock();
+	youtubePipelineDock->setObjectName(QStringLiteral("youtubePipelineDock"));
+	youtubePipelineDock->setWindowTitle(QStringLiteral("YouTube Pipeline"));
+	addDockWidget(Qt::RightDockWidgetArea, youtubePipelineDock);
+	youtubePipelineDock->setVisible(true);
 
 	CreateCanvasSlots();
 
@@ -473,9 +468,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	if (systemMonitorDock) {
 		SETUP_DOCK(systemMonitorDock);
 	}
-	if (youtubePipelineDock) {
-		SETUP_DOCK(youtubePipelineDock);
-	}
+	SETUP_DOCK(youtubePipelineDock);
 	for (const auto &slot : canvasSlots) {
 		SETUP_DOCK(slot->previewDock);
 		SETUP_DOCK(slot->scenesDock);
@@ -1172,9 +1165,8 @@ void OBSBasic::OBSInit()
 	systemMonitorDock->setWidget(new SystemMonitorDock(systemMonitorDock));
 #endif
 
-	if (youtubePipelineDock) {
-		youtubePipelineDock->setWidget(new YouTubePipelineDock(youtubePipelineDock));
-	}
+	YouTubePipelineDock *ytDockWidget = new YouTubePipelineDock(youtubePipelineDock);
+	youtubePipelineDock->setWidget(ytDockWidget);
 	connect(multistreamWidget, &MultistreamDock::OpenSettings, this, &OBSBasic::OpenMultistreamSettings);
 
 	QAction *multistreamAction = new QAction(QTStr("Multistream.MenuAction"), this);
@@ -1183,33 +1175,8 @@ void OBSBasic::OBSInit()
 	connect(multistreamAction, &QAction::triggered, this, &OBSBasic::OpenMultistreamSettings);
 	ui->menuTools->insertAction(ui->idianPlayground, multistreamAction);
 
-	/* Tools > Mode: the current mode is checked; picking another restarts OBS in it */
-	QMenu *modeMenu = new QMenu(QStringLiteral("Mode"), ui->menuTools);
-	QActionGroup *modeGroup = new QActionGroup(modeMenu);
-	for (AppMode mode : {AppMode::Vanilla, AppMode::YouTube, AppMode::Cliffgoat}) {
-		QAction *action = modeMenu->addAction(AppModeName(mode) + QStringLiteral(" mode"));
-		action->setMenuRole(QAction::NoRole);
-		action->setCheckable(true);
-		action->setChecked(mode == CurrentAppMode());
-		modeGroup->addAction(action);
-		if (mode == CurrentAppMode()) {
-			continue;
-		}
-		connect(action, &QAction::triggered, this, [this, mode, modeGroup]() {
-			/* Stays on the current mode unless OBS restarts */
-			for (QAction *other : modeGroup->actions()) {
-				other->setChecked(other->text().startsWith(AppModeName(CurrentAppMode()) + ' '));
-			}
-			SwitchAppMode(mode);
-		});
-	}
-	ui->menuTools->insertMenu(multistreamAction, modeMenu);
-	ui->menuTools->insertSeparator(multistreamAction);
-
 	/* setup the extra canvases */
 	SetupCanvasSlots();
-
-	new ThemeLogoOverlay(this);
 
 	/* settings backup and restore, placed after "Show Profile Folder" */
 	QAction *backupAction = new QAction(QTStr("Backup.MenuAction"), this);
@@ -1256,11 +1223,7 @@ void OBSBasic::OBSInit()
 	}
 #endif
 
-	/* Each mode keeps its own layout, starting from the YouTube one */
-	const char *dockStateStr = config_get_string(App()->GetUserConfig(), "BasicWindow", AppModeDockStateKey());
-	if (!dockStateStr) {
-		dockStateStr = config_get_string(App()->GetUserConfig(), "BasicWindow", "DockState");
-	}
+	const char *dockStateStr = config_get_string(App()->GetUserConfig(), "BasicWindow", "DockState");
 
 	if (!dockStateStr) {
 		on_resetDocks_triggered(true);
@@ -1748,7 +1711,6 @@ void OBSBasic::closeEvent(QCloseEvent *event)
 	if (remux && !remux->close()) {
 		event->ignore();
 		restart = false;
-		restart_app_mode.clear();
 
 		return;
 	}
@@ -1756,7 +1718,6 @@ void OBSBasic::closeEvent(QCloseEvent *event)
 	if (shouldPromptForClose()) {
 		event->ignore();
 		restart = false;
-		restart_app_mode.clear();
 
 		if (!isClosePromptOpen()) {
 			bool shouldClose = promptToClose();
@@ -1910,7 +1871,7 @@ void OBSBasic::saveAll()
 		Auth::Save();
 		SaveProjectNow();
 
-		config_set_string(App()->GetUserConfig(), "BasicWindow", AppModeDockStateKey(),
+		config_set_string(App()->GetUserConfig(), "BasicWindow", "DockState",
 				  saveState().toBase64().constData());
 
 #ifdef BROWSER_AVAILABLE
@@ -2169,7 +2130,6 @@ void OBSBasic::UpdateTitleBar()
 	if (App()->IsPortableMode()) {
 		name << " - " << Str("TitleBar.PortableMode");
 	}
-	name << " - " << QT_TO_UTF8(AppModeName(CurrentAppMode())) << " mode";
 
 	name << " - " << Str("TitleBar.Profile") << ": " << profile;
 	name << " - " << Str("TitleBar.Scenes") << ": " << sceneCollection;

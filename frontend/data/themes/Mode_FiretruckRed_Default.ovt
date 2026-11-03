@@ -1,7 +1,0 @@
-@OBSThemeMeta {
-    name: 'Default';
-    id: 'com.obsproject.Themes.FiretruckRed.Default';
-    extends: 'com.obsproject.Themes.FiretruckRed';
-    author: 'cliffgoat';
-    dark: 'true';
-}

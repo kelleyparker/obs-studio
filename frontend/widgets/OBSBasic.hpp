@@ -23,7 +23,6 @@
 #include <OBSApp.hpp>
 #include <components/AccessibleAlignmentSelector.hpp>
 #include <oauth/Auth.hpp>
-#include <utility/AppMode.hpp>
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/MultistreamOutput.hpp>
 #include <utility/StreamInfo.hpp>
@@ -495,8 +494,6 @@ public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false, bool restore = false);
 	void RemoveDockWidget(const QString &name);
 	void ShowYouTubePipelineDock();
-	/* Restarts OBS in another mode, after asking */
-	void SwitchAppMode(AppMode mode);
 	bool IsDockObjectNameUsed(const QString &name);
 	void AddCustomDockWidget(QDockWidget *dock);
 	void setDockCornersVertical(bool vertical);

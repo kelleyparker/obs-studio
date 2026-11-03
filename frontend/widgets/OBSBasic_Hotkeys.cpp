@@ -20,7 +20,6 @@
 #include "OBSBasic.hpp"
 
 #include <widgets/OBSBasicStats.hpp>
-#include <utility/AppMode.hpp>
 #include <youtube/YouTubeWorkflowManager.hpp>
 
 void OBSBasic::InitHotkeys()
@@ -202,32 +201,29 @@ void OBSBasic::CreateHotkeys()
 		this);
 	LoadHotkey(addChapterHotkey, "OBSBasic.AddChapterMarker");
 
-	/* Vanilla mode leaves these out; their saved keys stay for YouTube mode */
-	if (YouTubePipelineEnabled()) {
-		youtubeBrollMarkHotkey = obs_hotkey_register_frontend(
-			"OBSBasic.YouTubeMarkBroll", "YouTube: Mark B-roll moment",
-			[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
-				if (pressed) {
-					QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
-								  &YouTubeWorkflowManager::MarkBrollMoment,
-								  Qt::QueuedConnection);
-				}
-			},
-			this);
-		LoadHotkey(youtubeBrollMarkHotkey, "OBSBasic.YouTubeMarkBroll");
+	youtubeBrollMarkHotkey = obs_hotkey_register_frontend(
+		"OBSBasic.YouTubeMarkBroll", "YouTube: Mark B-roll moment",
+		[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed) {
+				QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
+							  &YouTubeWorkflowManager::MarkBrollMoment,
+							  Qt::QueuedConnection);
+			}
+		},
+		this);
+	LoadHotkey(youtubeBrollMarkHotkey, "OBSBasic.YouTubeMarkBroll");
 
-		youtubeTeleprompterHotkey = obs_hotkey_register_frontend(
-			"OBSBasic.YouTubeTeleprompter", "YouTube: Teleprompter play/pause",
-			[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
-				if (pressed) {
-					QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
-								  &YouTubeWorkflowManager::ToggleTeleprompter,
-								  Qt::QueuedConnection);
-				}
-			},
-			this);
-		LoadHotkey(youtubeTeleprompterHotkey, "OBSBasic.YouTubeTeleprompter");
-	}
+	youtubeTeleprompterHotkey = obs_hotkey_register_frontend(
+		"OBSBasic.YouTubeTeleprompter", "YouTube: Teleprompter play/pause",
+		[](void *, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed) {
+				QMetaObject::invokeMethod(YouTubeWorkflowManager::Instance(),
+							  &YouTubeWorkflowManager::ToggleTeleprompter,
+							  Qt::QueuedConnection);
+			}
+		},
+		this);
+	LoadHotkey(youtubeTeleprompterHotkey, "OBSBasic.YouTubeTeleprompter");
 
 	replayBufHotkeys =
 		obs_hotkey_pair_register_frontend("OBSBasic.StartReplayBuffer", Str("Basic.Main.StartReplayBuffer"),

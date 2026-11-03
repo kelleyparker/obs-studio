@@ -1,7 +1,6 @@
 #include "OBSBasicSettings.hpp"
 
 #include <OBSApp.hpp>
-#include <utility/AppMode.hpp>
 #include <utility/platform.hpp>
 
 #include <qt-wrappers.hpp>
@@ -139,7 +138,7 @@ void OBSBasicSettings::SaveAppearanceSettings()
 
 	OBSTheme *currentTheme = App()->GetTheme();
 	if (savedTheme != currentTheme) {
-		config_set_string(config, "Appearance", AppModeThemeKey(), QT_TO_UTF8(currentTheme->id));
+		config_set_string(config, "Appearance", "Theme", QT_TO_UTF8(currentTheme->id));
 	}
 
 	config_set_int(config, "Appearance", "FontScale", ui->appearanceFontScale->value());

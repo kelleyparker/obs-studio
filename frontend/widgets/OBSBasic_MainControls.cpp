@@ -44,8 +44,6 @@
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
 #include <wizards/AutoConfig.hpp>
-#include <utility/AppMode.hpp>
-#include <youtube/YouTubeWorkflowManager.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -56,7 +54,6 @@
 
 extern bool restart;
 extern bool restart_safe;
-extern std::string restart_app_mode;
 extern volatile long insideEventLoop;
 extern bool safe_mode;
 
@@ -408,41 +405,6 @@ void OBSBasic::on_actionRestartSafe_triggered()
 		restart_safe = !safe_mode;
 		close();
 	}
-}
-
-void OBSBasic::SwitchAppMode(AppMode mode)
-{
-	QString text;
-	switch (mode) {
-	case AppMode::Vanilla:
-		text = QStringLiteral("Restart OBS in Vanilla mode, without the YouTube pipeline?\n\n"
-				      "Your scenes, profiles and settings stay the same. The YouTube dock, "
-				      "▶ YT button and YouTube Automation settings come back in YouTube "
-				      "or cliffgoat mode.");
-		break;
-	case AppMode::YouTube:
-		text = QStringLiteral("Restart OBS in YouTube mode, with the YouTube pipeline?");
-		break;
-	case AppMode::Cliffgoat:
-		text = QStringLiteral("Restart OBS in cliffgoat mode, with the YouTube pipeline?");
-		break;
-	}
-
-	if (YouTubePipelineEnabled()) {
-		YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
-		if (mgr->IsPipelineRunning() || mgr->IsWritingScript()) {
-			text += QStringLiteral("\n\nA YouTube step is still running and will stop. You can continue "
-					       "the job later with Open Recent.");
-		}
-	}
-
-	if (OBSMessageBox::question(this, QTStr("Restart"), text) != QMessageBox::Yes) {
-		return;
-	}
-
-	restart = true;
-	restart_app_mode = AppModeKey(mode);
-	close();
 }
 
 void OBSBasic::logUploadFinished(const std::string &text, const std::string &error, LogUploadType uploadType)

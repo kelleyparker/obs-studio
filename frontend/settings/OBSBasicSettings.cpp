@@ -17,7 +17,6 @@
  ******************************************************************************/
 
 #include "OBSBasicSettings.hpp"
-#include <utility/AppMode.hpp>
 #include <youtube/YouTubeSettingsWidget.hpp>
 #include "OBSHotkeyLabel.hpp"
 #include "OBSHotkeyWidget.hpp"
@@ -381,19 +380,17 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	ui->groupBox_7->setVisible(false);
 	ui->updateSettingsGroupBox->setVisible(false);
 
-	if (YouTubePipelineEnabled()) {
-		youtubeSettingsWidget = new YouTubeSettingsWidget(this);
-		QListWidgetItem *ytNavItem =
-			new QListWidgetItem(QIcon(":/settings/images/settings/stream.svg"), "YouTube Automation");
-		ui->listWidget->addItem(ytNavItem);
-		ui->settingsPages->addWidget(youtubeSettingsWidget);
-		connect(youtubeSettingsWidget, &YouTubeSettingsWidget::SettingsModified, this, [this]() {
-			if (!loading) {
-				youtubeChanged = true;
-				EnableApplyButton(true);
-			}
-		});
-	}
+	youtubeSettingsWidget = new YouTubeSettingsWidget(this);
+	QListWidgetItem *ytNavItem =
+		new QListWidgetItem(QIcon(":/settings/images/settings/stream.svg"), "YouTube Automation");
+	ui->listWidget->addItem(ytNavItem);
+	ui->settingsPages->addWidget(youtubeSettingsWidget);
+	connect(youtubeSettingsWidget, &YouTubeSettingsWidget::SettingsModified, this, [this]() {
+		if (!loading) {
+			youtubeChanged = true;
+			EnableApplyButton(true);
+		}
+	});
 
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
