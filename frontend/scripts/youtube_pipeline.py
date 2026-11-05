@@ -11,6 +11,7 @@ Security note:
 
 import argparse
 import base64
+import contextlib
 import difflib
 import io
 import json
@@ -19,6 +20,7 @@ import os
 import random
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1873,22 +1875,28 @@ def write_script(secrets: dict, options: dict) -> int:
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 
+def ollama_answering(url: str = OLLAMA_URL) -> bool:
+    try:
+        with urllib.request.urlopen(f"{url}/api/tags", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def ollama_exe() -> str:
+    exe = shutil.which("ollama") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
+    return exe if os.path.isfile(exe) else ""
+
+
 def ensure_ollama_server(wait_sec: float = 30.0) -> bool:
     """
     Make sure something answers on Ollama's local port. The Ollama tray app can stay
     running after its own server has died, so start 'ollama serve' ourselves if needed.
     """
-    def answering() -> bool:
-        try:
-            with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2):
-                return True
-        except Exception:
-            return False
-
-    if answering():
+    if ollama_answering():
         return True
-    exe = shutil.which("ollama") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
-    if not os.path.isfile(exe):
+    exe = ollama_exe()
+    if not exe:
         return False
     log_info("Local Ollama isn't answering; starting 'ollama serve' in the background...")
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -1897,18 +1905,90 @@ def ensure_ollama_server(wait_sec: float = 30.0) -> bool:
     deadline = time.time() + wait_sec
     while time.time() < deadline:
         time.sleep(1.0)
-        if answering():
+        if ollama_answering():
             return True
     return False
 
 
-def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str) -> dict:
-    if not ensure_ollama_server():
+@contextlib.contextmanager
+def ollama_on_gpu(uuid: str, wait_sec: float = 30.0):
+    """
+    A private Ollama server that can only see the NVIDIA GPU `uuid`, on its own port, so a model it loads
+    can't land on another card (Ollama picks the one with the most free memory, which is the one with your
+    monitors). Yields its URL, or "" if it couldn't start. It's stopped, and the model with it, when the block ends.
+    """
+    exe = ollama_exe()
+    if not exe:
+        yield ""
+        return
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{port}", CUDA_VISIBLE_DEVICES=uuid, OLLAMA_NUM_PARALLEL="1",
+               OLLAMA_MAX_LOADED_MODELS="1", OLLAMA_VULKAN="0")  # Vulkan would still show it the other cards
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    proc = subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, env=env, creationflags=flags)
+    url = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.time() + wait_sec
+        while time.time() < deadline and proc.poll() is None and not ollama_answering(url):
+            time.sleep(0.5)
+        yield url if proc.poll() is None and ollama_answering(url) else ""
+    finally:
+        if os.name == "nt":  # the model runner is a child that would outlive it, holding the GPU memory
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        else:
+            proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+OLLAMA_GPU_HEADROOM_GB = 1.5  # what a model needs on top of its file, for its context and the CUDA runtime
+
+
+def ollama_model_sizes(url: str) -> dict:
+    """{installed model name: file size in GB}."""
+    try:
+        with urllib.request.urlopen(f"{url}/api/tags", timeout=5) as resp:
+            models = json.loads(resp.read().decode("utf-8")).get("models", [])
+        return {m["name"]: float(m.get("size") or 0) / 2 ** 30 for m in models if m.get("name")}
+    except Exception:
+        return {}
+
+
+def ollama_model_size(sizes: dict, name: str) -> float:
+    return sizes.get(name) or sizes.get(f"{name}:latest") or 0.0
+
+
+def models_that_fit_first(models: list, sizes: dict, gpu_gb: float) -> list:
+    """`models`, those that fit in `gpu_gb` of GPU memory first (in their order); the others would spill into the CPU."""
+    fits = [m for m in models if ollama_model_size(sizes, m) <= gpu_gb - OLLAMA_GPU_HEADROOM_GB]
+    return fits + [m for m in models if m not in fits]
+
+
+def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str, server: str = OLLAMA_URL,
+                           gpu_gb: float = 0.0, num_ctx: int = 0) -> dict:
+    """
+    Asks the local LLM for a JSON answer. `server` is a private one from ollama_on_gpu (else the regular
+    Ollama, started if needed). With `gpu_gb`, the models that fit that much GPU memory are tried first,
+    and `num_ctx` keeps the context (and its memory) small.
+    """
+    if server == OLLAMA_URL and not ensure_ollama_server():
         raise RuntimeError(f"Local Ollama isn't answering on {OLLAMA_URL} and could not be started.")
-    url = f"{OLLAMA_URL}/api/generate"
+    url = f"{server}/api/generate"
     models_to_try = [ollama_model, "gemma4:12b", "llama3.1:8b", "qwen3:14b"]
     seen = set()
     ordered_models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
+    if gpu_gb:
+        sizes = ollama_model_sizes(server)
+        fitting = models_that_fit_first(ordered_models, sizes, gpu_gb)
+        if fitting[0] != ordered_models[0]:
+            log_info(f"{ordered_models[0]} ({ollama_model_size(sizes, ordered_models[0]):.1f} GB) doesn't fit in the "
+                     f"graphics card's {gpu_gb:g} GB, so {fitting[0]} writes this.")
+        ordered_models = fitting
 
     errors = []
     for model in ordered_models:
@@ -1918,7 +1998,7 @@ def call_local_ollama_json(ollama_model: str, system_prompt: str, user_text: str
                 "prompt": f"{system_prompt}\n\n{user_text[:16000]}",
                 "format": "json",
                 "stream": False,
-                "options": {"temperature": 0.4}
+                "options": {"temperature": 0.4, **({"num_ctx": num_ctx} if num_ctx else {})}
             }
             req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=90) as resp:
@@ -3611,14 +3691,41 @@ def clean_music_brief(brief: dict, fallback: dict) -> dict:
             "lyrics": lyrics}
 
 
-def music_briefs(config: dict, ctx: dict, count: int) -> tuple[list[dict], str]:
-    """`count` song ideas from your local LLM (title and transcript), or default styles if it isn't available."""
+def gpu_text(gpu: dict) -> str:
+    """'NVIDIA GeForce RTX 3050 (8 GB, no monitor on it)'"""
+    return f"{gpu['name']} ({gpu['gb']:g} GB" + (", no monitor on it)" if gpu.get("monitor") is False else ")")
+
+
+def music_brief_gpu(config: dict) -> dict | None:
+    """
+    The GPU ACE-Step will make the music on ({name, gb, uuid, ...}), where the music brief is written too; None
+    when it can't be told or the music comes from Lyria. Raises if ACE-Step can't run at all.
+    """
+    if config.get("music_source", "acestep") == "lyria":
+        return None
+    gpu = musicgen_command(config)[4]
+    return gpu if gpu and gpu.get("uuid") else None
+
+
+def music_briefs(config: dict, ctx: dict, count: int, gpu: dict | None = None) -> tuple[list[dict], str]:
+    """
+    `count` song ideas from your local LLM (title and transcript), or default styles if it isn't available.
+    With `gpu`, the LLM runs on that graphics card only (the one the music is made on), else on the one Ollama picks.
+    """
     title = (ctx.get("metadata") or {}).get("title", "")
     transcript = " ".join(s.get("text", "") for s in ctx.get("segments") or [])[:5000]
     model = config.get("ollama_model", "gemma4:12b")
     try:
-        res = call_local_ollama_json(model, MUSIC_BRIEF_PROMPT.replace("{count}", str(count)),
-                                     f"Title: {title}\n\nTranscript:\n{transcript}")
+        with ollama_on_gpu(gpu["uuid"]) if gpu else contextlib.nullcontext("") as private:
+            if gpu and not private:
+                log_warn(f"Couldn't start Ollama on the {gpu['name']}; using your regular Ollama, which picks its own "
+                         "graphics card.")
+            where = f"on the {gpu_text(gpu)}" if private else "(Ollama picks its own graphics card)"
+            log_info(f"Writing the music brief with {model} {where}...")
+            res = call_local_ollama_json(model, MUSIC_BRIEF_PROMPT.replace("{count}", str(count)),
+                                         f"Title: {title}\n\nTranscript:\n{transcript}",
+                                         **({"server": private, "gpu_gb": float(gpu["gb"]), "num_ctx": 4096}
+                                            if private else {}))
         raw = [b for b in res.get("options") or [] if isinstance(b, dict)]
         source = res.get("_model_used", model)
     except Exception as e:
@@ -3862,8 +3969,7 @@ def generate_songs(config: dict, songs: list, notes: list, lo: int = 8, hi: int 
     use_lm = max(s["duration"] for s in songs) >= MUSIC_LM_MIN_SONG
     offload, offload_dit = music_memory_plan(float(gpu["gb"]) if gpu else 0.0, use_lm)
     if gpu:
-        log_info(f"Making the music on the {gpu['name']} ({gpu['gb']:g} GB"
-                 + (", no monitor on it)" if gpu.get("monitor") is False else ")")
+        log_info(f"Making the music on the {gpu_text(gpu)}"
                  + ("" if use_lm else ", without the song-planning LM (the songs are short)") + ".")
     job = {"ace_dir": ace_dir, "dit": MUSIC_DIT_MODEL, "lm": MUSIC_LM_MODEL if use_lm else "", "offload": offload,
            "offload_dit": offload_dit, "parent_pid": os.getpid(),
@@ -4259,8 +4365,15 @@ def stage_music(config: dict, ctx: dict, gates: set) -> str | None:
         return None
 
     step_mode = "music" in gates
-    update_step("music", 2, "Writing the music brief with your local LLM...")
-    briefs, source = music_briefs(config, ctx, STEP_MUSIC_OPTIONS if step_mode else 1)
+    try:
+        gpu = music_brief_gpu(config)
+    except Exception as e:
+        log_error(f"Background music failed: {e}")
+        update_step("music", 100, "No music (it couldn't be made; see the log).")
+        return None
+    update_step("music", 2, "Writing the music brief " + (f"on the {gpu['name'].replace('NVIDIA GeForce ', '')}..."
+                                                          if gpu else "with your local LLM..."))
+    briefs, source = music_briefs(config, ctx, STEP_MUSIC_OPTIONS if step_mode else 1, gpu)
     try:
         options, notes = make_music_options(config, ctx, briefs)
     except Exception as e:

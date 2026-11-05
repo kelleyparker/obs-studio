@@ -1255,6 +1255,7 @@ class StepRunTests(unittest.TestCase):
             mock.patch.object(yp, "generate_metadata_with_priority", side_effect=lambda **kw: (dict(FAKE_METADATA), "test")),
             mock.patch.object(yp, "generate_ollama_image", side_effect=RuntimeError("no image model")),
             mock.patch.object(yp, "call_local_ollama_json", side_effect=RuntimeError("offline")),
+            mock.patch.object(yp, "music_brief_gpu", return_value=None),
             # Tones instead of ACE-Step, so the fitting and mixing still run for real
             mock.patch.object(yp, "generate_songs", side_effect=fake_songs),
             mock.patch.object(yp, "unload_ollama_models"),
@@ -1660,7 +1661,8 @@ class MusicBriefTests(unittest.TestCase):
              "instrumental": False, "lyrics": "[verse] la la"},
             {"style": "", "bpm": None, "key": "H major", "instrumental": False, "lyrics": ""},
             "junk"]}
-        with mock.patch.object(yp, "call_local_ollama_json", return_value=dict(reply, _model_used="Local (m)")):
+        with mock.patch.object(yp, "call_local_ollama_json", return_value=dict(reply, _model_used="Local (m)")), \
+                contextlib.redirect_stdout(io.StringIO()):
             briefs, source = yp.music_briefs({"ollama_model": "m"}, {"metadata": {"title": "T"}, "segments": []}, 3)
         self.assertEqual(source, "Local (m)")
         self.assertEqual((briefs[0]["bpm"], briefs[0]["key"], briefs[0]["instrumental"]), (160, "F# minor", False))
@@ -1675,6 +1677,123 @@ class MusicBriefTests(unittest.TestCase):
             briefs, source = yp.music_briefs({}, {}, 2)
         self.assertEqual(source, "default styles")
         self.assertEqual([b["name"] for b in briefs], [b["name"] for b in yp.FALLBACK_MUSIC_BRIEFS[:2]])
+
+
+class MusicBriefGpuTests(unittest.TestCase):
+    GPU = {"name": "NVIDIA GeForce RTX 3050", "gb": 8.0, "uuid": "GPU-3050", "bus": "", "monitor": False}
+    URL = "http://127.0.0.1:5"
+
+    def brief(self, private, gpu):
+        started = []
+
+        @contextlib.contextmanager
+        def server(uuid):
+            started.append(uuid)
+            yield private
+
+        out = io.StringIO()
+        with mock.patch.object(yp, "ollama_on_gpu", server), \
+                mock.patch.object(yp, "call_local_ollama_json", return_value={"options": []}) as ask, \
+                contextlib.redirect_stdout(out):
+            yp.music_briefs({"ollama_model": "gemma4:12b"}, {}, 1, gpu)
+        return started, ask.call_args.kwargs, out.getvalue()
+
+    def test_the_brief_is_written_on_the_music_gpu(self):
+        started, kwargs, out = self.brief(self.URL, self.GPU)
+        self.assertEqual(started, ["GPU-3050"])
+        self.assertEqual(kwargs, {"server": self.URL, "gpu_gb": 8.0, "num_ctx": 4096})
+        self.assertIn("Writing the music brief with gemma4:12b on the NVIDIA GeForce RTX 3050 (8 GB, no monitor on it)", out)
+
+    def test_the_regular_ollama_when_the_private_one_wont_start(self):
+        started, kwargs, out = self.brief("", self.GPU)
+        self.assertEqual(kwargs, {})
+        self.assertIn("Couldn't start Ollama on the NVIDIA GeForce RTX 3050", out)
+        self.assertIn("Ollama picks its own graphics card", out)
+
+    def test_no_known_gpu_uses_the_regular_ollama(self):
+        started, kwargs, out = self.brief(self.URL, None)
+        self.assertEqual((started, kwargs), ([], {}))
+        self.assertIn("Ollama picks its own graphics card", out)
+
+    def test_models_that_fit_the_card_are_tried_first(self):
+        sizes = {"gemma4:12b": 7.4, "llama3.1:8b": 4.6, "qwen3:14b": 8.7, "mistral:latest": 4.1}
+        order = ["gemma4:12b", "llama3.1:8b", "qwen3:14b"]
+        self.assertEqual(yp.models_that_fit_first(order, sizes, 8.0), ["llama3.1:8b", "gemma4:12b", "qwen3:14b"])
+        self.assertEqual(yp.models_that_fit_first(order, sizes, 11.9), ["gemma4:12b", "llama3.1:8b", "qwen3:14b"])
+        self.assertEqual(yp.models_that_fit_first(["mistral", "gemma4:12b"], sizes, 8.0), ["mistral", "gemma4:12b"])
+
+    def test_a_model_too_big_for_the_card_is_swapped_for_one_that_fits(self):
+        sizes = {"gemma4:12b": 7.4, "llama3.1:8b": 4.6}
+        asked = []
+
+        def urlopen(req, timeout=0):
+            body = json.loads(req.data)
+            asked.append((req.full_url, body["model"], body["options"]))
+            return FakeResponse(json.dumps({"response": "{\"options\": []}"}).encode())
+
+        out = io.StringIO()
+        with mock.patch.object(yp, "ollama_model_sizes", return_value=sizes), \
+                mock.patch("urllib.request.urlopen", side_effect=urlopen), contextlib.redirect_stdout(out):
+            res = yp.call_local_ollama_json("gemma4:12b", "s", "u", server=self.URL, gpu_gb=8.0, num_ctx=4096)
+        self.assertEqual(asked, [(f"{self.URL}/api/generate", "llama3.1:8b", {"temperature": 0.4, "num_ctx": 4096})])
+        self.assertEqual(res["_model_used"], "Local GPU Ollama (llama3.1:8b)")
+        self.assertIn("gemma4:12b (7.4 GB) doesn't fit in the graphics card's 8 GB, so llama3.1:8b writes this", out.getvalue())
+
+    def test_the_private_ollama_sees_one_gpu_and_stops_with_its_runner(self):
+        proc = mock.Mock(pid=4321)
+        proc.poll.return_value = None
+        with mock.patch.object(yp, "ollama_exe", return_value="ollama.exe"), \
+                mock.patch.object(yp, "ollama_answering", return_value=True), \
+                mock.patch.object(yp.subprocess, "Popen", return_value=proc) as popen, \
+                mock.patch.object(yp.subprocess, "run") as run:
+            with yp.ollama_on_gpu("GPU-3050") as url:
+                env = popen.call_args.kwargs["env"]
+                self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "GPU-3050")
+                self.assertEqual(url, "http://" + env["OLLAMA_HOST"])
+                self.assertNotEqual(env["OLLAMA_HOST"], "127.0.0.1:11434")
+                self.assertEqual(env["OLLAMA_VULKAN"], "0")
+                run.assert_not_called()
+            if os.name == "nt":
+                self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "4321", "/T", "/F"])
+            else:
+                proc.terminate.assert_called_once()
+
+    def test_no_ollama_installed_gives_no_private_server(self):
+        with mock.patch.object(yp, "ollama_exe", return_value=""), yp.ollama_on_gpu("GPU-3050") as url:
+            self.assertEqual(url, "")
+
+    def stage(self, gpu=None, gpu_error=None, config=None):
+        events = io.StringIO()
+        with mock.patch.object(yp, "music_brief_gpu", return_value=gpu, side_effect=gpu_error), \
+                mock.patch.object(yp, "music_briefs", return_value=([], "x")) as briefs, \
+                mock.patch.object(yp, "make_music_options", side_effect=RuntimeError("stop here")), \
+                contextlib.redirect_stdout(events):
+            yp.stage_music(config or {"music_enabled": True}, {"final_video": "x.mp4"}, {"music"})
+        steps = [json.loads(line) for line in events.getvalue().splitlines() if line.startswith("{")]
+        return [e["message"] for e in steps if e.get("type") == "step"], briefs
+
+    def test_the_step_says_which_graphics_card_writes_the_brief(self):
+        messages, briefs = self.stage(self.GPU)
+        self.assertEqual(messages[0], "Writing the music brief on the RTX 3050...")
+        self.assertIs(briefs.call_args.args[3], self.GPU)
+
+    def test_the_step_without_a_known_gpu(self):
+        messages, briefs = self.stage(None)
+        self.assertEqual(messages[0], "Writing the music brief with your local LLM...")
+
+    def test_acestep_that_cant_run_stops_before_the_brief(self):
+        messages, briefs = self.stage(gpu_error=RuntimeError("The NVIDIA driver isn't answering"))
+        self.assertEqual(messages, ["No music (it couldn't be made; see the log)."])
+        briefs.assert_not_called()
+
+    def test_lyria_music_doesnt_ask_for_a_gpu(self):
+        with mock.patch.object(yp, "musicgen_command", side_effect=AssertionError("not needed")):
+            self.assertIsNone(yp.music_brief_gpu({"music_source": "lyria"}))
+        gpu = dict(self.GPU)
+        with mock.patch.object(yp, "musicgen_command", return_value=([], {}, 0, "", gpu)):
+            self.assertIs(yp.music_brief_gpu({}), gpu)
+        with mock.patch.object(yp, "musicgen_command", return_value=([], {}, 0, "", None)):
+            self.assertIsNone(yp.music_brief_gpu({}))
 
 
 class EdgeSliverTests(unittest.TestCase):
