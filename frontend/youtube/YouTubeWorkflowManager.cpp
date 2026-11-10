@@ -582,7 +582,7 @@ bool YouTubeWorkflowManager::GetEditInfo(QString &videoPath, QList<double> &join
 	QJsonObject ctx = QJsonDocument::fromJson(file.readAll()).object().value("ctx").toObject();
 	videoPath = ctx.value("final_video").toString();
 	joins.clear();
-	for (const QJsonValue &v : ctx.value("joins").toArray()) {
+	for (const QJsonValue v : ctx.value("joins").toArray()) {
 		joins.append(v.toDouble());
 	}
 	return !videoPath.isEmpty() && QFileInfo::exists(videoPath);
@@ -1634,7 +1634,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "metadata_ready") {
 		QStringList altTitles;
 		QJsonArray altArr = obj.value("alternative_titles").toArray();
-		for (const auto &v : altArr) {
+		for (const QJsonValue v : altArr) {
 			altTitles.append(v.toString());
 		}
 		emit MetadataGenerated(obj.value("title").toString(), altTitles, obj.value("description").toString(),
@@ -1666,7 +1666,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		int count = obj.value("insert_count").toInt();
 		emit PipelineStateChanged(QString("👀 Review %1 B-roll spot(s) below, then Render & Upload").arg(count),
 					  false);
-		for (const QJsonValue &note : obj.value("notes").toArray()) {
+		for (const QJsonValue note : obj.value("notes").toArray()) {
 			emit LogMessageReceived("warning", note.toString());
 		}
 		emit LogMessageReceived("info",
@@ -1695,7 +1695,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "render_ready") {
 		lastEditedVideo = obj.value("video").toString();
 		lastJoins.clear();
-		for (const QJsonValue &v : obj.value("joins").toArray()) {
+		for (const QJsonValue v : obj.value("joins").toArray()) {
 			lastJoins.append(v.toDouble());
 		}
 		emit EditReady(lastEditedVideo);

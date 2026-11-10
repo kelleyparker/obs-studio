@@ -535,7 +535,7 @@ bool YouTubeCutEditor::Load(const QString &cutsPath_, const QString &statePath_)
 	statePath = statePath_;
 	duration = root.value("duration").toDouble();
 	cuts.clear();
-	for (const QJsonValue &v : root.value("cuts").toArray()) {
+	for (const QJsonValue v : root.value("cuts").toArray()) {
 		QJsonObject o = v.toObject();
 		YouTubeCut cut;
 		cut.id = o.value("id").toString();

@@ -268,14 +268,14 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 	infoLabel->setText(QString("AI images: %1. Click one to choose it, double-click to see it full size.")
 				   .arg(root.value("provider").toString()));
 	QStringList notes;
-	for (const QJsonValue &v : root.value("notes").toArray()) {
+	for (const QJsonValue v : root.value("notes").toArray()) {
 		notes.append("⚠ " + v.toString());
 	}
 	notesLabel->setText(notes.join("\n"));
 	notesLabel->setVisible(!notes.isEmpty());
 
 	int index = 0;
-	for (const QJsonValue &v : root.value("candidates").toArray()) {
+	for (const QJsonValue v : root.value("candidates").toArray()) {
 		QJsonObject c = v.toObject();
 		QString path = c.value("path").toString();
 
@@ -313,7 +313,7 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 	promptEdit->setPlainText(prompt.isEmpty() ? aiPrompt : prompt);
 	aiPromptButton->setEnabled(!aiPrompt.isEmpty());
 	references.clear();
-	for (const QJsonValue &v : opts.value("references").toArray()) {
+	for (const QJsonValue v : opts.value("references").toArray()) {
 		if (QFileInfo::exists(v.toString())) {
 			references.append(v.toString());
 		}

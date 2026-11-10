@@ -157,7 +157,7 @@ void YouTubeBrollReview::LoadPlan(const QString &planPath_, const QString &state
 	maxCoverage = plan.value("max_coverage").toDouble(0.4);
 
 	int screens = 0, pictures = 0;
-	for (const QJsonValue &v : inserts) {
+	for (const QJsonValue v : inserts) {
 		QJsonObject ins = v.toObject();
 		InsertRow row;
 		row.id = ins.value("id").toString();

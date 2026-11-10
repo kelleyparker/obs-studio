@@ -338,7 +338,7 @@ void YouTubeScriptWriter::SuggestTopics()
 void YouTubeScriptWriter::ShowIdeas(const QJsonArray &ideas, const QString &cost)
 {
 	ideasList->clear();
-	for (const QJsonValue &v : ideas) {
+	for (const QJsonValue v : ideas) {
 		QJsonObject idea = v.toObject();
 		QListWidgetItem *item = new QListWidgetItem(QString("%1\n%2").arg(idea.value("title").toString(),
 										  idea.value("angle").toString()),

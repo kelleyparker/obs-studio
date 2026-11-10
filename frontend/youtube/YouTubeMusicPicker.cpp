@@ -275,7 +275,7 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 	regenCount = root.value("regen_count").toInt(2);
 	QString by = root.value("brief_by").toString();
 	QStringList makers;
-	for (const QJsonValue &v : root.value("options").toArray()) {
+	for (const QJsonValue v : root.value("options").toArray()) {
 		QJsonObject o = v.toObject();
 		QString maker = o.value("made_by").toString("ACE-Step");
 		if (!o.value("path").toString().isEmpty() && !makers.contains(maker)) {
@@ -289,14 +289,14 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 				   "dipping further while you talk.")
 				   .arg(made, by.isEmpty() ? QString() : QString(", styles by %1").arg(by)));
 	QStringList notes;
-	for (const QJsonValue &v : root.value("notes").toArray()) {
+	for (const QJsonValue v : root.value("notes").toArray()) {
 		notes.append("⚠ " + v.toString());
 	}
 	notesLabel->setText(notes.join("\n"));
 	notesLabel->setVisible(!notes.isEmpty());
 
 	QRadioButton *checked = nullptr;
-	for (const QJsonValue &v : root.value("options").toArray()) {
+	for (const QJsonValue v : root.value("options").toArray()) {
 		QJsonObject o = v.toObject();
 		QString path = o.value("path").toString();
 		if (path.isEmpty() || !QFileInfo::exists(path)) {

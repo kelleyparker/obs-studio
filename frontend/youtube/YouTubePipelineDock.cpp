@@ -1059,7 +1059,7 @@ void YouTubePipelineDock::RestoreJobView(const QString &statePath)
 	/* The steps the job was told to skip */
 	QJsonObject jobConfig = state.value("config").toObject();
 	QSet<QString> skipped;
-	for (const QJsonValue &v : jobConfig.value("skip_steps").toArray()) {
+	for (const QJsonValue v : jobConfig.value("skip_steps").toArray()) {
 		skipped.insert(v.toString());
 	}
 	if (!jobConfig.value("music_enabled").toBool(true)) {
@@ -1084,7 +1084,7 @@ void YouTubePipelineDock::RestoreJobView(const QString &statePath)
 	}
 	if (!meta.isEmpty()) {
 		QStringList alts;
-		for (const QJsonValue &v : meta.value("alternative_titles").toArray()) {
+		for (const QJsonValue v : meta.value("alternative_titles").toArray()) {
 			alts.append(v.toString());
 		}
 		OnMetadataGenerated(meta.value("title").toString(), alts, meta.value("description").toString(),
