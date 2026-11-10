@@ -10,6 +10,7 @@
 #include <dpapi.h>
 #endif
 
+#ifdef _WIN32
 namespace {
 // 256-bit OBS-Studio-specific application entropy salt so no external DPAPI dump tool
 // without this binary salt can unprotect keys saved in OBS config.
@@ -17,6 +18,7 @@ constexpr unsigned char kObsVaultEntropy[32] = {0x4F, 0x42, 0x53, 0x5F, 0x59, 0x
 						0x54, 0x5F, 0x32, 0x30, 0x32, 0x36, 0x5F, 0x41, 0x55, 0x42, 0x45,
 						0x52, 0x47, 0x49, 0x4E, 0x45, 0x5F, 0x53, 0x41, 0x4C, 0x54};
 } // namespace
+#endif
 
 QString YouTubeSecretVault::EncryptSecret(const QString &plainText)
 {
