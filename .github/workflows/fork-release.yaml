@@ -39,8 +39,7 @@ jobs:
           set -euo pipefail
           hash="${TARGET_SHA:0:9}"
           gh run download "${BUILD_RUN_ID}" --dir artifacts \
-            --name "obs-studio-windows-x64-${hash}" \
-            --name "obs-studio-macos-arm64-${hash}"
+            --name "obs-studio-windows-x64-${hash}"
           find artifacts -type f
 
       - name: Collect Release Files 🏷️
@@ -62,7 +61,6 @@ jobs:
           }
 
           collect 'obs-studio-*-windows-x64.zip' 'Windows-x64.zip'
-          collect 'obs-studio-*-macos-apple.dmg' 'macOS-Apple.dmg'
 
           cp .github/fork-release/notes.md notes.md
           {
