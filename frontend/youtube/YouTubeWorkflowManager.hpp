@@ -57,7 +57,7 @@ struct YouTubeWorkflowConfig {
 	QString brollSourceName;
 	QString brollStyle = "pip"; // "pip" (webcam bubble over the screen) or "cutaway"
 	double brollMaxCoverage = 0.40;
-	int brollAmount = 2;              // AI pictures dial: 0 (Off) to 5 (Lots)
+	int brollAmount = 2;             // AI pictures dial: 0 (Off) to 5 (Lots)
 	QString brollImageSource = "sd"; // "sd" (this PC), "gemini" or "gemini_pro"; Auto always uses this
 
 	// Script writer (before recording): Claude model and effort, with the Claude key from the Vault
@@ -173,7 +173,8 @@ eview carries
 
 	/* Pushes an edited title/description to the most recently uploaded video, and the thumbnail file when
 	 * thumbnailPath is given (it was edited after the upload). */
-	void SubmitVideoEdits(const QString &title, const QString &description, const QString &thumbnailPath = QString());
+	void SubmitVideoEdits(const QString &title, const QString &description,
+			      const QString &thumbnailPath = QString());
 
 	QString GetLastVideoPath() const { return lastVideoPath; }
 	QString GetLastVideoId() const { return lastVideoId; }
@@ -199,9 +200,8 @@ signals:
 	void WorkflowArmedChanged(bool armed);
 	void PipelineStateChanged(const QString &bannerText, bool running);
 	void StepProgressUpdated(const QString &stepName, int percent, const QString &message);
-	void MetadataGenerated(const QString &title, const QStringList &alternativeTitles,
-			       const QString &description, const QString &hookText,
-			       const QString &providerBadge);
+	void MetadataGenerated(const QString &title, const QStringList &alternativeTitles, const QString &description,
+			       const QString &hookText, const QString &providerBadge);
 	void ThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
 	void PipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
 			       const QString &message);

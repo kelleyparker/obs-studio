@@ -189,7 +189,8 @@ void CutTimelineWidget::paintEvent(QPaintEvent *)
 			const YouTubeCut &c = (*cuts)[i];
 			double s = EffectiveStart(c);
 			double e = EffectiveEnd(c);
-			QRect r(QPoint(int(TimeToX(s)), bar.top()), QPoint(std::max(int(TimeToX(e)), int(TimeToX(s)) + 1), bar.bottom()));
+			QRect r(QPoint(int(TimeToX(s)), bar.top()),
+				QPoint(std::max(int(TimeToX(e)), int(TimeToX(s)) + 1), bar.bottom()));
 			bool active = c.enabled && e - s >= kMinCutSec;
 			if (active) {
 				p.fillRect(r, c.kind == "retake" ? QColor(235, 140, 40) : QColor(205, 50, 60));
@@ -534,13 +535,14 @@ bool YouTubeCutEditor::Load(const QString &cutsPath_, const QString &statePath_)
 	statePath = statePath_;
 	duration = root.value("duration").toDouble();
 	cuts.clear();
-	for (const QJsonValue &v : root.value("cuts").toArray()) {
+	for (const QJsonValue v : root.value("cuts").toArray()) {
 		QJsonObject o = v.toObject();
 		YouTubeCut cut;
 		cut.id = o.value("id").toString();
 		cut.kind = o.value("kind").toString("silence");
 		cut.reason = o.value("reason").toString();
-		cut.origStart = o.contains("orig_start") ? o.value("orig_start").toDouble() : o.value("start").toDouble();
+		cut.origStart = o.contains("orig_start") ? o.value("orig_start").toDouble()
+							 : o.value("start").toDouble();
 		cut.origEnd = o.contains("orig_end") ? o.value("orig_end").toDouble() : o.value("end").toDouble();
 		cut.start = o.value("start").toDouble();
 		cut.end = o.value("end").toDouble();
@@ -740,7 +742,9 @@ void YouTubeCutEditor::RefreshRow(int row)
 	table->item(row, ColEnd)->setText(FormatTime(e));
 	table->item(row, ColLength)->setText(QString("%1s").arg(e - s, 0, 'f', 2));
 	table->item(row, ColReason)->setText(c.reason);
-	QColor color = !active ? QColor(140, 140, 150) : c.kind == "retake" ? QColor(240, 170, 90) : QColor(235, 120, 125);
+	QColor color = !active              ? QColor(140, 140, 150)
+		       : c.kind == "retake" ? QColor(240, 170, 90)
+					    : QColor(235, 120, 125);
 	for (int col = 0; col < table->columnCount(); col++) {
 		table->item(row, col)->setForeground(color);
 	}
@@ -796,7 +800,8 @@ void YouTubeCutEditor::RefreshLength()
 			cursor = span.second;
 		}
 	}
-	lengthLabel->setText(QString("Edited length %1 (−%2)").arg(FormatTime(duration - removed), FormatTime(removed)));
+	lengthLabel->setText(
+		QString("Edited length %1 (−%2)").arg(FormatTime(duration - removed), FormatTime(removed)));
 }
 
 bool YouTubeCutEditor::Save()

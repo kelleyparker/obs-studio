@@ -20,8 +20,9 @@ bool AnimationsEnabled()
 {
 #ifdef _WIN32
 	BOOL enabled = TRUE;
-	if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
+	if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0)) {
 		return enabled != FALSE;
+	}
 #endif
 	return true;
 }
@@ -60,13 +61,16 @@ void YouTubeHeartbeat::SetWanted(bool wanted_)
 
 void YouTubeHeartbeat::SetQuietWhileVisible(QWidget *other)
 {
-	if (quietWhile == other)
+	if (quietWhile == other) {
 		return;
-	if (quietWhile)
+	}
+	if (quietWhile) {
 		quietWhile->removeEventFilter(this);
+	}
 	quietWhile = other;
-	if (other)
+	if (other) {
 		other->installEventFilter(this);
+	}
 	Update();
 }
 

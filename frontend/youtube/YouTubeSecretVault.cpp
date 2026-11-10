@@ -10,16 +10,15 @@
 #include <dpapi.h>
 #endif
 
+#ifdef _WIN32
 namespace {
 // 256-bit OBS-Studio-specific application entropy salt so no external DPAPI dump tool
 // without this binary salt can unprotect keys saved in OBS config.
-constexpr unsigned char kObsVaultEntropy[32] = {
-	0x4F, 0x42, 0x53, 0x5F, 0x59, 0x54, 0x5F, 0x56,
-	0x41, 0x55, 0x4C, 0x54, 0x5F, 0x32, 0x30, 0x32,
-	0x36, 0x5F, 0x41, 0x55, 0x42, 0x45, 0x52, 0x47,
-	0x49, 0x4E, 0x45, 0x5F, 0x53, 0x41, 0x4C, 0x54
-};
+constexpr unsigned char kObsVaultEntropy[32] = {0x4F, 0x42, 0x53, 0x5F, 0x59, 0x54, 0x5F, 0x56, 0x41, 0x55, 0x4C,
+						0x54, 0x5F, 0x32, 0x30, 0x32, 0x36, 0x5F, 0x41, 0x55, 0x42, 0x45,
+						0x52, 0x47, 0x49, 0x4E, 0x45, 0x5F, 0x53, 0x41, 0x4C, 0x54};
 } // namespace
+#endif
 
 QString YouTubeSecretVault::EncryptSecret(const QString &plainText)
 {
@@ -39,15 +38,8 @@ QString YouTubeSecretVault::EncryptSecret(const QString &plainText)
 	entropy.cbData = sizeof(kObsVaultEntropy);
 
 	DATA_BLOB dataOut{};
-	BOOL ok = CryptProtectData(
-		&dataIn,
-		L"OBS_YouTube_Vault_Secret",
-		&entropy,
-		nullptr,
-		nullptr,
-		CRYPTPROTECT_UI_FORBIDDEN,
-		&dataOut
-	);
+	BOOL ok = CryptProtectData(&dataIn, L"OBS_YouTube_Vault_Secret", &entropy, nullptr, nullptr,
+				   CRYPTPROTECT_UI_FORBIDDEN, &dataOut);
 
 	SecureZeroMemory(utf8.data(), utf8.size());
 
@@ -84,21 +76,14 @@ QString YouTubeSecretVault::DecryptSecret(const QString &cipherBase64)
 	entropy.cbData = sizeof(kObsVaultEntropy);
 
 	DATA_BLOB dataOut{};
-	BOOL ok = CryptUnprotectData(
-		&dataIn,
-		nullptr,
-		&entropy,
-		nullptr,
-		nullptr,
-		CRYPTPROTECT_UI_FORBIDDEN,
-		&dataOut
-	);
+	BOOL ok = CryptUnprotectData(&dataIn, nullptr, &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &dataOut);
 
 	if (!ok || !dataOut.pbData) {
 		return QString();
 	}
 
-	QString result = QString::fromUtf8(reinterpret_cast<const char *>(dataOut.pbData), static_cast<int>(dataOut.cbData));
+	QString result =
+		QString::fromUtf8(reinterpret_cast<const char *>(dataOut.pbData), static_cast<int>(dataOut.cbData));
 	SecureZeroMemory(dataOut.pbData, dataOut.cbData);
 	LocalFree(dataOut.pbData);
 	return result;

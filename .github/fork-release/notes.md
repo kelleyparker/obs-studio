@@ -7,7 +7,6 @@ Go live on YouTube, Twitch and Kick (or any RTMP/RTMPS server) at the same time 
 | File | For |
 |---|---|
 | `…-Windows-x64.zip` | Windows 10/11 and Windows Server (x64) |
-| `…-macOS-Apple.dmg` | Macs with Apple Silicon |
 
 ### What's new since 33.0.0-rc1-multistream1
 
@@ -38,5 +37,4 @@ Go live on YouTube, Twitch and Kick (or any RTMP/RTMPS server) at the same time 
 - **YouTube chat:** Google often blocks sign-in inside OBS, so you may be able to read YouTube chat in the dock but not post in it. The YouTube chat dock shows a waiting message until the stream is live.
 - These builds are not code-signed.
   - **Windows:** if SmartScreen warns, click **More info → Run anyway**.
-  - **macOS:** if macOS says the app is damaged or can't be verified, run `xattr -dr com.apple.quarantine /Applications/OBS.app`.
 - **Windows zip:** it uses the same settings as an installed OBS. To keep them separate, put an empty file named `portable_mode.txt` in the unzipped folder, next to `bin`.

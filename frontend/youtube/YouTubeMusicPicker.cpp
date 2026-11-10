@@ -181,9 +181,10 @@ YouTubeMusicPicker::YouTubeMusicPicker(QWidget *parent) : QGroupBox("🎵 Pick t
 	QHBoxLayout *sourceRow = new QHBoxLayout();
 	sourceCombo = new QComboBox(regenBox);
 	YouTubeSettingsWidget::FillMusicSources(sourceCombo);
-	sourceCombo->setToolTip("What makes the new songs. Lyria uses your Gemini key (about $0.08 per 2-minute song, "
-				"done in about half a minute); any song it can't make is made on this PC with ACE-Step.\n"
-				"This doesn't change the music source in Settings.");
+	sourceCombo->setToolTip(
+		"What makes the new songs. Lyria uses your Gemini key (about $0.08 per 2-minute song, "
+		"done in about half a minute); any song it can't make is made on this PC with ACE-Step.\n"
+		"This doesn't change the music source in Settings.");
 	sourceRow->addWidget(new QLabel("Make with:", regenBox));
 	sourceRow->addWidget(sourceCombo, 1);
 	regenLayout->addLayout(sourceRow);
@@ -265,8 +266,8 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 
 	QJsonObject root = ReadJson(musicPath);
 	if (root.isEmpty()) {
-		emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
-			"error", QString("Could not read the music choices: %1").arg(musicPath));
+		emit YouTubeWorkflowManager::Instance()
+			-> LogMessageReceived("error", QString("Could not read the music choices: %1").arg(musicPath));
 		return;
 	}
 	QString chosen = root.value("chosen").toString();
@@ -274,7 +275,7 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 	regenCount = root.value("regen_count").toInt(2);
 	QString by = root.value("brief_by").toString();
 	QStringList makers;
-	for (const QJsonValue &v : root.value("options").toArray()) {
+	for (const QJsonValue v : root.value("options").toArray()) {
 		QJsonObject o = v.toObject();
 		QString maker = o.value("made_by").toString("ACE-Step");
 		if (!o.value("path").toString().isEmpty() && !makers.contains(maker)) {
@@ -288,14 +289,14 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 				   "dipping further while you talk.")
 				   .arg(made, by.isEmpty() ? QString() : QString(", styles by %1").arg(by)));
 	QStringList notes;
-	for (const QJsonValue &v : root.value("notes").toArray()) {
+	for (const QJsonValue v : root.value("notes").toArray()) {
 		notes.append("⚠ " + v.toString());
 	}
 	notesLabel->setText(notes.join("\n"));
 	notesLabel->setVisible(!notes.isEmpty());
 
 	QRadioButton *checked = nullptr;
-	for (const QJsonValue &v : root.value("options").toArray()) {
+	for (const QJsonValue v : root.value("options").toArray()) {
 		QJsonObject o = v.toObject();
 		QString path = o.value("path").toString();
 		if (path.isEmpty() || !QFileInfo::exists(path)) {
@@ -310,12 +311,12 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 		QRadioButton *radio = new QRadioButton(
 			QString("%1 · %2").arg(o.value("label").toString(), o.value("name").toString()), row);
 		QString style = o.value("style").toString();
-		QString details = QString("%1 BPM, %2%3%4")
-					  .arg(o.value("bpm").toInt())
-					  .arg(o.value("key").toString())
-					  .arg(o.value("instrumental").toBool(true) ? ", instrumental" : ", with vocals")
-					  .arg(makers.size() > 1 ? " · " + o.value("made_by").toString("ACE-Step")
-								 : QString());
+		QString details =
+			QString("%1 BPM, %2%3%4")
+				.arg(o.value("bpm").toInt())
+				.arg(o.value("key").toString())
+				.arg(o.value("instrumental").toBool(true) ? ", instrumental" : ", with vocals")
+				.arg(makers.size() > 1 ? " · " + o.value("made_by").toString("ACE-Step") : QString());
 		radio->setToolTip(QString("%1\n%2").arg(style, details));
 		radio->setProperty("songId", o.value("id").toString());
 		radio->setProperty("style", style);
@@ -330,8 +331,10 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 		mixButton->setToolTip("Hear it under your voice, as it will be in the video");
 		QString preview = o.value("preview").toString();
 		mixButton->setEnabled(QFileInfo::exists(preview));
-		connect(songButton, &QPushButton::clicked, this, [this, songButton, path]() { Play(songButton, path); });
-		connect(mixButton, &QPushButton::clicked, this, [this, mixButton, preview]() { Play(mixButton, preview); });
+		connect(songButton, &QPushButton::clicked, this,
+			[this, songButton, path]() { Play(songButton, path); });
+		connect(mixButton, &QPushButton::clicked, this,
+			[this, mixButton, preview]() { Play(mixButton, preview); });
 		connect(radio, &QRadioButton::toggled, this, [this, style](bool on) {
 			if (on) {
 				styleEdit->setPlainText(style);
@@ -357,7 +360,8 @@ void YouTubeMusicPicker::Load(const QString &musicPath_, const QString &statePat
 		timeLabel->setMinimumWidth(timeLabel->fontMetrics().horizontalAdvance("00:00 / 00:00") + 4);
 		timeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 		auto showTime = [timeLabel, slider](int ms) {
-			timeLabel->setText(QString("%1 / %2").arg(Clock(ms / 1000.0), Clock(slider->maximum() / 1000.0)));
+			timeLabel->setText(
+				QString("%1 / %2").arg(Clock(ms / 1000.0), Clock(slider->maximum() / 1000.0)));
 		};
 		showTime(0);
 		connect(slider, &QSlider::valueChanged, timeLabel, showTime);
@@ -545,7 +549,8 @@ void YouTubeMusicPicker::Regenerate()
 	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
 	QString style = styleEdit->toPlainText().trimmed();
 	if (style.isEmpty()) {
-		emit mgr->LogMessageReceived("warning", "Describe the music you want first (genre, mood, instruments).");
+		emit mgr->LogMessageReceived("warning",
+					     "Describe the music you want first (genre, mood, instruments).");
 		return;
 	}
 	StopPlayback();
@@ -613,7 +618,8 @@ void YouTubeMusicPicker::UpdateEtaLabel()
 	double load = t.value("load_s").toDouble(90.0);
 	double rate = t.value("rate").toDouble(1.0);
 	double seconds = load + regenCount * (videoSeconds + 10.0) * rate + 10.0 * regenCount;
-	regenButton->setText(videoSeconds > 0 ? QString("🎵 Make %1 new songs (~%2)").arg(regenCount).arg(Clock(seconds))
-					      : QString("🎵 Make %1 new songs").arg(regenCount));
+	regenButton->setText(videoSeconds > 0
+				     ? QString("🎵 Make %1 new songs (~%2)").arg(regenCount).arg(Clock(seconds))
+				     : QString("🎵 Make %1 new songs").arg(regenCount));
 	regenButton->setToolTip("Make new songs with this style on this PC (ACE-Step); the songs above stay");
 }

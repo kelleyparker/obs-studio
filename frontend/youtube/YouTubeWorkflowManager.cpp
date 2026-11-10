@@ -234,8 +234,7 @@ void YouTubeWorkflowManager::SaveConfig()
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbPersonSide", config.thumbPersonSide.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "AutoFinish", config.autoFinish.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewGate", config.pendingReviewGate.toUtf8().constData());
-	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewState",
-			  config.pendingReviewState.toUtf8().constData());
+	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewState", config.pendingReviewState.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "PendingReviewData", config.pendingReviewData.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "WhisperModel", config.whisperModel.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "OllamaModel", config.ollamaModel.toUtf8().constData());
@@ -583,7 +582,7 @@ bool YouTubeWorkflowManager::GetEditInfo(QString &videoPath, QList<double> &join
 	QJsonObject ctx = QJsonDocument::fromJson(file.readAll()).object().value("ctx").toObject();
 	videoPath = ctx.value("final_video").toString();
 	joins.clear();
-	for (const QJsonValue &v : ctx.value("joins").toArray()) {
+	for (const QJsonValue v : ctx.value("joins").toArray()) {
 		joins.append(v.toDouble());
 	}
 	return !videoPath.isEmpty() && QFileInfo::exists(videoPath);
@@ -1042,25 +1041,22 @@ QString YouTubeWorkflowManager::ProjectStatus(const QJsonObject &state)
 	}
 	if (!gate.isEmpty()) {
 		static const QMap<QString, QString> reviews = {{"cuts", "the cuts"},
-							      {"broll", "the B-roll"},
-							      {"metadata", "the title & description"},
-							      {"music", "the music"},
-							      {"thumbnail", "the thumbnail"}};
+							       {"broll", "the B-roll"},
+							       {"metadata", "the title & description"},
+							       {"music", "the music"},
+							       {"thumbnail", "the thumbnail"}};
 		return QString("👀 Waiting for you: %1").arg(reviews.value(gate, gate));
 	}
 	QString next = ctx.value("next_stage").toString("render");
 	if (next == "done") {
 		return ctx.value("video_url").toString().isEmpty() ? "📁 Finished (not uploaded)" : "✅ Uploaded";
 	}
-	static const QMap<QString, QString> stages = {{"cuts_review", "the cuts"},
-						     {"broll_plan", "the B-roll plan"},
-						     {"render", "rendering the edit"},
-						     {"metadata", "the title & description"},
-						     {"music", "the music"},
-						     {"thumbnails", "the thumbnail"},
-						     {"publish", "the upload"},
-						     {"upload", "the upload"},
-						     {"finish", "finishing up"}};
+	static const QMap<QString, QString> stages = {
+		{"cuts_review", "the cuts"},      {"broll_plan", "the B-roll plan"},
+		{"render", "rendering the edit"}, {"metadata", "the title & description"},
+		{"music", "the music"},           {"thumbnails", "the thumbnail"},
+		{"publish", "the upload"},        {"upload", "the upload"},
+		{"finish", "finishing up"}};
 	bool stepMode = !state.value("config").toObject().value("review_gates").toArray().isEmpty();
 	return QString("⏸ %1 job stopped at %2").arg(stepMode ? "Step" : "Auto", stages.value(next, next));
 }
@@ -1464,7 +1460,7 @@ void YouTubeWorkflowManager::StartOAuthLogin()
 }
 
 void YouTubeWorkflowManager::SubmitVideoEdits(const QString &title, const QString &description,
-					     const QString &thumbnailPath)
+					      const QString &thumbnailPath)
 {
 	if (IsPipelineRunning()) {
 		emit VideoUpdateFinished(false, "Wait for the current job to finish before submitting.");
@@ -1638,7 +1634,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "metadata_ready") {
 		QStringList altTitles;
 		QJsonArray altArr = obj.value("alternative_titles").toArray();
-		for (const auto &v : altArr) {
+		for (const QJsonValue v : altArr) {
 			altTitles.append(v.toString());
 		}
 		emit MetadataGenerated(obj.value("title").toString(), altTitles, obj.value("description").toString(),
@@ -1668,9 +1664,9 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		emit LogMessageReceived("error", msg);
 	} else if (type == "broll_plan_ready") {
 		int count = obj.value("insert_count").toInt();
-		emit PipelineStateChanged(
-			QString("👀 Review %1 B-roll spot(s) below, then Render & Upload").arg(count), false);
-		for (const QJsonValue &note : obj.value("notes").toArray()) {
+		emit PipelineStateChanged(QString("👀 Review %1 B-roll spot(s) below, then Render & Upload").arg(count),
+					  false);
+		for (const QJsonValue note : obj.value("notes").toArray()) {
 			emit LogMessageReceived("warning", note.toString());
 		}
 		emit LogMessageReceived("info",
@@ -1699,7 +1695,7 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "render_ready") {
 		lastEditedVideo = obj.value("video").toString();
 		lastJoins.clear();
-		for (const QJsonValue &v : obj.value("joins").toArray()) {
+		for (const QJsonValue v : obj.value("joins").toArray()) {
 			lastJoins.append(v.toDouble());
 		}
 		emit EditReady(lastEditedVideo);
@@ -1716,9 +1712,10 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 	} else if (type == "upload_stats") {
 		emit UploadStatsReady(obj.value("text").toString());
 	} else if (type == "update_success") {
-		emit VideoUpdateFinished(true, QString("Updated on YouTube: %1%2")
-						       .arg(obj.value("title").toString(),
-							    obj.value("thumbnail").toBool() ? " (and the thumbnail)" : ""));
+		emit VideoUpdateFinished(true,
+					 QString("Updated on YouTube: %1%2")
+						 .arg(obj.value("title").toString(),
+						      obj.value("thumbnail").toBool() ? " (and the thumbnail)" : ""));
 	} else if (type == "needs_download") {
 		emit ReferenceDownloadNeeded(obj.value("action").toString(), obj.value("size_gb").toDouble(3.2));
 	} else if (type == "update_error") {

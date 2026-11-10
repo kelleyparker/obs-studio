@@ -160,8 +160,9 @@ void NotepadDock::Open()
 		return;
 	}
 
-	QString path = QFileDialog::getOpenFileName(this, QTStr("Notepad.Open"), currentPath.isEmpty() ? QString() : QFileInfo(currentPath).absolutePath(),
-						    QTStr("Notepad.FileFilter"));
+	QString path = QFileDialog::getOpenFileName(
+		this, QTStr("Notepad.Open"), currentPath.isEmpty() ? QString() : QFileInfo(currentPath).absolutePath(),
+		QTStr("Notepad.FileFilter"));
 	if (!path.isEmpty()) {
 		LoadFile(path);
 	}
@@ -181,8 +182,8 @@ bool NotepadDock::Save()
 
 bool NotepadDock::SaveAs()
 {
-	QString path = QFileDialog::getSaveFileName(this, QTStr("Notepad.SaveAs"), currentPath,
-						    QTStr("Notepad.FileFilter"));
+	QString path =
+		QFileDialog::getSaveFileName(this, QTStr("Notepad.SaveAs"), currentPath, QTStr("Notepad.FileFilter"));
 	if (path.isEmpty() || !WriteFile(path)) {
 		return false;
 	}
@@ -236,10 +237,9 @@ bool NotepadDock::MaybeSave()
 		return true;
 	}
 
-	QMessageBox::StandardButton button =
-		OBSMessageBox::question(this, QTStr("Notepad.Unsaved.Title"), QTStr("Notepad.Unsaved.Text"),
-					QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-					QMessageBox::Save);
+	QMessageBox::StandardButton button = OBSMessageBox::question(
+		this, QTStr("Notepad.Unsaved.Title"), QTStr("Notepad.Unsaved.Text"),
+		QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
 
 	if (button == QMessageBox::Save) {
 		return Save();

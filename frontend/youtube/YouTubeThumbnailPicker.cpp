@@ -111,7 +111,8 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	refStrengthSlider = new QSlider(Qt::Horizontal, refsBox);
 	refStrengthSlider->setRange(30, 100);
 	refStrengthSlider->setValue(60);
-	refStrengthSlider->setToolTip("How closely the new images follow the reference images (local Stable Diffusion)");
+	refStrengthSlider->setToolTip(
+		"How closely the new images follow the reference images (local Stable Diffusion)");
 	refStrengthRow->addWidget(new QLabel("Follow them: loosely", refsBox));
 	refStrengthRow->addWidget(refStrengthSlider, 1);
 	refStrengthRow->addWidget(new QLabel("closely", refsBox));
@@ -162,7 +163,8 @@ YouTubeThumbnailPicker::YouTubeThumbnailPicker(QWidget *parent) : QGroupBox("�
 	generateButton = new QPushButton(tweakBox);
 	generateButton->setToolTip("Make 4 new AI images with these settings (the video frames stay)");
 	recomposeButton = new QPushButton("🔁 Apply text && photo", tweakBox);
-	recomposeButton->setToolTip("Redraw every thumbnail with the text and photo above, without new AI images (a few seconds)");
+	recomposeButton->setToolTip(
+		"Redraw every thumbnail with the text and photo above, without new AI images (a few seconds)");
 	actions->addWidget(generateButton, 1);
 	actions->addWidget(recomposeButton, 1);
 	form->addRow(actions);
@@ -257,7 +259,7 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 
 	QFile file(thumbsPath);
 	if (!file.open(QIODevice::ReadOnly)) {
-		emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
+		emit YouTubeWorkflowManager::Instance() -> LogMessageReceived(
 			"error", QString("Could not read the thumbnail choices: %1").arg(thumbsPath));
 		return;
 	}
@@ -266,14 +268,14 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 	infoLabel->setText(QString("AI images: %1. Click one to choose it, double-click to see it full size.")
 				   .arg(root.value("provider").toString()));
 	QStringList notes;
-	for (const QJsonValue &v : root.value("notes").toArray()) {
+	for (const QJsonValue v : root.value("notes").toArray()) {
 		notes.append("⚠ " + v.toString());
 	}
 	notesLabel->setText(notes.join("\n"));
 	notesLabel->setVisible(!notes.isEmpty());
 
 	int index = 0;
-	for (const QJsonValue &v : root.value("candidates").toArray()) {
+	for (const QJsonValue v : root.value("candidates").toArray()) {
 		QJsonObject c = v.toObject();
 		QString path = c.value("path").toString();
 
@@ -301,7 +303,8 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 	QJsonObject meta = ctx.value("metadata").toObject();
 	QJsonObject opts = ctx.value("thumb_options").toObject();
 	/* The model this job uses (picked here earlier, or the default when it started) */
-	QString source = state.value("config").toObject().value("thumbnail_image_source").toString(cfg.thumbnailImageSource);
+	QString source =
+		state.value("config").toObject().value("thumbnail_image_source").toString(cfg.thumbnailImageSource);
 	modelCombo->setCurrentIndex(std::max(0, modelCombo->findData(source)));
 	hookEdit->setText(opts.contains("hook") ? opts.value("hook").toString()
 						: meta.value("thumbnail_hook").toString());
@@ -310,7 +313,7 @@ void YouTubeThumbnailPicker::LoadCandidates(const QString &thumbsPath_, const QS
 	promptEdit->setPlainText(prompt.isEmpty() ? aiPrompt : prompt);
 	aiPromptButton->setEnabled(!aiPrompt.isEmpty());
 	references.clear();
-	for (const QJsonValue &v : opts.value("references").toArray()) {
+	for (const QJsonValue v : opts.value("references").toArray()) {
 		if (QFileInfo::exists(v.toString())) {
 			references.append(v.toString());
 		}
@@ -392,8 +395,9 @@ void YouTubeThumbnailPicker::AddReferences()
 							  "Images (*.png *.jpg *.jpeg *.webp)");
 	for (const QString &path : paths) {
 		if (references.size() >= kMaxReferences) {
-			emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
-				"warning", QString("Up to %1 reference images; the rest were left out.").arg(kMaxReferences));
+			emit YouTubeWorkflowManager::Instance() -> LogMessageReceived(
+				"warning",
+				QString("Up to %1 reference images; the rest were left out.").arg(kMaxReferences));
 			break;
 		}
 		if (!references.contains(path)) {
@@ -434,7 +438,8 @@ void YouTubeThumbnailPicker::UpdateModelState()
 	QString source = Source();
 	bool usesRefs = QStringList{"sd", "gemini", "gemini_pro", "openai"}.contains(source);
 	refsBox->setEnabled(usesRefs);
-	refsBox->setToolTip(usesRefs ? QString() : QString("%1 can't use reference images.").arg(modelCombo->currentText()));
+	refsBox->setToolTip(usesRefs ? QString()
+				     : QString("%1 can't use reference images.").arg(modelCombo->currentText()));
 	/* Local Stable Diffusion is the only one with a strength setting */
 	refStrengthSlider->setEnabled(source == "sd");
 	QString note;
@@ -463,8 +468,9 @@ void YouTubeThumbnailPicker::AskToDownload()
 			.arg(downloadGb, 0, 'f', 1)
 			.arg(QDir::toNativeSeparators(QDir::homePath() + "/OBSYouTubeImageGen")));
 	if (answer != QMessageBox::Yes) {
-		emit YouTubeWorkflowManager::Instance()->LogMessageReceived(
-			"info", "Not downloaded. Remove the reference images, or pick a cloud model, to make images without it.");
+		emit YouTubeWorkflowManager::Instance() -> LogMessageReceived(
+			"info",
+			"Not downloaded. Remove the reference images, or pick a cloud model, to make images without it.");
 		return;
 	}
 	QJsonObject options = lastOptions;
@@ -491,8 +497,9 @@ void YouTubeThumbnailPicker::SetPhoto(const QString &path)
 {
 	photoPath = QFileInfo::exists(path) ? path : QString();
 	QPixmap pix(photoPath);
-	photoPreview->setPixmap(pix.isNull() ? QPixmap() : pix.scaled(photoPreview->size(), Qt::KeepAspectRatio,
-								     Qt::SmoothTransformation));
+	photoPreview->setPixmap(
+		pix.isNull() ? QPixmap()
+			     : pix.scaled(photoPreview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 	photoPreview->setToolTip(photoPath.isEmpty() ? "No photo attached" : photoPath);
 	attachButton->setText(photoPath.isEmpty() ? "📎 Attach photo" : "📎 Change photo");
 }

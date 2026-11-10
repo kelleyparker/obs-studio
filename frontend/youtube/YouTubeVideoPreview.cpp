@@ -26,7 +26,10 @@ namespace {
 QString FormatClock(double seconds)
 {
 	int s = std::max(0, int(seconds));
-	return s >= 3600 ? QString("%1:%2:%3").arg(s / 3600).arg(s / 60 % 60, 2, 10, QChar('0')).arg(s % 60, 2, 10, QChar('0'))
+	return s >= 3600 ? QString("%1:%2:%3")
+				   .arg(s / 3600)
+				   .arg(s / 60 % 60, 2, 10, QChar('0'))
+				   .arg(s % 60, 2, 10, QChar('0'))
 			 : QString("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
 }
 

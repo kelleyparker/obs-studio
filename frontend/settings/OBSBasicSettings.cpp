@@ -974,7 +974,6 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	ui->audioMsg->setVisible(false);
 	ui->advancedMsg->setVisible(false);
 	ui->advancedMsg2->setVisible(false);
-
 }
 
 OBSBasicSettings::~OBSBasicSettings()
@@ -6024,11 +6023,11 @@ void OBSBasicSettings::AdvAudioEncodersChanged()
 			      320);
 }
 
-
 void OBSBasicSettings::InitOutputGuidePanel()
 {
-	if (!ui->outputPage || !ui->verticalLayout_2 || !ui->frame)
+	if (!ui->outputPage || !ui->verticalLayout_2 || !ui->frame) {
 		return;
+	}
 
 	ui->verticalLayout_2->removeWidget(ui->frame);
 
@@ -6041,13 +6040,11 @@ void OBSBasicSettings::InitOutputGuidePanel()
 	QFrame *guidePanel = new QFrame(splitter);
 	guidePanel->setObjectName("outputGuidePanel");
 	guidePanel->setMinimumWidth(340);
-	guidePanel->setStyleSheet(
-		"QFrame#outputGuidePanel {"
-		"  background-color: palette(window);"
-		"  border: 1px solid palette(mid);"
-		"  border-radius: 6px;"
-		"}"
-	);
+	guidePanel->setStyleSheet("QFrame#outputGuidePanel {"
+				  "  background-color: palette(window);"
+				  "  border: 1px solid palette(mid);"
+				  "  border-radius: 6px;"
+				  "}");
 
 	QVBoxLayout *guideLayout = new QVBoxLayout(guidePanel);
 	guideLayout->setContentsMargins(10, 10, 10, 10);
@@ -6106,14 +6103,12 @@ void OBSBasicSettings::InitOutputGuidePanel()
 	guideBrowser->setObjectName("outputGuideBrowser");
 	guideBrowser->setOpenExternalLinks(true);
 	guideBrowser->setReadOnly(true);
-	guideBrowser->setStyleSheet(
-		"QTextBrowser#outputGuideBrowser {"
-		"  background-color: palette(base);"
-		"  border: 1px solid palette(mid);"
-		"  border-radius: 4px;"
-		"  font-size: 12px;"
-		"}"
-	);
+	guideBrowser->setStyleSheet("QTextBrowser#outputGuideBrowser {"
+				    "  background-color: palette(base);"
+				    "  border: 1px solid palette(mid);"
+				    "  border-radius: 4px;"
+				    "  font-size: 12px;"
+				    "}");
 	guideLayout->addWidget(guideBrowser, 1);
 
 	splitter->addWidget(guidePanel);
