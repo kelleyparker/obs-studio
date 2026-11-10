@@ -35,8 +35,10 @@ The README describes the features from a user's point of view.
   - All work is on `master`.
   - Do bigger changes on a `claude/**` branch and merge after the owner approves.
   - Commit or push only when the owner asks.
-  - Old branches still around: local `claude/cranky-saha-2e4879` and `feature/multistream`, and
-    remote `claude/nvenc-gpu-names` (already merged).
+  - One old local branch is left: `claude/cranky-saha-2e4879`, with its worktree in
+    `.claude/worktrees`. Its 2 commits are unmerged: an experimental per-step GPU choice, and music
+    on both GPUs, from 2026-11-01. They're superseded by the music GPU picker, so they're kept only
+    for reference.
 - **CI** (`.github/workflows/push.yaml`, `pr-pull.yaml`):
   - Pushes to `master` run the format checks and validators only. They don't build.
   - Pushes to `claude/**` branches, tags and pull requests build **Windows x64** only.
@@ -76,7 +78,7 @@ After the first configure, building just the frontend with MSBuild is faster:
   python -m unittest test_youtube_steps test_youtube_broll test_youtube_retakes test_youtube_script
   ```
 
-  `test_youtube_steps` alone has 136 tests and takes about 2 minutes.
+  `test_youtube_steps` alone has 137 tests and takes about 2 minutes.
 
 ## Code conventions that CI checks
 
@@ -366,5 +368,8 @@ Nothing is in progress. Ideas the owner has raised or that fell out of recent wo
    - Drag and resize in a canvas preview. This means making `OBSBasicPreview`, `SourceTree` and
      `OBSBasicTransform` work against a canvas other than the main one.
    - Then transitions, a canvas virtual camera, projectors and websocket support.
-4. **A new fork release:** `publish/**` should get one that includes the YouTube work, and
-   `.github/fork-release/notes.md` should be updated to match.
+4. **A new fork release** that includes the YouTube work:
+   - `.github/fork-release/notes.md` is already written for it.
+   - Set the tag, title, SHA and build run id in `fork-release.yaml`. The run id must come from a
+     `claude/**`, tag or PR build, since `master` pushes don't build.
+   - Then push a `publish/**` branch.

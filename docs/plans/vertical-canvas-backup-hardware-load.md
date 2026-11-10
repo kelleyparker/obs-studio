@@ -1,5 +1,14 @@
 # Built-in Vertical Canvas, Settings Backup & Restore, Hardware Load Projection
 
+> **Historical:** this is the October 2026 plan, kept as a record. Since then:
+>
+> - the fork has become Windows x64 only;
+> - the single vertical canvas has become up to 8 canvases (**Tools → Canvases**), with new class and file
+>   names;
+> - backup and restore and the multistream chat work are on `master`.
+>
+> [`HANDOFF.md`](../../HANDOFF.md) has the current state and what is left of Parts A and C.
+
 This plan has two parts:
 - **Part A** is the vertical canvas.
 - **Part B** is one-click backup and restore of settings.
