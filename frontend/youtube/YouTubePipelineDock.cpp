@@ -80,6 +80,23 @@ static QString MusicStepTitle(const QString &source)
 	return QString("6. Background Music (%1)").arg(YouTubeWorkflowManager::MusicSourceLabel(source));
 }
 
+static QString TranscribeStepTitle(const QString &model)
+{
+	return QString("2. Whisper Transcription (%1)").arg(model.isEmpty() ? QString("large-v3-turbo") : model);
+}
+
+/* "unlisted" -> "Unlisted" */
+static QString PrivacyLabel(const QString &privacy)
+{
+	QString p = privacy.isEmpty() ? QString("unlisted") : privacy;
+	return p.left(1).toUpper() + p.mid(1);
+}
+
+static QString UploadStepTitle(const QString &privacy)
+{
+	return QString("8. YouTube Upload (%1)").arg(PrivacyLabel(privacy));
+}
+
 struct MusicGpu {
 	QString name;
 	quint64 memory = 0;
@@ -223,8 +240,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QHBoxLayout *modeRow = new QHBoxLayout();
 	stepModeBtn = new QPushButton("👣 Step", container);
 	autoModeBtn = new QPushButton("⚡ Auto", container);
-	stepModeBtn->setToolTip("Stop for your approval: cuts, B-roll, title & description, music, thumbnail");
-	autoModeBtn->setToolTip("Run from recording to upload without stopping");
+	stepModeBtn->setToolTip(
+		"Stop for your approval: cuts, B-roll, title & description, music, thumbnail, and before publishing");
+	autoModeBtn->setToolTip("Run every checked step without stopping, then upload or export as set in Settings");
 	QButtonGroup *modeGroup = new QButtonGroup(container);
 	for (QPushButton *b : {stepModeBtn, autoModeBtn}) {
 		b->setCheckable(true);
@@ -333,13 +351,13 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		QString title;
 	};
 	const QList<StageDef> stageDefs = {{"remux", "1. Auto-Remux MKV → MP4"},
-					   {"transcribe", "2. Whisper Large-v3-Turbo Transcription"},
+					   {"transcribe", TranscribeStepTitle(mgr->GetConfig().whisperModel)},
 					   {"edit", "3. Cut Dead Air & Butchered Retakes"},
-					   {"broll", "4. Screen B-roll Plan & Review"},
-					   {"llm", "5. AI Title & SEO Description (Priority 1-4)"},
+					   {"broll", "4. B-roll (AI Pictures / Screen)"},
+					   {"llm", "5. AI Title & SEO Description"},
 					   {"music", MusicStepTitle(mgr->GetConfig().musicSource)},
-					   {"thumbnail", "7. Custom 1280x720 AI Thumbnail"},
-					   {"upload", "8. YouTube Upload (UNLISTED)"}};
+					   {"thumbnail", "7. Thumbnail (1280x720)"},
+					   {"upload", UploadStepTitle(mgr->GetConfig().privacyStatus)}};
 
 	for (const StageDef &def : stageDefs) {
 		QWidget *rowWidget = new QWidget(stagesGroup);
@@ -417,6 +435,11 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	/* The music source is set in Settings only, so Auto mode never changes from the dock */
 	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this,
 		[this](const QString &source) { stepRows["music"].titleLabel->setText(MusicStepTitle(source)); });
+	/* The Whisper model and upload privacy are also set in Settings only */
+	connect(mgr, &YouTubeWorkflowManager::SettingsSaved, this, [this, mgr]() {
+		stepRows["transcribe"].titleLabel->setText(TranscribeStepTitle(mgr->GetConfig().whisperModel));
+		stepRows["upload"].titleLabel->setText(UploadStepTitle(mgr->GetConfig().privacyStatus));
+	});
 
 	// 2b. B-roll review (shown while the pipeline waits for it)
 	brollReview = new YouTubeBrollReview(container);
@@ -690,7 +713,7 @@ void YouTubePipelineDock::OnReviewReady(const QString &gate, const QString &stat
 				     "you click Approve & Render there.");
 		OpenCutEditor(true);
 	} else if (gate == "broll") {
-		reviewLabel->setText("Accept or reject the B-roll suggestions below, then Render & Upload.");
+		reviewLabel->setText("Accept or reject the B-roll suggestions below, then Render & Continue.");
 	} else if (gate == "metadata") {
 		reviewLabel->setText("Edit the title and description below, then click Approve & Continue.");
 		submitBtn->setText("✅ Approve & Continue");
@@ -884,7 +907,8 @@ void YouTubePipelineDock::EditThumbnail()
 }
 
 void YouTubePipelineDock::OnPipelineCompleted(const QString &videoUrl, const QString &editedVideoPath,
-					      const QString &thumbnailPath, const QString &message)
+					      const QString &thumbnailPath, const QString &message,
+					      const QString &privacy)
 {
 	currentEditedVideoPath = editedVideoPath;
 	if (!thumbnailPath.isEmpty()) {
@@ -892,9 +916,11 @@ void YouTubePipelineDock::OnPipelineCompleted(const QString &videoUrl, const QSt
 	}
 	submitBtn->setEnabled(!videoUrl.isEmpty());
 	if (!videoUrl.isEmpty()) {
+		/* The privacy it was uploaded with, which can be lower than the setting (a template title isn't public) */
+		QString uploaded = privacy.isEmpty() ? QString("Uploaded")
+						     : QString("Uploaded (%1)").arg(PrivacyLabel(privacy));
 		youtubeUrlLabel->setText(
-			QString("🔗 <b>Uploaded (Unlisted):</b> <a style='color:#ff6666;' href='%1'>%1</a>")
-				.arg(videoUrl));
+			QString("🔗 <b>%1:</b> <a style='color:#ff6666;' href='%2'>%2</a>").arg(uploaded, videoUrl));
 	} else {
 		youtubeUrlLabel->setText(QString("📁 <b>Local Output Ready:</b> %1").arg(message));
 	}

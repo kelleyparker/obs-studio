@@ -109,7 +109,7 @@ YouTubeBrollReview::YouTubeBrollReview(QWidget *parent) : QGroupBox("🎞 B-roll
 	layout->addWidget(makeAllBtn);
 
 	QHBoxLayout *btnRow = new QHBoxLayout();
-	renderBtn = new QPushButton("🎬 Render && Upload", this);
+	renderBtn = new QPushButton("🎬 Render && Continue", this);
 	renderBtn->setStyleSheet("QPushButton { font-weight: bold; }");
 	new YouTubeHeartbeat(renderBtn);
 	skipBtn = new QPushButton("Skip B-roll", this);

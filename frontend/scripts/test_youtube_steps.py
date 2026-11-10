@@ -1742,6 +1742,17 @@ class SkipStepTests(unittest.TestCase):
         self.assertEqual(self.upload({"llm_provider": yp.SKIPPED_METADATA_BADGE})["privacy_status"], "unlisted")
         self.assertEqual(self.upload({"llm_provider": "Gemini"})["privacy_status"], "public")
 
+    def test_the_dock_is_told_the_privacy_the_upload_got(self):
+        def done(ctx):
+            ctx = dict({"input_video": "C:/v/rec.mp4", "final_video": "C:/v/rec_yt_edit.mp4", "total_duration": 5.0,
+                        "metadata": {"title": "rec"}}, **ctx)
+            with mock.patch.object(yp, "upload_to_youtube", return_value=("id", "url")),                     mock.patch.object(yp, "save_checkpoint"), mock.patch.object(yp, "emit_upload_stats"):
+                _, evs = run_events(yp.stage_upload, {"privacy_status": "public"}, ctx)
+            return [e["privacy"] for e in evs if e["type"] == "complete"]
+
+        self.assertEqual(done({"llm_provider": "Gemini"}), ["public"])
+        self.assertEqual(done({"llm_provider": yp.TEMPLATE_METADATA_BADGE}), ["unlisted"])
+
     def test_a_skipped_thumbnail_isnt_uploaded(self):
         self.assertEqual(self.upload({"thumbnail_skipped": True})["thumbnail_path"], "")
         self.assertTrue(self.upload({})["thumbnail_path"].endswith("rec_yt_thumb.jpg"))

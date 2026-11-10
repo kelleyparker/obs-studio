@@ -29,16 +29,16 @@ namespace {
 QString ProviderDisplayName(const QString &key)
 {
 	if (key == "gemini") {
-		return "Google Gemini (Gemini 2.5 Flash + Nano Banana Thumbnail)";
+		return "Google Gemini (Gemini 3 Flash)";
 	}
 	if (key == "openai") {
-		return "ChatGPT / OpenAI (GPT-4o + GPT Image Thumbnail)";
+		return "ChatGPT / OpenAI (GPT-4o)";
 	}
 	if (key == "claude") {
-		return "Anthropic Claude (Claude Sonnet Copywriting + Hybrid Thumbnail)";
+		return "Anthropic Claude (Claude Sonnet 5.5)";
 	}
 	if (key == "local") {
-		return "Local GPU LLM (Ollama on RTX GPU + Smart Frame Compositor — 100% Free)";
+		return "Local Ollama (free, on this PC)";
 	}
 	return key;
 }
@@ -141,15 +141,15 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 
 	QFormLayout *prioTopForm = new QFormLayout();
 	preferredDefaultCombo = new QComboBox(prioGroup);
-	preferredDefaultCombo->addItem("Google Gemini (Gemini 2.5 + Nano Banana)", "gemini");
-	preferredDefaultCombo->addItem("ChatGPT / OpenAI (GPT-4o + GPT Image)", "openai");
-	preferredDefaultCombo->addItem("Anthropic Claude (Sonnet + Smart Frame)", "claude");
-	preferredDefaultCombo->addItem("Local GPU LLM (Ollama + Smart Frame — 100% Free)", "local");
+	preferredDefaultCombo->addItem("Google Gemini (Gemini 3 Flash)", "gemini");
+	preferredDefaultCombo->addItem("ChatGPT / OpenAI (GPT-4o)", "openai");
+	preferredDefaultCombo->addItem("Anthropic Claude (Claude Sonnet 5.5)", "claude");
+	preferredDefaultCombo->addItem("Local Ollama (free, on this PC)", "local");
 	prioTopForm->addRow("Preferred Default (Promotes to Priority #1):", preferredDefaultCombo);
 	prioLayout->addLayout(prioTopForm);
 
 	QLabel *prioHint = new QLabel(
-		"<i>Fallback Chain Order (1 = Highest Priority → 4 = Guaranteed Local GPU Fallback if a cloud key is blank or out of quota):</i>",
+		"<i>The order the title, description and B-roll plan are asked for (1 first; the next is tried when a key is blank, out of quota or fails). If none answers, a template title is used. Thumbnails and music have their own settings below.</i>",
 		prioGroup);
 	prioHint->setWordWrap(true);
 	prioLayout->addWidget(prioHint);
@@ -257,7 +257,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	modelForm->addRow("Script writer:", scriptRow);
 
 	whisperModelCombo = new QComboBox(prioGroup);
-	whisperModelCombo->addItem("large-v3-turbo (Recommended — 8x Faster RTX CUDA FP16)", "large-v3-turbo");
+	whisperModelCombo->addItem("large-v3-turbo (Recommended — fast, NVIDIA CUDA FP16)", "large-v3-turbo");
 	whisperModelCombo->addItem("large-v3 (Maximum Accuracy CUDA FP16)", "large-v3");
 	whisperModelCombo->addItem("medium (Balanced)", "medium");
 	whisperModelCombo->addItem("small (Lightweight)", "small");
@@ -271,7 +271,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	ollamaModelCombo->addItem("qwen3:14b");
 	ollamaModelCombo->addItem("qwen2.5-coder:14b");
 	ollamaModelCombo->addItem("qwen3:32b");
-	modelForm->addRow("Local GPU Ollama LLM (RTX 5070 / RTX 3050):", ollamaModelCombo);
+	modelForm->addRow("Local Ollama model:", ollamaModelCombo);
 
 	prioLayout->addLayout(modelForm);
 	mainLayout->addWidget(prioGroup);
@@ -960,6 +960,7 @@ void YouTubeSettingsWidget::SaveToManager()
 	mgr->SaveConfig();
 	emit mgr->ThumbnailImageSourceChanged(cfg.thumbnailImageSource);
 	emit mgr->MusicSourceChanged(cfg.musicSource);
+	emit mgr->SettingsSaved();
 	/* The dock's step checkboxes for music and B-roll follow these two */
 	emit mgr->StepEnabledChanged("music", cfg.musicEnabled);
 	emit mgr->StepEnabledChanged("broll", cfg.brollEnabled);
@@ -1002,7 +1003,7 @@ QString YouTubeSettingsWidget::BrollAmountName(int amount)
 void YouTubeSettingsWidget::FillThumbnailImageSources(QComboBox *combo)
 {
 	combo->addItem("Local Stable Diffusion XL (free, on this PC, default)", "sd");
-	combo->addItem("Local Ollama image model (free, macOS only for now)", "local");
+	combo->addItem("Local Ollama image model (free; Ollama doesn't make images on Windows yet)", "local");
 	combo->addItem("Google Nano Banana 2 (paid)", "gemini");
 	combo->addItem("Google Nano Banana Pro (paid, best quality)", "gemini_pro");
 	combo->addItem("OpenAI GPT Image 2 (paid)", "openai");

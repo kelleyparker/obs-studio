@@ -9,7 +9,7 @@ class QVariantAnimation;
 class QWidget;
 
 /* A green heartbeat glow around the button that moves a Step-mode job on
- * (Approve & Render, Render & Upload, Use this music...). It beats only while
+ * (Approve & Render, Render & Continue, Use this music...). It beats only while
  * the button is visible and enabled, so clicking it (which disables or hides
  * it) stops the beat. With Windows animations off the glow holds steady. */
 class YouTubeHeartbeat : public QObject {

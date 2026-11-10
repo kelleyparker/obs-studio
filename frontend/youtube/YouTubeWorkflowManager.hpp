@@ -19,7 +19,8 @@ struct YouTubeWorkflowConfig {
 	QString whisperModel = "large-v3-turbo";
 	QString ollamaModel = "gemma4:12b";
 
-	// "step" stops for approval at each review gate; "auto" runs from recording to upload
+	// "step" stops for approval at each review gate; "auto" runs every checked step without stopping, then
+	// uploads, exports for Premiere Pro or both (autoFinish)
 	QString pipelineMode = "step";
 	// AI thumbnail images: "sd" (free local Stable Diffusion), "local" (free Ollama), "gemini" (Nano Banana 2),
 	// "gemini_pro" (Nano Banana Pro), "openai" (GPT Image), "claude" (paid) or "off"
@@ -31,7 +32,8 @@ struct YouTubeWorkflowConfig {
 	// Lyria with the Gemini key, billed per song; ACE-Step stands in for any song it can't make)
 	bool musicEnabled = true;
 	QString musicSource = "acestep";
-	// The GPU ACE-Step makes the music on, by name ("NVIDIA GeForce RTX 3050"); empty for the one with the most memory
+	// The GPU ACE-Step makes the music on, by name ("NVIDIA GeForce RTX 3050"); empty for Auto, which prefers a
+	// GPU with no monitor on it, else the one with the most memory
 	QString musicGpu;
 	// Pipeline steps unchecked in the dock (remux, transcribe, edit, llm, thumbnail, upload); music and broll
 	// use musicEnabled and brollEnabled instead
@@ -52,7 +54,7 @@ struct YouTubeWorkflowConfig {
 	// Bring the voice to YouTube's -14 LUFS in the edit
 	bool normalizeLoudness = true;
 
-	// Screen B-roll: record this source alongside the webcam and cut to it
+	// B-roll: AI pictures of what is said and/or a screen source recorded alongside the webcam (brollSourceName)
 	bool brollEnabled = false;
 	QString brollSourceName;
 	QString brollStyle = "pip"; // "pip" (webcam bubble over the screen) or "cutaway"
@@ -203,8 +205,9 @@ signals:
 	void MetadataGenerated(const QString &title, const QStringList &alternativeTitles, const QString &description,
 			       const QString &hookText, const QString &providerBadge);
 	void ThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
+	/* `privacy` is what the upload got ("unlisted", "private", "public"); empty when nothing was uploaded */
 	void PipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
-			       const QString &message);
+			       const QString &message, const QString &privacy);
 	void UploadStatsReady(const QString &statsText);
 	void BrollPlanReady(const QString &planPath, const QString &statePath);
 	/* Step mode: the run is paused until the user approves this gate */
@@ -213,6 +216,8 @@ signals:
 	void PipelineModeChanged(const QString &mode);
 	void ThumbnailImageSourceChanged(const QString &source);
 	void MusicSourceChanged(const QString &source);
+	/* Settings → YouTube Automation was saved (the Whisper model, upload privacy, ...) */
+	void SettingsSaved();
 	void MusicGpuChanged(const QString &gpu);
 	void StepEnabledChanged(const QString &key, bool on);
 	void VideoUpdateFinished(bool ok, const QString &message);

@@ -38,7 +38,7 @@ private slots:
 				 const QString &hookText, const QString &providerBadge);
 	void OnThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
 	void OnPipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
-				 const QString &message);
+				 const QString &message, const QString &privacy);
 	void OnLogMessageReceived(const QString &level, const QString &message);
 	void OnUploadStatsReady(const QString &statsText);
 	void OnVideoUpdateFinished(bool ok, const QString &message);

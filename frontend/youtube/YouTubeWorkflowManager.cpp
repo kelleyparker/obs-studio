@@ -468,17 +468,17 @@ void YouTubeWorkflowManager::OnRemuxFinished(const QString &remuxedMp4Path, bool
 
 QString YouTubeWorkflowManager::ResolvePipelineScriptPath() const
 {
+	/* The build copies the scripts into the data folder (frontend/cmake/ui-docks.cmake) */
 	QString appDir = QCoreApplication::applicationDirPath();
-	QStringList candidates = {
-		QDir::cleanPath(appDir + "/../../data/obs-studio/scripts/youtube_pipeline.py"),
-		QDir::cleanPath(appDir + "/scripts/youtube_pipeline.py"),
-		QStringLiteral("C:/Users/cliffgoat/git/obs-studio/frontend/scripts/youtube_pipeline.py")};
+	QStringList candidates = {QDir::cleanPath(appDir + "/../../data/obs-studio/scripts/youtube_pipeline.py"),
+				  QDir::cleanPath(appDir + "/scripts/youtube_pipeline.py")};
 	for (const QString &c : candidates) {
 		if (QFileInfo::exists(c)) {
 			return c;
 		}
 	}
-	return candidates.last();
+	/* Missing: the error names where it should be */
+	return candidates.first();
 }
 
 QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
@@ -611,7 +611,7 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 
 	bool stepMode = config.pipelineMode == "step";
 	emit PipelineStateChanged(stepMode ? "⚙️ Step mode: analyzing, then waiting for you to review the cuts..."
-					   : "⚙️ Auto mode: edit, thumbnail & upload without stopping...",
+					   : "⚙️ Auto mode: running every checked step without stopping...",
 				  true);
 	if (StepEnabled("remux")) {
 		emit StepProgressUpdated("remux", 100, "MP4 Ready");
@@ -1650,22 +1650,22 @@ void YouTubeWorkflowManager::ProcessJsonEvent(const QByteArray &line)
 		QString thumbPath = obj.value("thumbnail_path").toString();
 		QString msg = obj.value("message").toString();
 		emit PipelineStateChanged(QString("✅ %1").arg(msg), false);
-		emit PipelineCompleted(url, editedVideo, thumbPath, msg);
+		emit PipelineCompleted(url, editedVideo, thumbPath, msg, obj.value("privacy").toString());
 		emit LogMessageReceived("info", msg);
 	} else if (type == "upload_pending") {
 		QString editedVideo = obj.value("edited_video").toString();
 		QString thumbPath = obj.value("thumbnail_path").toString();
 		QString msg = obj.value("message").toString();
 		emit PipelineStateChanged(QString("📁 %1").arg(msg), false);
-		emit PipelineCompleted(QString(), editedVideo, thumbPath, msg);
+		emit PipelineCompleted(QString(), editedVideo, thumbPath, msg, QString());
 	} else if (type == "error") {
 		QString msg = obj.value("message").toString();
 		emit PipelineStateChanged(QString("❌ Error: %1").arg(msg), false);
 		emit LogMessageReceived("error", msg);
 	} else if (type == "broll_plan_ready") {
 		int count = obj.value("insert_count").toInt();
-		emit PipelineStateChanged(QString("👀 Review %1 B-roll spot(s) below, then Render & Upload").arg(count),
-					  false);
+		emit PipelineStateChanged(
+			QString("👀 Review %1 B-roll spot(s) below, then Render & Continue").arg(count), false);
 		for (const QJsonValue note : obj.value("notes").toArray()) {
 			emit LogMessageReceived("warning", note.toString());
 		}

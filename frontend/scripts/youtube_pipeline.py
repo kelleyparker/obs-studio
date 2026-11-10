@@ -4535,8 +4535,8 @@ def upload_to_youtube(
     oauth_token_json: str
 ) -> tuple[str, str]:
     """
-    Uploads the edited MP4 video to YouTube as UNLISTED (or configured privacy)
-    and sets the custom 1280x720 thumbnail.
+    Uploads the edited MP4 video to YouTube with the configured privacy (stage_upload makes a public
+    upload unlisted when the title is a template or the file name) and sets the 1280x720 thumbnail, if any.
     """
     if not oauth_token_json:
         raise ValueError("YouTube account not connected yet. Open Settings -> YouTube Automation and click 'Connect Google Account'.")
@@ -5275,6 +5275,7 @@ def stage_upload(config: dict, ctx: dict) -> int:
             url=video_url,
             edited_video=final_video_to_upload,
             thumbnail_path=thumbnail_jpg,
+            privacy=privacy_status,
             message=f"Uploaded as {privacy_status.upper()}: {video_url}"
         )
         return 0
