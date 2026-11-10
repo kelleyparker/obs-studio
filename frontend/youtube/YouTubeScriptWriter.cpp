@@ -56,7 +56,7 @@ struct EffortInfo {
 	int thinkingTokens; /* a rough guess at the thinking a script takes at this effort */
 };
 const EffortInfo kEfforts[] = {
-	{"low", "Low", 1000},       {"medium", "Medium", 3000}, {"high", "High", 6000},
+	{"low", "Low", 1000},           {"medium", "Medium", 3000}, {"high", "High", 6000},
 	{"xhigh", "Extra high", 10000}, {"max", "Max", 16000},
 };
 
@@ -209,7 +209,8 @@ YouTubeScriptWriter::YouTubeScriptWriter(QWidget *parent) : QDialog(parent)
 	QVBoxLayout *rightLayout = new QVBoxLayout(right);
 	rightLayout->setContentsMargins(6, 0, 0, 0);
 	scriptEdit = new QPlainTextEdit(right);
-	scriptEdit->setPlaceholderText("The script appears here as Claude writes it. You can edit it before reading it.");
+	scriptEdit->setPlaceholderText(
+		"The script appears here as Claude writes it. You can edit it before reading it.");
 	QFont scriptFont = scriptEdit->font();
 	scriptFont.setPointSizeF(scriptFont.pointSizeF() * 1.15);
 	scriptEdit->setFont(scriptFont);
@@ -339,9 +340,9 @@ void YouTubeScriptWriter::ShowIdeas(const QJsonArray &ideas, const QString &cost
 	ideasList->clear();
 	for (const QJsonValue &v : ideas) {
 		QJsonObject idea = v.toObject();
-		QListWidgetItem *item =
-			new QListWidgetItem(QString("%1\n%2").arg(idea.value("title").toString(), idea.value("angle").toString()),
-					    ideasList);
+		QListWidgetItem *item = new QListWidgetItem(QString("%1\n%2").arg(idea.value("title").toString(),
+										  idea.value("angle").toString()),
+							    ideasList);
 		item->setToolTip(idea.value("why").toString());
 		item->setData(Qt::UserRole, idea.value("title").toString());
 		item->setData(Qt::UserRole + 1, idea.value("angle").toString());
@@ -409,7 +410,8 @@ bool YouTubeScriptWriter::Save()
 		title.remove(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1f]"));
 		QDir dir(YouTubeWorkflowManager::ScriptsFolder());
 		dir.mkpath(".");
-		QString stem = QString("%1 %2").arg(QDate::currentDate().toString("yyyy-MM-dd"), title.left(80).trimmed());
+		QString stem =
+			QString("%1 %2").arg(QDate::currentDate().toString("yyyy-MM-dd"), title.left(80).trimmed());
 		currentPath = dir.filePath(stem + ".md");
 		for (int v = 2; QFileInfo::exists(currentPath); ++v) {
 			currentPath = dir.filePath(QString("%1 v%2.md").arg(stem).arg(v));
@@ -442,7 +444,8 @@ void YouTubeScriptWriter::OpenTeleprompter()
 void YouTubeScriptWriter::OpenSaved(const QString &path)
 {
 	if (scriptEdit->document()->isModified() &&
-	    QMessageBox::question(this, "Open script", "Open another script? Your edits to this one haven't been saved.",
+	    QMessageBox::question(this, "Open script",
+				  "Open another script? Your edits to this one haven't been saved.",
 				  QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) {
 		return;
 	}
@@ -510,8 +513,8 @@ void YouTubeScriptWriter::UpdateStatus(const QString &extra)
 		statusLabel->setText(extra);
 		return;
 	}
-	QStringList parts{QString("%1 words · about %2 min to read").arg(words).arg(words / (double)kWordsPerMinute, 0,
-										   'f', 1)};
+	QStringList parts{
+		QString("%1 words · about %2 min to read").arg(words).arg(words / (double)kWordsPerMinute, 0, 'f', 1)};
 	if (!lastCost.isEmpty()) {
 		parts << QString("cost %1").arg(lastCost);
 	}
@@ -524,10 +527,9 @@ void YouTubeScriptWriter::UpdateStatus(const QString &extra)
 void YouTubeScriptWriter::closeEvent(QCloseEvent *event)
 {
 	if (scriptEdit->document()->isModified() && !scriptEdit->toPlainText().trimmed().isEmpty()) {
-		QMessageBox::StandardButton answer =
-			QMessageBox::question(this, "Script Writer", "Save your edits to this script?",
-					      QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-					      QMessageBox::Save);
+		QMessageBox::StandardButton answer = QMessageBox::question(
+			this, "Script Writer", "Save your edits to this script?",
+			QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
 		if (answer == QMessageBox::Cancel || (answer == QMessageBox::Save && !Save())) {
 			event->ignore();
 			return;

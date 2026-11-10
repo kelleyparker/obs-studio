@@ -40,8 +40,7 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
 			}
 		},
 		Qt::DirectConnection);
-	connect(
-		YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::WorkflowArmedChanged, this,
+	connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::WorkflowArmedChanged, this,
 		[this](bool armed) {
 			ui->youtubeWorkflowButton->setText(armed ? "⏹ YT" : "▶ YT");
 			ui->youtubeWorkflowButton->setStyleSheet(

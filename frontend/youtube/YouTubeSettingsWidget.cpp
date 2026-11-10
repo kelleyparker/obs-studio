@@ -5,7 +5,6 @@
 
 #include <obs.h>
 
-
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -29,14 +28,18 @@
 namespace {
 QString ProviderDisplayName(const QString &key)
 {
-	if (key == "gemini")
+	if (key == "gemini") {
 		return "Google Gemini (Gemini 2.5 Flash + Nano Banana Thumbnail)";
-	if (key == "openai")
+	}
+	if (key == "openai") {
 		return "ChatGPT / OpenAI (GPT-4o + GPT Image Thumbnail)";
-	if (key == "claude")
+	}
+	if (key == "claude") {
 		return "Anthropic Claude (Claude Sonnet Copywriting + Hybrid Thumbnail)";
-	if (key == "local")
+	}
+	if (key == "local") {
 		return "Local GPU LLM (Ollama on RTX GPU + Smart Frame Compositor — 100% Free)";
+	}
 	return key;
 }
 
@@ -55,11 +58,13 @@ QString SearchText(QWidget *root)
 		} else if (auto *button = qobject_cast<QAbstractButton *>(w)) {
 			parts << button->text();
 		} else if (auto *combo = qobject_cast<QComboBox *>(w)) {
-			for (int i = 0; i < combo->count(); ++i)
+			for (int i = 0; i < combo->count(); ++i) {
 				parts << combo->itemText(i);
+			}
 		} else if (auto *list = qobject_cast<QListWidget *>(w)) {
-			for (int i = 0; i < list->count(); ++i)
+			for (int i = 0; i < list->count(); ++i) {
 				parts << list->item(i)->text();
+			}
 		} else if (auto *edit = qobject_cast<QLineEdit *>(w)) {
 			parts << edit->placeholderText();
 		}
@@ -72,8 +77,9 @@ void CollectWidgets(QLayoutItem *item, QList<QWidget *> &out)
 	if (QWidget *w = item->widget()) {
 		out << w;
 	} else if (QLayout *layout = item->layout()) {
-		for (int i = 0; i < layout->count(); ++i)
+		for (int i = 0; i < layout->count(); ++i) {
 			CollectWidgets(layout->itemAt(i), out);
+		}
 	}
 }
 
@@ -82,8 +88,9 @@ QString SearchText(QLayoutItem *item)
 	QList<QWidget *> widgets;
 	CollectWidgets(item, widgets);
 	QStringList parts;
-	for (QWidget *w : widgets)
+	for (QWidget *w : widgets) {
 		parts << SearchText(w);
+	}
 	return parts.join('\n');
 }
 } // namespace
@@ -129,8 +136,7 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	// =========================================================================
 	// SECTION 1: 1-to-4 AI Provider Priority Ranking & Models
 	// =========================================================================
-	QGroupBox *prioGroup =
-		new QGroupBox("1. AI Provider Priority Ranking (1 to 4) & Local GPU Models", container);
+	QGroupBox *prioGroup = new QGroupBox("1. AI Provider Priority Ranking (1 to 4) & Local GPU Models", container);
 	QVBoxLayout *prioLayout = new QVBoxLayout(prioGroup);
 
 	QFormLayout *prioTopForm = new QFormLayout();
@@ -175,8 +181,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"and the reference images you attach at the thumbnail step.");
 	modelForm->addRow("AI thumbnail images:", thumbnailImageSourceCombo);
 
-	cloudImageFallbackCheck = new QCheckBox("Try the other cloud image models if one is out of quota or its key fails",
-						prioGroup);
+	cloudImageFallbackCheck =
+		new QCheckBox("Try the other cloud image models if one is out of quota or its key fails", prioGroup);
 	cloudImageFallbackCheck->setChecked(true);
 	cloudImageFallbackCheck->setToolTip(
 		"Nano Banana Pro, Nano Banana 2 and GPT Image are tried in turn (only those with an API key saved below)\n"
@@ -209,14 +215,16 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	thumbnailImageModelCombo->setEditable(true);
 	thumbnailImageModelCombo->addItem("x/z-image-turbo");
 	thumbnailImageModelCombo->addItem("x/flux2-klein");
-	thumbnailImageModelCombo->setToolTip("Ollama image model for local thumbnails. Install it with: ollama pull <name>");
+	thumbnailImageModelCombo->setToolTip(
+		"Ollama image model for local thumbnails. Install it with: ollama pull <name>");
 	modelForm->addRow("Local image model (Ollama):", thumbnailImageModelCombo);
 
 	autoFinishCombo = new QComboBox(prioGroup);
 	autoFinishCombo->addItem("Upload to YouTube", "upload");
 	autoFinishCombo->addItem("Export to Premiere Pro (don't upload)", "premiere");
 	autoFinishCombo->addItem("Both: export to Premiere Pro and upload", "both");
-	autoFinishCombo->setToolTip("What Auto mode does with the finished edit. Step mode always asks you at the end.");
+	autoFinishCombo->setToolTip(
+		"What Auto mode does with the finished edit. Step mode always asks you at the end.");
 	modelForm->addRow("When Auto mode finishes:", autoFinishCombo);
 
 	/* Script writer: Claude writes the script before you record (📝 Script… in the YouTube dock) */
@@ -237,11 +245,11 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		"Uses the Claude API key below and is billed per script. Only your topic, notes and past video titles\n"
 		"are sent, never your recordings. Higher effort thinks longer: better on hard topics, slower, costs more.");
 	auto updateScriptCost = [this]() {
-		scriptCostLabel->setText(
-			QString("~$%1 per 8-min script")
-				.arg(YouTubeScriptWriter::EstimateCost(scriptModelCombo->currentData().toString(),
-								      scriptEffortCombo->currentData().toString(), 8.0),
-				     0, 'f', 2));
+		scriptCostLabel->setText(QString("~$%1 per 8-min script")
+						 .arg(YouTubeScriptWriter::EstimateCost(
+							      scriptModelCombo->currentData().toString(),
+							      scriptEffortCombo->currentData().toString(), 8.0),
+						      0, 'f', 2));
 	};
 	connect(scriptModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, updateScriptCost);
 	connect(scriptEffortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, updateScriptCost);
@@ -314,10 +322,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 		return rowW;
 	};
 
-	vaultForm->addRow("Google Gemini API Key:",
-			  makeKeyRow(geminiKeyEdit, "AIza... (Locked to OBS DPAPI Vault)"));
-	vaultForm->addRow("ChatGPT / OpenAI API Key:",
-			  makeKeyRow(openaiKeyEdit, "sk-... (Locked to OBS DPAPI Vault)"));
+	vaultForm->addRow("Google Gemini API Key:", makeKeyRow(geminiKeyEdit, "AIza... (Locked to OBS DPAPI Vault)"));
+	vaultForm->addRow("ChatGPT / OpenAI API Key:", makeKeyRow(openaiKeyEdit, "sk-... (Locked to OBS DPAPI Vault)"));
 	vaultForm->addRow("Anthropic Claude API Key:",
 			  makeKeyRow(claudeKeyEdit, "sk-ant-... (Locked to OBS DPAPI Vault)"));
 	vaultLayout->addLayout(vaultForm);
@@ -590,7 +596,8 @@ YouTubeSettingsWidget::YouTubeSettingsWidget(QWidget *parent) : QWidget(parent)
 	connect(YouTubeWorkflowManager::Instance(), &YouTubeWorkflowManager::OAuthStatusUpdated, this,
 		[this](bool connected, const QString &channelTitle, const QString &message) {
 			if (connected) {
-				oauthStatusLabel->setText(QString("✅ Connected to YouTube Channel: %1").arg(channelTitle));
+				oauthStatusLabel->setText(
+					QString("✅ Connected to YouTube Channel: %1").arg(channelTitle));
 				oauthStatusLabel->setStyleSheet("font-weight: bold; color: #7fff9f;");
 			} else {
 				oauthStatusLabel->setText(QString("⚠️ YouTube OAuth: %1").arg(message));
@@ -626,9 +633,11 @@ void YouTubeSettingsWidget::ApplyFilter(const QString &text)
 		auto filterForm = [&](QFormLayout *form) {
 			for (int row = 0; row < form->rowCount(); ++row) {
 				QString haystack;
-				for (auto role : {QFormLayout::LabelRole, QFormLayout::FieldRole, QFormLayout::SpanningRole}) {
-					if (QLayoutItem *item = form->itemAt(row, role))
+				for (auto role :
+				     {QFormLayout::LabelRole, QFormLayout::FieldRole, QFormLayout::SpanningRole}) {
+					if (QLayoutItem *item = form->itemAt(row, role)) {
 						haystack += SearchText(item) + '\n';
+					}
 				}
 				const bool show = showAll || matches(haystack);
 				form->setRowVisible(row, show);
@@ -649,11 +658,13 @@ void YouTubeSettingsWidget::ApplyFilter(const QString &text)
 				}
 				QList<QWidget *> widgets;
 				CollectWidgets(item, widgets);
-				if (widgets.isEmpty())
+				if (widgets.isEmpty()) {
 					continue;
+				}
 				const bool show = showAll || matches(SearchText(item));
-				for (QWidget *w : widgets)
+				for (QWidget *w : widgets) {
 					w->setVisible(show);
+				}
 				sectionShown |= show;
 			}
 		}
@@ -811,8 +822,9 @@ void YouTubeSettingsWidget::LoadFromManager()
 	SetPriorityKeys(cfg.priorityList);
 
 	int sourceIdx = thumbnailImageSourceCombo->findData(cfg.thumbnailImageSource);
-	if (sourceIdx >= 0)
+	if (sourceIdx >= 0) {
 		thumbnailImageSourceCombo->setCurrentIndex(sourceIdx);
+	}
 	thumbnailImageModelCombo->setCurrentText(cfg.thumbnailImageModel);
 	cloudImageFallbackCheck->setChecked(cfg.cloudImageFallback);
 	musicEnabledCheck->setChecked(cfg.musicEnabled);
@@ -822,8 +834,9 @@ void YouTubeSettingsWidget::LoadFromManager()
 	scriptEffortCombo->setCurrentIndex(std::max(0, scriptEffortCombo->findData(cfg.scriptEffort)));
 
 	int wIdx = whisperModelCombo->findData(cfg.whisperModel);
-	if (wIdx >= 0)
+	if (wIdx >= 0) {
 		whisperModelCombo->setCurrentIndex(wIdx);
+	}
 
 	ollamaModelCombo->setCurrentText(cfg.ollamaModel);
 
@@ -844,12 +857,14 @@ void YouTubeSettingsWidget::LoadFromManager()
 	}
 
 	int privIdx = privacyCombo->findData(cfg.privacyStatus);
-	if (privIdx >= 0)
+	if (privIdx >= 0) {
 		privacyCombo->setCurrentIndex(privIdx);
+	}
 
 	int catIdx = categoryCombo->findData(cfg.categoryId);
-	if (catIdx >= 0)
+	if (catIdx >= 0) {
 		categoryCombo->setCurrentIndex(catIdx);
+	}
 
 	madeForKidsCheck->setChecked(cfg.madeForKids);
 
@@ -865,8 +880,7 @@ void YouTubeSettingsWidget::LoadFromManager()
 	} else if (qFuzzyCompare(cfg.silenceDb, -36.0) && qFuzzyCompare(cfg.minSilenceSec, 0.70) &&
 		   qFuzzyCompare(cfg.paddingSec, 0.15) && cfg.cutRetakes) {
 		editingPresetCombo->setCurrentIndex(1); // Aggressive
-	} else if (qFuzzyCompare(cfg.silenceDb, -42.0) && qFuzzyCompare(cfg.minSilenceSec, 1.20) &&
-		   !cfg.cutRetakes) {
+	} else if (qFuzzyCompare(cfg.silenceDb, -42.0) && qFuzzyCompare(cfg.minSilenceSec, 1.20) && !cfg.cutRetakes) {
 		editingPresetCombo->setCurrentIndex(2); // Dead-Air Only
 	} else {
 		editingPresetCombo->setCurrentIndex(3); // Custom

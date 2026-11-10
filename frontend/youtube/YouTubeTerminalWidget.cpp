@@ -37,8 +37,9 @@ protected:
 		const MSG *msg = static_cast<const MSG *>(message);
 		if (msg->message == WM_PARENTNOTIFY && onChildClicked) {
 			const UINT what = LOWORD(msg->wParam);
-			if (what == WM_LBUTTONDOWN || what == WM_RBUTTONDOWN || what == WM_MBUTTONDOWN)
+			if (what == WM_LBUTTONDOWN || what == WM_RBUTTONDOWN || what == WM_MBUTTONDOWN) {
 				onChildClicked();
+			}
 		}
 		return QWidget::nativeEvent(eventType, message, result);
 	}
@@ -54,8 +55,9 @@ BOOL CALLBACK FindConsoleWindowProc(HWND hwnd, LPARAM lParam)
 	auto *search = reinterpret_cast<ConsoleSearch *>(lParam);
 	DWORD pid = 0;
 	GetWindowThreadProcessId(hwnd, &pid);
-	if (std::find(search->pids.begin(), search->pids.end(), pid) == search->pids.end())
+	if (std::find(search->pids.begin(), search->pids.end(), pid) == search->pids.end()) {
 		return TRUE;
+	}
 
 	wchar_t cls[64] = {};
 	if (GetClassNameW(hwnd, cls, 64) && wcscmp(cls, L"ConsoleWindowClass") == 0) {
@@ -73,12 +75,14 @@ HWND FindJobConsoleWindow(HANDLE job)
 	std::vector<BYTE> buf(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + maxPids * sizeof(ULONG_PTR));
 	auto *list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST *>(buf.data());
 	if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, (DWORD)buf.size(), nullptr) &&
-	    GetLastError() != ERROR_MORE_DATA)
+	    GetLastError() != ERROR_MORE_DATA) {
 		return nullptr;
+	}
 
 	ConsoleSearch search;
-	for (DWORD i = 0; i < list->NumberOfProcessIdsInList; i++)
+	for (DWORD i = 0; i < list->NumberOfProcessIdsInList; i++) {
 		search.pids.push_back((DWORD)list->ProcessIdList[i]);
+	}
 	EnumWindows(FindConsoleWindowProc, reinterpret_cast<LPARAM>(&search));
 	return search.hwnd;
 }
@@ -102,8 +106,9 @@ YouTubeTerminalWidget::YouTubeTerminalWidget(QWidget *parent) : QWidget(parent)
 #ifdef _WIN32
 	ConsoleHostWidget *consoleHost = new ConsoleHostWidget(this);
 	consoleHost->onChildClicked = [this]() {
-		if (consoleHwnd)
+		if (consoleHwnd) {
 			SetFocus(reinterpret_cast<HWND>(consoleHwnd));
+		}
 	};
 	host = consoleHost;
 #else
@@ -253,8 +258,9 @@ void YouTubeTerminalWidget::StopShell()
 void YouTubeTerminalWidget::AttachConsoleWindow()
 {
 #ifdef _WIN32
-	if (!job || consoleHwnd)
+	if (!job || consoleHwnd) {
 		return;
+	}
 
 	HWND hwnd = FindJobConsoleWindow(reinterpret_cast<HANDLE>(job));
 	if (!hwnd) {
@@ -285,8 +291,9 @@ void YouTubeTerminalWidget::AttachConsoleWindow()
 void YouTubeTerminalWidget::FitConsoleWindow()
 {
 #ifdef _WIN32
-	if (!consoleHwnd)
+	if (!consoleHwnd) {
 		return;
+	}
 
 	RECT rc = {};
 	GetClientRect(reinterpret_cast<HWND>(host->winId()), &rc);

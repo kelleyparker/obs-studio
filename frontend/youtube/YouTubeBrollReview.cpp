@@ -103,8 +103,9 @@ YouTubeBrollReview::YouTubeBrollReview(QWidget *parent) : QGroupBox("🎞 B-roll
 	layout->addLayout(styleRow);
 
 	makeAllBtn = new QPushButton(this);
-	makeAllBtn->setToolTip("Makes a picture for every ticked spot that doesn't have one yet. The job keeps "
-			       "waiting here, so you can look at them, change a prompt and remake any before rendering.");
+	makeAllBtn->setToolTip(
+		"Makes a picture for every ticked spot that doesn't have one yet. The job keeps "
+		"waiting here, so you can look at them, change a prompt and remake any before rendering.");
 	layout->addWidget(makeAllBtn);
 
 	QHBoxLayout *btnRow = new QHBoxLayout();
@@ -188,8 +189,8 @@ void YouTubeBrollReview::LoadPlan(const QString &planPath_, const QString &state
 
 		QVBoxLayout *info = new QVBoxLayout();
 		row.accept = new QCheckBox(QString("%1 %2 – %3  (%4s)")
-						   .arg(row.picture ? "🖼 Picture" : "🖥 Screen", FormatTime(row.editedStart),
-							FormatTime(row.editedEnd))
+						   .arg(row.picture ? "🖼 Picture" : "🖥 Screen",
+							FormatTime(row.editedStart), FormatTime(row.editedEnd))
 						   .arg(row.editedEnd - row.editedStart, 0, 'f', 1),
 					   frame);
 		QString status = ins.value("status").toString();
@@ -225,7 +226,8 @@ void YouTubeBrollReview::LoadPlan(const QString &planPath_, const QString &state
 			makeRow->addWidget(new QLabel("Make with:", frame));
 			row.source = new QComboBox(frame);
 			YouTubeSettingsWidget::FillBrollImageSources(row.source, true);
-			row.source->setCurrentIndex(std::max(0, row.source->findData(ins.value("source").toString("sd"))));
+			row.source->setCurrentIndex(
+				std::max(0, row.source->findData(ins.value("source").toString("sd"))));
 			makeRow->addWidget(row.source, 1);
 			row.makeBtn = new QPushButton(row.hasImage ? "↻ Remake" : "🖼 Make", frame);
 			makeRow->addWidget(row.makeBtn);
@@ -310,8 +312,7 @@ void YouTubeBrollReview::PickSpots(int amount)
 	double budget = std::max(0.0, maxCoverage * editedTotal - screenSec);
 
 	std::stable_sort(pictures.begin(), pictures.end(), [](const InsertRow *a, const InsertRow *b) {
-		return a->confidence != b->confidence ? a->confidence > b->confidence
-						      : a->editedStart < b->editedStart;
+		return a->confidence != b->confidence ? a->confidence > b->confidence : a->editedStart < b->editedStart;
 	});
 	QList<InsertRow *> chosen;
 	double used = 0.0;
@@ -406,9 +407,9 @@ void YouTubeBrollReview::UpdateSummary()
 	}
 	costLabel->setText(text);
 	makeAllBtn->setText(todo ? QString("🖼 Make images (%1, ~%2%3)")
-					   .arg(todo)
-					   .arg(clock(seconds))
-					   .arg(cost > 0 ? QString(", ~$%1").arg(cost, 0, 'f', 2) : QString())
+					    .arg(todo)
+					    .arg(clock(seconds))
+					    .arg(cost > 0 ? QString(", ~$%1").arg(cost, 0, 'f', 2) : QString())
 				 : QString("🖼 Make images"));
 	makeAllBtn->setEnabled(!busy && todo > 0);
 }

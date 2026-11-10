@@ -98,7 +98,8 @@ static QList<MusicGpu> NvidiaGpus()
 	Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
 	for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
 		DXGI_ADAPTER_DESC1 desc;
-		if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != 0x10DE || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+		if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != 0x10DE ||
+		    (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
 			continue;
 		}
 		QString name = QString::fromWCharArray(desc.Description).trimmed();
@@ -162,9 +163,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	// 1. Top Status Banner
 	statusBanner = new QLabel(IDLE_BANNER, container);
 	statusBanner->setWordWrap(true);
-	statusBanner->setStyleSheet(
-		"QLabel { background-color: #2b1d38; color: #f0e6ff; border: 1px solid #ff3333; "
-		"border-radius: 6px; padding: 8px; font-weight: bold; }");
+	statusBanner->setStyleSheet("QLabel { background-color: #2b1d38; color: #f0e6ff; border: 1px solid #ff3333; "
+				    "border-radius: 6px; padding: 8px; font-weight: bold; }");
 	mainLayout->addWidget(statusBanner);
 
 	// 1a. The job the dock shows: put it away and start clean, or open a saved one where it was left
@@ -173,8 +173,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	QPushButton *newProjectBtn = new QPushButton("🆕 New Project", container);
 	newProjectBtn->setToolTip("Put the current job away and start clean; its files stay next to the recording");
 	QPushButton *openRecentBtn = new QPushButton("🕘 Open Recent", container);
-	openRecentBtn->setToolTip("Reopen the newest job where it was left, e.g. after OBS or the PC shut down "
-				  "unexpectedly. If the newest file is a recording with no job yet, it offers to start one.");
+	openRecentBtn->setToolTip(
+		"Reopen the newest job where it was left, e.g. after OBS or the PC shut down "
+		"unexpectedly. If the newest file is a recording with no job yet, it offers to start one.");
 	QPushButton *openProjectBtn = new QPushButton("📂 Open Project…", container);
 	openProjectBtn->setToolTip(
 		"Pick a saved job (or a recording) and carry on where it was left, in the Step or Auto mode it ran in");
@@ -232,9 +233,10 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	modeGroup->setExclusive(true);
 	imageSourceCombo = new QComboBox(container);
 	YouTubeSettingsWidget::FillThumbnailImageSources(imageSourceCombo);
-	imageSourceCombo->setToolTip("The image model for thumbnails: Auto mode makes one with it, and Step mode starts "
-				     "with it (you can pick another, write the prompt and add reference images at the "
-				     "thumbnail step). Also in Settings → YouTube Automation.");
+	imageSourceCombo->setToolTip(
+		"The image model for thumbnails: Auto mode makes one with it, and Step mode starts "
+		"with it (you can pick another, write the prompt and add reference images at the "
+		"thumbnail step). Also in Settings → YouTube Automation.");
 	modeRow->addWidget(new QLabel("Mode:", container));
 	modeRow->addWidget(stepModeBtn);
 	modeRow->addWidget(autoModeBtn);
@@ -244,13 +246,13 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	mainLayout->addLayout(modeRow);
 
 	SetModeButtons(mgr->GetConfig().pipelineMode);
-	imageSourceCombo->setCurrentIndex(std::max(0, imageSourceCombo->findData(mgr->GetConfig().thumbnailImageSource)));
+	imageSourceCombo->setCurrentIndex(
+		std::max(0, imageSourceCombo->findData(mgr->GetConfig().thumbnailImageSource)));
 	connect(stepModeBtn, &QPushButton::clicked, mgr, [mgr]() { mgr->SetPipelineMode("step"); });
 	connect(autoModeBtn, &QPushButton::clicked, mgr, [mgr]() { mgr->SetPipelineMode("auto"); });
 	connect(mgr, &YouTubeWorkflowManager::PipelineModeChanged, this, &YouTubePipelineDock::SetModeButtons);
-	connect(imageSourceCombo, QOverload<int>::of(&QComboBox::activated), this, [this, mgr](int index) {
-		mgr->SetThumbnailImageSource(imageSourceCombo->itemData(index).toString());
-	});
+	connect(imageSourceCombo, QOverload<int>::of(&QComboBox::activated), this,
+		[this, mgr](int index) { mgr->SetThumbnailImageSource(imageSourceCombo->itemData(index).toString()); });
 	connect(mgr, &YouTubeWorkflowManager::ThumbnailImageSourceChanged, this, [this](const QString &source) {
 		int idx = imageSourceCombo->findData(source);
 		if (idx >= 0) {
@@ -290,8 +292,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	uploadNowBtn->setStyleSheet("font-weight: bold;");
 	new YouTubeHeartbeat(uploadNowBtn);
 	QPushButton *exportBtn = new QPushButton("🎬 Export to Premiere Pro", publishRow);
-	exportBtn->setToolTip("Write a Premiere Pro sequence of the edit and open it on Premiere Pro's timeline; the job "
-			      "keeps waiting so you can upload later");
+	exportBtn->setToolTip(
+		"Write a Premiere Pro sequence of the edit and open it on Premiere Pro's timeline; the job "
+		"keeps waiting so you can upload later");
 	QPushButton *uploadFileBtn = new QPushButton("⬆ Upload a different file…", publishRow);
 	uploadFileBtn->setToolTip("Upload your own finished file (e.g. rendered from Premiere) with this title, "
 				  "description and thumbnail");
@@ -329,16 +332,14 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		QString key;
 		QString title;
 	};
-	const QList<StageDef> stageDefs = {
-		{"remux", "1. Auto-Remux MKV → MP4"},
-		{"transcribe", "2. Whisper Large-v3-Turbo Transcription"},
-		{"edit", "3. Cut Dead Air & Butchered Retakes"},
-		{"broll", "4. Screen B-roll Plan & Review"},
-		{"llm", "5. AI Title & SEO Description (Priority 1-4)"},
-		{"music", MusicStepTitle(mgr->GetConfig().musicSource)},
-		{"thumbnail", "7. Custom 1280x720 AI Thumbnail"},
-		{"upload", "8. YouTube Upload (UNLISTED)"}
-	};
+	const QList<StageDef> stageDefs = {{"remux", "1. Auto-Remux MKV → MP4"},
+					   {"transcribe", "2. Whisper Large-v3-Turbo Transcription"},
+					   {"edit", "3. Cut Dead Air & Butchered Retakes"},
+					   {"broll", "4. Screen B-roll Plan & Review"},
+					   {"llm", "5. AI Title & SEO Description (Priority 1-4)"},
+					   {"music", MusicStepTitle(mgr->GetConfig().musicSource)},
+					   {"thumbnail", "7. Custom 1280x720 AI Thumbnail"},
+					   {"upload", "8. YouTube Upload (UNLISTED)"}};
 
 	for (const StageDef &def : stageDefs) {
 		QWidget *rowWidget = new QWidget(stagesGroup);
@@ -414,9 +415,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		ApplyStepLook(key);
 	});
 	/* The music source is set in Settings only, so Auto mode never changes from the dock */
-	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, [this](const QString &source) {
-		stepRows["music"].titleLabel->setText(MusicStepTitle(source));
-	});
+	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this,
+		[this](const QString &source) { stepRows["music"].titleLabel->setText(MusicStepTitle(source)); });
 
 	// 2b. B-roll review (shown while the pipeline waits for it)
 	brollReview = new YouTubeBrollReview(container);
@@ -449,9 +449,10 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 
 	QHBoxLayout *thumbRow = new QHBoxLayout();
 	editThumbBtn = new QPushButton("✏ Edit", metaGroup);
-	editThumbBtn->setToolTip("Open the thumbnail in your image editor. Save it there and the preview updates; after "
-				 "the upload, Submit to YouTube replaces it on the video.\nThe same picture without the "
-				 "text is next to it as _yt_thumb_bg.jpg.");
+	editThumbBtn->setToolTip(
+		"Open the thumbnail in your image editor. Save it there and the preview updates; after "
+		"the upload, Submit to YouTube replaces it on the video.\nThe same picture without the "
+		"text is next to it as _yt_thumb_bg.jpg.");
 	showThumbBtn = new QPushButton("📂 Show file", metaGroup);
 	showThumbBtn->setToolTip("Show the thumbnail file in File Explorer");
 	editThumbBtn->setEnabled(false);
@@ -470,7 +471,8 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		}
 		/* Editors often save by replacing the file, which drops it from the watcher; give them a moment */
 		QTimer::singleShot(400, this, [this]() {
-			if (QFileInfo::exists(currentThumbnailPath) && !thumbWatcher->files().contains(currentThumbnailPath)) {
+			if (QFileInfo::exists(currentThumbnailPath) &&
+			    !thumbWatcher->files().contains(currentThumbnailPath)) {
 				thumbWatcher->addPath(currentThumbnailPath);
 			}
 			/* The pipeline writes it too; only a change made while nothing runs is an edit */
@@ -540,9 +542,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 			ApproveMetadata();
 			return;
 		}
-		YouTubeWorkflowManager::Instance()->SubmitVideoEdits(titleEdit->text().trimmed(),
-								      descriptionEdit->toPlainText(),
-								      thumbnailEdited ? currentThumbnailPath : QString());
+		YouTubeWorkflowManager::Instance()->SubmitVideoEdits(
+			titleEdit->text().trimmed(), descriptionEdit->toPlainText(),
+			thumbnailEdited ? currentThumbnailPath : QString());
 	});
 	metaLayout->addWidget(submitBtn);
 
@@ -607,7 +609,9 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 	connect(mgr, &YouTubeWorkflowManager::VideoUpdateFinished, this, &YouTubePipelineDock::OnVideoUpdateFinished);
 	connect(mgr, &YouTubeWorkflowManager::BrollPlanReady, brollReview, &YouTubeBrollReview::LoadPlan);
 	connect(mgr, &YouTubeWorkflowManager::BrollPlanReady, this,
-		[this](const QString &planPath, const QString &statePath) { OnReviewReady("broll", statePath, planPath); });
+		[this](const QString &planPath, const QString &statePath) {
+			OnReviewReady("broll", statePath, planPath);
+		});
 	connect(mgr, &YouTubeWorkflowManager::ReviewReady, this, &YouTubePipelineDock::OnReviewReady);
 	connect(mgr, &YouTubeWorkflowManager::ReviewCleared, this, &YouTubePipelineDock::OnReviewCleared);
 
@@ -700,8 +704,9 @@ void YouTubePipelineDock::OnReviewReady(const QString &gate, const QString &stat
 				     "uploaded yet.");
 		thumbnailPicker->LoadCandidates(dataPath, statePath);
 	} else if (gate == "publish") {
-		reviewLabel->setText("Everything is ready. Upload it to YouTube, export it for Premiere Pro to fine-tune "
-				     "(the job keeps waiting), upload your own finished file, or finish here.");
+		reviewLabel->setText(
+			"Everything is ready. Upload it to YouTube, export it for Premiere Pro to fine-tune "
+			"(the job keeps waiting), upload your own finished file, or finish here.");
 	}
 	reviewPanel->show();
 }
@@ -774,8 +779,7 @@ void YouTubePipelineDock::OnPipelineStateChanged(const QString &bannerText, bool
 	cancelBtn->setEnabled(running || !reviewGate.isEmpty());
 	/* Making new thumbnails, songs or B-roll pictures keeps the job waiting at its step */
 	YouTubeWorkflowManager *mgr = YouTubeWorkflowManager::Instance();
-	if (running && !mgr->IsRegeneratingThumbnails() && !mgr->IsRegeneratingMusic() &&
-	    !mgr->IsMakingBrollImages()) {
+	if (running && !mgr->IsRegeneratingThumbnails() && !mgr->IsRegeneratingMusic() && !mgr->IsMakingBrollImages()) {
 		/* A new run (or the next stage) replaces whatever was being reviewed or offered to continue */
 		if (!reviewGate.isEmpty() || !continueState.isEmpty()) {
 			OnReviewCleared();
@@ -889,7 +893,8 @@ void YouTubePipelineDock::OnPipelineCompleted(const QString &videoUrl, const QSt
 	submitBtn->setEnabled(!videoUrl.isEmpty());
 	if (!videoUrl.isEmpty()) {
 		youtubeUrlLabel->setText(
-			QString("🔗 <b>Uploaded (Unlisted):</b> <a style='color:#ff6666;' href='%1'>%1</a>").arg(videoUrl));
+			QString("🔗 <b>Uploaded (Unlisted):</b> <a style='color:#ff6666;' href='%1'>%1</a>")
+				.arg(videoUrl));
 	} else {
 		youtubeUrlLabel->setText(QString("📁 <b>Local Output Ready:</b> %1").arg(message));
 	}
@@ -946,8 +951,8 @@ void YouTubePipelineDock::ShowStartOverDialog()
 	QDialog dialog(this);
 	dialog.setWindowTitle("Start over");
 	QVBoxLayout *layout = new QVBoxLayout(&dialog);
-	layout->addWidget(new QLabel(QString("Redo <b>%1</b> from:").arg(QFileInfo(video).fileName().toHtmlEscaped()),
-				     &dialog));
+	layout->addWidget(
+		new QLabel(QString("Redo <b>%1</b> from:").arg(QFileInfo(video).fileName().toHtmlEscaped()), &dialog));
 	struct Choice {
 		QString from;
 		QString label;
@@ -974,10 +979,10 @@ void YouTubePipelineDock::ShowStartOverDialog()
 
 	QCheckBox *deleteCheck = nullptr;
 	if (!mgr->GetLastVideoId().isEmpty()) {
-		deleteCheck = new QCheckBox(
-			QString("Also delete the uploaded video from YouTube (%1)")
-				.arg(mgr->GetLastVideoUrl().isEmpty() ? mgr->GetLastVideoId() : mgr->GetLastVideoUrl()),
-			&dialog);
+		deleteCheck = new QCheckBox(QString("Also delete the uploaded video from YouTube (%1)")
+						    .arg(mgr->GetLastVideoUrl().isEmpty() ? mgr->GetLastVideoId()
+											  : mgr->GetLastVideoUrl()),
+					    &dialog);
 		deleteCheck->setChecked(true);
 		layout->addWidget(deleteCheck);
 	}
@@ -998,10 +1003,11 @@ void YouTubePipelineDock::ShowStartOverDialog()
 
 bool YouTubePipelineDock::ConfirmStopRunningJob()
 {
-	return QMessageBox::question(this, "A step is still running",
-				     "The current job is still working on a step. Stop it?\n\nWhat it finished before is "
-				     "saved, so Open Project can continue it later.",
-				     QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+	return QMessageBox::question(
+		       this, "A step is still running",
+		       "The current job is still working on a step. Stop it?\n\nWhat it finished before is "
+		       "saved, so Open Project can continue it later.",
+		       QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
 }
 
 void YouTubePipelineDock::ResetJobView()
@@ -1107,8 +1113,9 @@ void YouTubePipelineDock::RestoreJobView(const QString &statePath)
 		OnReviewReady(cfg.pendingReviewGate, statePath, cfg.pendingReviewData);
 	} else if (next != "done" && ctx.value("pending_gate").toString().isEmpty()) {
 		continueState = statePath;
-		reviewLabel->setText("This job didn't finish: OBS was closed or the job was stopped partway. Continue "
-				     "runs the rest from where it stopped, in the Step or Auto mode it was started in.");
+		reviewLabel->setText(
+			"This job didn't finish: OBS was closed or the job was stopped partway. Continue "
+			"runs the rest from where it stopped, in the Step or Auto mode it was started in.");
 		openCutEditorBtn->hide();
 		reviewWatchBtn->hide();
 		publishRow->hide();
@@ -1230,8 +1237,8 @@ QList<YouTubePipelineDock::ProjectRow> YouTubePipelineDock::ListProjects(const Q
 		rows.append(row);
 	}
 	/* One row per recording, the remuxed MP4 before the MKV it came from */
-	QFileInfoList videos = d.entryInfoList({"*.mp4"}, QDir::Files) +
-			       d.entryInfoList({"*.mov", "*.mkv"}, QDir::Files);
+	QFileInfoList videos =
+		d.entryInfoList({"*.mp4"}, QDir::Files) + d.entryInfoList({"*.mov", "*.mkv"}, QDir::Files);
 	for (const QFileInfo &f : videos) {
 		QString stem = f.completeBaseName();
 		/* The pipeline's own outputs and B-roll screen recordings aren't projects */
@@ -1290,8 +1297,7 @@ void YouTubePipelineDock::OpenRecentProject()
 	/* A recording with no job yet gets OpenProjectPath's own "Start the pipeline?" question */
 	if (newest->path.endsWith("_yt_state.json")) {
 		QString question = QString("Open your most recent project?\n\n%1\n%2  ·  %3")
-					   .arg(newest->title, newest->status,
-						newest->when.toString("MMM d, h:mm AP"));
+					   .arg(newest->title, newest->status, newest->when.toString("MMM d, h:mm AP"));
 		if (QMessageBox::question(this, "Open Recent", question, QMessageBox::Yes | QMessageBox::Cancel,
 					  QMessageBox::Yes) != QMessageBox::Yes) {
 			return;
@@ -1447,8 +1453,8 @@ void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath, bool open)
 	 * given), so a copy with a new name each time keeps an earlier conversion from getting in the way */
 	QDir temp(QDir::temp().filePath("obs_premiere"));
 	temp.mkpath(".");
-	QString name = QString("%1 %2").arg(xml.completeBaseName(),
-					    QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
+	QString name =
+		QString("%1 %2").arg(xml.completeBaseName(), QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
 	QString xmlCopy = temp.filePath(name + ".xml");
 	QString scriptPath = temp.filePath("open_in_premiere.jsx");
 	QString script = QString("// Written by OBS: opens the exported sequence on Premiere Pro's timeline\n"
@@ -1473,9 +1479,10 @@ void YouTubePipelineDock::OnPremiereExported(const QString &xmlPath, bool open)
 	scriptFile.close();
 
 	if (QProcess::startDetached(exe, {"/C", "es.processFile", ShortPath(scriptPath)})) {
-		OnLogMessageReceived("info", QString("Opening the sequence on Premiere Pro's timeline (project: %1). Drag "
-						     "any cut's edge to widen or tighten it.")
-						     .arg(QDir::toNativeSeparators(project)));
+		OnLogMessageReceived("info",
+				     QString("Opening the sequence on Premiere Pro's timeline (project: %1). Drag "
+					     "any cut's edge to widen or tighten it.")
+					     .arg(QDir::toNativeSeparators(project)));
 	} else {
 		OnLogMessageReceived("error", QString("Could not start %1").arg(exe));
 	}

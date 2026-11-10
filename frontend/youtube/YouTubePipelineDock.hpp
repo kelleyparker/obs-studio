@@ -34,9 +34,8 @@ public:
 private slots:
 	void OnPipelineStateChanged(const QString &bannerText, bool running);
 	void OnStepProgressUpdated(const QString &stepName, int percent, const QString &message);
-	void OnMetadataGenerated(const QString &title, const QStringList &alternativeTitles,
-				 const QString &description, const QString &hookText,
-				 const QString &providerBadge);
+	void OnMetadataGenerated(const QString &title, const QStringList &alternativeTitles, const QString &description,
+				 const QString &hookText, const QString &providerBadge);
 	void OnThumbnailGenerated(const QString &thumbnailPath, const QString &providerBadge);
 	void OnPipelineCompleted(const QString &videoUrl, const QString &editedVideoPath, const QString &thumbnailPath,
 				 const QString &message);
