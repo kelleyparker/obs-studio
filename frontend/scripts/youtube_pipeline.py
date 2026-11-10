@@ -4360,8 +4360,8 @@ def stage_music(config: dict, ctx: dict, gates: set) -> str | None:
     ctx.setdefault("voice_video", ctx["final_video"])
     ctx["final_video"] = ctx["voice_video"]
     ctx.pop("music", None)
-    if not config.get("music_enabled", True):
-        update_step("music", 100, "Skipped (music is off).")
+    if skipped(config, "music"):
+        update_step("music", 100, "Skipped.")
         return None
 
     step_mode = "music" in gates
@@ -4810,6 +4810,22 @@ def review_gates(config: dict) -> set:
     return {"broll"} if (config.get("broll") or {}).get("review", True) else set()
 
 
+# The dock's 8 steps, any of which can be unchecked (config["skip_steps"]) so the run skips it
+PIPELINE_STEPS = ("remux", "transcribe", "edit", "broll", "llm", "music", "thumbnail", "upload")
+SKIPPED_METADATA_BADGE = "Skipped (the title is the file name)"
+
+
+def skipped(config: dict, step: str) -> bool:
+    """True when the run leaves out `step` (one of PIPELINE_STEPS)."""
+    if step in (config.get("skip_steps") or []):
+        return True
+    if step == "music":
+        return not config.get("music_enabled", True)
+    if step == "broll":
+        return not (config.get("broll") or {}).get("enabled")
+    return False
+
+
 def pause_for_review(config: dict, ctx: dict, gate: str) -> str:
     """Save everything the next stage needs (never the secrets) and let OBS relaunch us in resume_pipeline mode."""
     ctx["pending_gate"] = gate
@@ -4841,18 +4857,34 @@ def stage_analyze(config: dict) -> dict | None:
     log_info(f"Starting YouTube Auto-Edit Pipeline for '{ os.path.basename(input_video) }' ({total_duration:.1f}s)")
 
     # STAGE 1: Whisper Transcription
-    update_step("transcribe", 5, f"Starting Whisper ({whisper_model}) CUDA transcription...")
-    try:
-        segments = transcribe_video(input_video, model_name=whisper_model, gpu_index=1)
-    except Exception as e:
-        log_warn(f"Whisper encountered an issue ({e}); continuing with audio silence cutting.")
+    if skipped(config, "transcribe"):
         segments = []
+        update_step("transcribe", 100, "Skipped.")
+    else:
+        update_step("transcribe", 5, f"Starting Whisper ({whisper_model}) CUDA transcription...")
+        try:
+            segments = transcribe_video(input_video, model_name=whisper_model, gpu_index=1)
+        except Exception as e:
+            log_warn(f"Whisper encountered an issue ({e}); continuing with audio silence cutting.")
+            segments = []
 
     # Save transcript alongside video
     if segments:
         with open(paths["transcript_file"], "w", encoding="utf-8") as tf:
             for s in segments:
                 tf.write(f"[{s['start']:.2f}s - {s['end']:.2f}s] {s['text']}\n")
+
+    if skipped(config, "edit"):
+        update_step("edit", 60, "Skipped (nothing cut).")
+        return {
+            "input_video": input_video,
+            "total_duration": total_duration,
+            "segments": segments,
+            "keep_intervals": [[0.0, total_duration]],
+            "retake_cuts": [],
+            "broll_plan_path": "",
+            "next_stage": "broll_plan",
+        }
 
     # STAGE 2: Dead Air & Butchered Sentence Detection
     update_step("edit", 15, f"Detecting dead air (threshold: {silence_db} dB, min: {min_silence_sec}s)...")
@@ -4891,8 +4923,8 @@ def stage_broll_plan(config: dict, ctx: dict, gates: set) -> str | None:
     """Plans B-roll on the (reviewed) cut list. Returns 'broll' to pause for review, else None."""
     ctx["next_stage"] = "render"
     broll_cfg = config.get("broll") or {}
-    if not broll_cfg.get("enabled"):
-        update_step("broll", 100, "Skipped (B-roll is off).")
+    if skipped(config, "broll"):
+        update_step("broll", 100, "Skipped.")
         return None
 
     paths = pipeline_paths(ctx["input_video"])
@@ -5039,10 +5071,16 @@ def stage_render(config: dict, ctx: dict) -> None:
 
     kept_duration = sum(b - a for a, b in keep_intervals) if keep_intervals else total_duration
     removed_sec = max(0.0, total_duration - kept_duration)
+    no_cuts = skipped(config, "edit")
     with_broll = f" with {len(broll['inserts'])} B-roll inserts" if broll else ""
-    update_step("edit", 65, f"Rendering edited MP4 via NVENC{with_broll} (removed {removed_sec:.1f}s of dead air/retakes)...")
-
-    rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, broll, gain)
+    if no_cuts and not broll and not gain:
+        # Nothing to cut, insert or level: the recording itself is the video
+        rendered = False
+        log_info("Cutting is off and nothing else changes the video, so the recording is used as it is.")
+    else:
+        what = "nothing cut" if no_cuts else f"removed {removed_sec:.1f}s of dead air/retakes"
+        update_step("edit", 65, f"Rendering edited MP4 via NVENC{with_broll} ({what})...")
+        rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, broll, gain)
     if not rendered and broll:
         log_warn("B-roll render failed; rendering the plain edit instead.")
         rendered = render_edited_video(input_video, edited_video, keep_intervals, total_duration, gain_db=gain)
@@ -5060,10 +5098,11 @@ def stage_render(config: dict, ctx: dict) -> None:
         ctx["rendered"] = False
         ctx["joins"] = []
         ctx["voice_gain_db"] = 0.0
-        log_warn("Using original remuxed MP4 for upload.")
+        if not (no_cuts and not broll and not gain):
+            log_warn("Using original remuxed MP4 for upload.")
 
     ctx["voice_video"] = ctx["final_video"]
-    update_step("edit", 100, f"Video edit complete (-{removed_sec:.1f}s trimmed).")
+    update_step("edit", 100, "Skipped (nothing cut)." if no_cuts else f"Video edit complete (-{removed_sec:.1f}s trimmed).")
     emit("render_ready", video=ctx["final_video"], duration=round(kept_duration, 3), joins=ctx["joins"])
     ctx["next_stage"] = "metadata"
     save_checkpoint(config, ctx)
@@ -5099,13 +5138,20 @@ def stage_metadata(config: dict, ctx: dict, gates: set) -> str | None:
         # Chapters must use the trimmed video's timeline, not the raw recording's.
         segments = remap_segments_to_edited_timeline(segments, [tuple(k) for k in ctx["keep_intervals"]])
 
-    update_step("llm", 10, "Generating Title & SEO Description via Priority Chain...")
-    metadata, llm_provider_used = generate_metadata_with_priority(
-        priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
-        secrets=config.get("secrets", {}),
-        ollama_model=config.get("ollama_model", "gemma4:12b"),
-        segments=segments
-    )
+    no_llm = skipped(config, "llm") or skipped(config, "transcribe")
+    if no_llm:
+        # No AI title: the recording's file name, and only your social links below it
+        metadata = {"title": os.path.splitext(os.path.basename(ctx["input_video"]))[0], "alternative_titles": [],
+                    "description": "", "tags": [], "thumbnail_hook": ""}
+        llm_provider_used = SKIPPED_METADATA_BADGE
+    else:
+        update_step("llm", 10, "Generating Title & SEO Description via Priority Chain...")
+        metadata, llm_provider_used = generate_metadata_with_priority(
+            priority_list=config.get("priority_list", ["gemini", "openai", "claude", "local"]),
+            secrets=config.get("secrets", {}),
+            ollama_model=config.get("ollama_model", "gemma4:12b"),
+            segments=segments
+        )
     metadata["description"] = append_social_footer(metadata.get("description", ""))
     ctx["metadata"] = metadata
     ctx["llm_provider"] = llm_provider_used
@@ -5113,6 +5159,10 @@ def stage_metadata(config: dict, ctx: dict, gates: set) -> str | None:
     write_titles_file(paths["titles_file"], metadata.get("title", ""), metadata.get("alternative_titles", []))
     emit_metadata(ctx)
 
+    if no_llm:
+        update_step("llm", 100, "Skipped (the title is the file name)." if skipped(config, "llm")
+                    else "Skipped (transcription is off, so the title is the file name).")
+        return None
     if "metadata" in gates:
         write_json_file(paths["metadata_file"], {
             "version": 1,
@@ -5132,6 +5182,13 @@ def stage_metadata(config: dict, ctx: dict, gates: set) -> str | None:
 def stage_thumbnails(config: dict, ctx: dict, gates: set) -> str | None:
     """Thumbnail candidates. Step mode: 4 frames + 4 AI to choose from. Auto: one AI thumbnail."""
     paths = pipeline_paths(ctx["input_video"])
+    if skipped(config, "thumbnail"):
+        # No custom thumbnail, so YouTube picks a frame (an old _yt_thumb.jpg is never sent)
+        ctx["thumbnail_skipped"] = True
+        ctx["next_stage"] = "publish"
+        update_step("thumbnail", 100, "Skipped (YouTube picks a frame).")
+        return None
+    ctx.pop("thumbnail_skipped", None)
     step_mode = "thumbnail" in gates
     options = dict(config.get("thumb_options") or {})
     options.update(ctx.get("thumb_options") or {})
@@ -5175,7 +5232,7 @@ def use_chosen_thumbnail(ctx: dict):
 def stage_upload(config: dict, ctx: dict) -> int:
     """YouTube Upload + Custom Thumbnail (of the edit, or of the finished file the user picked)."""
     final_video_to_upload = ctx.get("upload_file") or ctx["final_video"]
-    thumbnail_jpg = pipeline_paths(ctx["input_video"])["thumbnail_jpg"]
+    thumbnail_jpg = job_thumbnail(ctx)
     metadata = ctx["metadata"]
     privacy_status = config.get("privacy_status", "unlisted")
     secrets = config.get("secrets", {})
@@ -5193,7 +5250,7 @@ def stage_upload(config: dict, ctx: dict) -> int:
         )
         return 0
 
-    if ctx.get("llm_provider") == TEMPLATE_METADATA_BADGE and privacy_status == "public":
+    if ctx.get("llm_provider") in (TEMPLATE_METADATA_BADGE, SKIPPED_METADATA_BADGE) and privacy_status == "public":
         privacy_status = "unlisted"
         log_warn("Uploading as UNLISTED instead of public because the title is a template; review it first.")
 
@@ -5233,12 +5290,17 @@ def stage_upload(config: dict, ctx: dict) -> int:
         return 0
 
 
-def finish_without_upload(config: dict, ctx: dict, message: str) -> int:
+def job_thumbnail(ctx: dict) -> str:
+    """The thumbnail this job uploads: {stem}_yt_thumb.jpg, or "" when the thumbnail step was skipped."""
+    return "" if ctx.get("thumbnail_skipped") else pipeline_paths(ctx["input_video"])["thumbnail_jpg"]
+
+
+def finish_without_upload(config: dict, ctx: dict, message: str, step_text: str = "Not uploaded (finished locally).") -> int:
     ctx["next_stage"] = "done"
     save_checkpoint(config, ctx)
-    update_step("upload", 100, "Not uploaded (finished locally).")
+    update_step("upload", 100, step_text)
     emit("complete", video_id="", url="", edited_video=ctx.get("final_video", ""),
-         thumbnail_path=pipeline_paths(ctx["input_video"])["thumbnail_jpg"], message=message)
+         thumbnail_path=job_thumbnail(ctx), message=message)
     return 0
 
 
@@ -5318,7 +5380,7 @@ def export_premiere_project(ctx: dict, open_in_premiere: bool = False) -> str:
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml)
 
-    if os.path.exists(paths["thumbnail_jpg"]):
+    if job_thumbnail(ctx) and os.path.exists(paths["thumbnail_jpg"]):
         shutil.copyfile(paths["thumbnail_jpg"], os.path.join(out_dir, "thumbnail.jpg"))
     if metadata:
         alts = "\n".join(f"- {t}" for t in metadata.get("alternative_titles", []))
@@ -5387,6 +5449,12 @@ def run_stages(config: dict, ctx: dict) -> int:
         stage = ctx.get("next_stage", "render")
         if stage == "cuts_review":
             ctx["next_stage"] = "broll_plan"
+            if skipped(config, "edit"):
+                # Nothing cut, also for a job analyzed before the step was unchecked
+                ctx.pop("reuse_cuts", None)
+                ctx["keep_intervals"] = [[0.0, float(ctx["total_duration"])]]
+                update_step("edit", 60, "Skipped (nothing cut).")
+                continue
             cuts = cuts_from_keep([tuple(k) for k in ctx["keep_intervals"]],
                                   [tuple(c) for c in ctx.get("retake_cuts", [])], float(ctx["total_duration"]))
             if ctx.pop("reuse_cuts", False) and os.path.exists(paths["cuts_file"]):
@@ -5411,6 +5479,9 @@ def run_stages(config: dict, ctx: dict) -> int:
                      count=len(cuts), removed_sec=round(removed, 2))
                 return 0
         elif stage == "broll_plan":
+            if skipped(config, "edit"):
+                # Also after a cuts review read back on resume, when cutting was unchecked while it waited
+                ctx["keep_intervals"] = [[0.0, float(ctx["total_duration"])]]
             if stage_broll_plan(config, ctx, gates) == "broll":
                 state_file = pause_for_review(config, ctx, "broll")
                 plan = read_json_file(ctx["broll_plan_path"])
@@ -5440,6 +5511,14 @@ def run_stages(config: dict, ctx: dict) -> int:
             save_checkpoint(config, ctx)
         elif stage == "publish":
             ctx["next_stage"] = "upload"
+            if skipped(config, "upload"):
+                if not gates and config.get("auto_finish", "upload") in ("premiere", "both"):
+                    try:
+                        export_premiere_project(ctx)
+                    except Exception as e:
+                        log_error(f"Premiere export failed: {e}")
+                return finish_without_upload(config, ctx, "Finished without uploading (the upload step is off).",
+                                             "Skipped (not uploaded).")
             if "publish" in gates:
                 state_file = pause_for_review(config, ctx, "publish")
                 update_step("upload", 0, "Waiting for you to publish.")
@@ -5500,7 +5579,7 @@ def load_state(state_path: str) -> dict | None:
 
 
 def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, music_source: str = "",
-                    music_gpu: str | None = None) -> int:
+                    music_gpu: str | None = None, skip_steps: list | None = None) -> int:
     """Continue a paused run after the user reviewed a gate in OBS."""
     state = load_state(state_path)
     if state is None:
@@ -5512,6 +5591,10 @@ def resume_pipeline(state_path: str, secrets: dict, review: dict | None = None, 
         config["music_source"] = music_source
     if music_gpu is not None:
         config["music_gpu"] = music_gpu
+    if skip_steps is not None:
+        # The steps unchecked in the dock now, for the steps this job hasn't reached yet
+        config["skip_steps"] = [s for s in skip_steps if s in PIPELINE_STEPS]
+        config["music_enabled"] = "music" not in config["skip_steps"]
     ctx = state.get("ctx", {})
     if state.get("version", 1) < 2:
         # Version 1 only ever paused for the B-roll review, right before rendering
@@ -5749,7 +5832,7 @@ def main():
                 return 0
         if mode == "resume_pipeline":
             return resume_pipeline(cfg.get("state_path", ""), cfg.get("secrets", {}), cfg.get("review"),
-                                   cfg.get("music_source", ""), cfg.get("music_gpu"))
+                                   cfg.get("music_source", ""), cfg.get("music_gpu"), cfg.get("skip_steps"))
         if mode == "thumbnail_regen":
             return regenerate_thumbnails(cfg.get("state_path", ""), cfg.get("secrets", {}),
                                          cfg.get("action", "generate"), cfg.get("options") or {})

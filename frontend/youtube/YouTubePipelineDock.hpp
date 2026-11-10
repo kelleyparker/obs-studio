@@ -17,6 +17,7 @@ class YouTubeMusicPicker;
 class YouTubeScriptWriter;
 class YouTubeThumbnailPicker;
 class YouTubeVideoPreview;
+class QCheckBox;
 class QComboBox;
 class QFileSystemWatcher;
 class QLineEdit;
@@ -82,7 +83,12 @@ private:
 	/* Asks before New/Open Project stops a step that is still running; true to go ahead */
 	bool ConfirmStopRunningJob();
 
+	/* Greys a step row out while its checkbox is off (the step is skipped), or restores it */
+	void ApplyStepLook(const QString &key);
+
 	struct StepRow {
+		/* Unchecked: the pipeline skips this step on the next run */
+		QCheckBox *enabledCheck = nullptr;
 		QLabel *titleLabel = nullptr;
 		QLabel *detailLabel = nullptr;
 		QProgressBar *bar = nullptr;

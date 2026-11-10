@@ -177,6 +177,8 @@ void YouTubeWorkflowManager::LoadConfig()
 	if (config_has_user_value(cfg, "YouTubeWorkflow", "MusicEnabled")) {
 		config.musicEnabled = config_get_bool(cfg, "YouTubeWorkflow", "MusicEnabled");
 	}
+	const char *skipped = config_get_string(cfg, "YouTubeWorkflow", "SkippedSteps");
+	config.skippedSteps = QString::fromUtf8(skipped ? skipped : "").split(',', Qt::SkipEmptyParts);
 
 	config.brollEnabled = config_get_bool(cfg, "YouTubeWorkflow", "BrollEnabled");
 	const char *brollSource = config_get_string(cfg, "YouTubeWorkflow", "BrollSource");
@@ -223,6 +225,7 @@ void YouTubeWorkflowManager::SaveConfig()
 			  config.thumbnailImageModel.toUtf8().constData());
 	config_set_bool(cfg, "YouTubeWorkflow", "CloudImageFallback", config.cloudImageFallback);
 	config_set_bool(cfg, "YouTubeWorkflow", "MusicEnabled", config.musicEnabled);
+	config_set_string(cfg, "YouTubeWorkflow", "SkippedSteps", config.skippedSteps.join(',').toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "MusicSource", config.musicSource.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "MusicGpu", config.musicGpu.toUtf8().constData());
 	config_set_string(cfg, "YouTubeWorkflow", "ThumbAvoid", config.thumbAvoid.toUtf8().constData());
@@ -429,7 +432,12 @@ void YouTubeWorkflowManager::OnRecordingStopped(const QString &rawRecordingPath,
 	SetWorkflowArmed(false);
 	SetLastVideo(rawRecordingPath);
 
-	if (willAutoRemux) {
+	if (willAutoRemux && !StepEnabled("remux")) {
+		/* Remux is off: the pipeline works on the MKV now; OBS's own remux runs on beside it */
+		waitingForRemux = false;
+		emit StepProgressUpdated("remux", 100, "Skipped (using the MKV)");
+		StartPipelineForVideo(rawRecordingPath);
+	} else if (willAutoRemux) {
 		waitingForRemux = true;
 		emit PipelineStateChanged("📹 Auto-Remuxing MKV to MP4...", true);
 		emit StepProgressUpdated("remux", 50, "Remuxing MKV recording to MP4...");
@@ -510,6 +518,7 @@ QJsonObject YouTubeWorkflowManager::PipelineSettingsPayload() const
 	payload["padding_sec"] = config.paddingSec;
 	payload["cut_retakes"] = config.cutRetakes;
 	payload["normalize_loudness"] = config.normalizeLoudness;
+	payload["skip_steps"] = SkipStepsPayload();
 	return payload;
 }
 
@@ -605,14 +614,15 @@ void YouTubeWorkflowManager::StartPipelineForVideo(const QString &videoPath)
 	emit PipelineStateChanged(stepMode ? "⚙️ Step mode: analyzing, then waiting for you to review the cuts..."
 					   : "⚙️ Auto mode: edit, thumbnail & upload without stopping...",
 				  true);
-	emit StepProgressUpdated("remux", 100, "MP4 Ready");
-	emit StepProgressUpdated("transcribe", 0, "Queued...");
-	emit StepProgressUpdated("edit", 0, "Queued...");
-	emit StepProgressUpdated("broll", 0, "Queued...");
-	emit StepProgressUpdated("llm", 0, "Queued...");
-	emit StepProgressUpdated("music", 0, config.musicEnabled ? "Queued..." : "Off");
-	emit StepProgressUpdated("thumbnail", 0, "Queued...");
-	emit StepProgressUpdated("upload", 0, "Queued...");
+	if (StepEnabled("remux")) {
+		emit StepProgressUpdated("remux", 100, "MP4 Ready");
+	} else {
+		bool mkv = QFileInfo(videoPath).suffix().compare("mkv", Qt::CaseInsensitive) == 0;
+		emit StepProgressUpdated("remux", 100, mkv ? "Skipped (using the MKV)" : "Skipped");
+	}
+	for (const QString &step : {"transcribe", "edit", "broll", "llm", "music", "thumbnail", "upload"}) {
+		emit StepProgressUpdated(step, 0, StepEnabled(step) ? "Queued..." : "Skipped");
+	}
 
 	QJsonObject payload = PipelineSettingsPayload();
 	payload["mode"] = "pipeline";
@@ -670,7 +680,7 @@ void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const Q
 		from = 5;
 	}
 	for (qsizetype i = from; i < steps.size(); i++) {
-		emit StepProgressUpdated(steps[i], 0, "Queued...");
+		emit StepProgressUpdated(steps[i], 0, StepEnabled(steps[i]) ? "Queued..." : "Skipped");
 	}
 
 	QJsonObject payload;
@@ -678,6 +688,8 @@ void YouTubeWorkflowManager::ResumePipeline(const QString &statePathRef, const Q
 	payload["state_path"] = statePath;
 	payload["music_source"] = config.musicSource;
 	payload["music_gpu"] = config.musicGpu;
+	payload["music_enabled"] = config.musicEnabled;
+	payload["skip_steps"] = SkipStepsPayload();
 	if (!review.isEmpty()) {
 		payload["review"] = review;
 	}
@@ -804,7 +816,7 @@ void YouTubeWorkflowManager::RedoPipeline(const QString &from, bool deleteFromYo
 		first = 0;
 	}
 	for (qsizetype i = first; i < steps.size(); i++) {
-		emit StepProgressUpdated(steps[i], 0, "Queued...");
+		emit StepProgressUpdated(steps[i], 0, StepEnabled(steps[i]) ? "Queued..." : "Skipped");
 	}
 	emit PipelineStateChanged(deleteFromYouTube && !lastVideoId.isEmpty()
 					  ? "🗑 Deleting the YouTube upload, then starting over..."
@@ -986,9 +998,9 @@ void YouTubeWorkflowManager::ContinuePipeline(const QString &statePathRef)
 	DiscardPendingReview();
 	emit EditWillChange();
 	emit PipelineStateChanged("⚙️ Continuing the job where it stopped...", true);
-	bool musicOn = state.value("config").toObject().value("music_enabled").toBool(true);
+	/* The steps it hasn't reached follow the dock's checkboxes now, not the ones the job started with */
 	for (const QString &step : StepsLeft(next)) {
-		emit StepProgressUpdated(step, 0, step == "music" && !musicOn ? "Off" : "Queued...");
+		emit StepProgressUpdated(step, 0, StepEnabled(step) ? "Queued..." : "Skipped");
 	}
 
 	/* With no review to read back, Python picks up at the saved next stage, with the job's own Step or Auto gates */
@@ -997,6 +1009,8 @@ void YouTubeWorkflowManager::ContinuePipeline(const QString &statePathRef)
 	payload["state_path"] = statePath;
 	payload["music_source"] = config.musicSource;
 	payload["music_gpu"] = config.musicGpu;
+	payload["music_enabled"] = config.musicEnabled;
+	payload["skip_steps"] = SkipStepsPayload();
 	LaunchPipelineWorker(payload);
 }
 
@@ -1124,6 +1138,53 @@ void YouTubeWorkflowManager::SetMusicGpu(const QString &gpu)
 		config_save_safe(cfg, "tmp", nullptr);
 	}
 	emit MusicGpuChanged(gpu);
+}
+
+bool YouTubeWorkflowManager::StepEnabled(const QString &key) const
+{
+	if (key == "music") {
+		return config.musicEnabled;
+	}
+	if (key == "broll") {
+		return config.brollEnabled;
+	}
+	return !config.skippedSteps.contains(key);
+}
+
+void YouTubeWorkflowManager::SetStepEnabled(const QString &key, bool on)
+{
+	if (StepEnabled(key) == on) {
+		return;
+	}
+	if (key == "music") {
+		config.musicEnabled = on;
+	} else if (key == "broll") {
+		config.brollEnabled = on;
+	} else if (on) {
+		config.skippedSteps.removeAll(key);
+	} else {
+		config.skippedSteps.append(key);
+	}
+	config_t *cfg = App() ? App()->GetUserConfig() : nullptr;
+	if (cfg) {
+		config_set_bool(cfg, "YouTubeWorkflow", "MusicEnabled", config.musicEnabled);
+		config_set_bool(cfg, "YouTubeWorkflow", "BrollEnabled", config.brollEnabled);
+		config_set_string(cfg, "YouTubeWorkflow", "SkippedSteps",
+				  config.skippedSteps.join(',').toUtf8().constData());
+		config_save_safe(cfg, "tmp", nullptr);
+	}
+	emit StepEnabledChanged(key, on);
+}
+
+QJsonArray YouTubeWorkflowManager::SkipStepsPayload() const
+{
+	QJsonArray skip;
+	for (const char *key : {"remux", "transcribe", "edit", "broll", "llm", "music", "thumbnail", "upload"}) {
+		if (!StepEnabled(key)) {
+			skip.append(key);
+		}
+	}
+	return skip;
 }
 
 QString YouTubeWorkflowManager::MusicSourceLabel(const QString &source)

@@ -946,6 +946,9 @@ void YouTubeSettingsWidget::SaveToManager()
 	mgr->SaveConfig();
 	emit mgr->ThumbnailImageSourceChanged(cfg.thumbnailImageSource);
 	emit mgr->MusicSourceChanged(cfg.musicSource);
+	/* The dock's step checkboxes for music and B-roll follow these two */
+	emit mgr->StepEnabledChanged("music", cfg.musicEnabled);
+	emit mgr->StepEnabledChanged("broll", cfg.brollEnabled);
 }
 
 void YouTubeSettingsWidget::FillMusicSources(QComboBox *combo)

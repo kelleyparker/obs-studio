@@ -1365,6 +1365,46 @@ class StepRunTests(unittest.TestCase):
         self.assertEqual([e["edited_video"] for e in evs if e["type"] == "complete"], [mine])
         self.assertTrue(any("chapter times" in e.get("message", "") for e in evs if e["type"] == "log"))
 
+    @staticmethod
+    def step_texts(evs, step):
+        return [e["message"] for e in evs if e["type"] == "step" and e["step"] == step]
+
+    def test_unchecked_steps_are_skipped_with_their_pauses(self):
+        skip = ["transcribe", "edit", "llm", "thumbnail", "upload"]
+        video = self.video_copy("skipall.mp4")
+        with mock.patch.object(yp, "transcribe_video", side_effect=AssertionError("Whisper ran")):
+            rc, evs = run_events(yp.run_pipeline, dict(self.config(video, list(yp.REVIEW_GATES)), skip_steps=skip))
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(e["type"] in ("review_ready", "broll_plan_ready", "thumbnail_ready") for e in evs))
+        self.assertEqual(self.step_texts(evs, "transcribe"), ["Skipped."])
+        self.assertEqual(self.step_texts(evs, "edit")[-1], "Skipped (nothing cut).")
+        self.assertEqual(self.step_texts(evs, "llm"), ["Skipped (the title is the file name)."])
+        self.assertEqual(self.step_texts(evs, "thumbnail"), ["Skipped (YouTube picks a frame)."])
+        self.assertEqual(self.step_texts(evs, "upload"), ["Skipped (not uploaded)."])
+        self.assertEqual([e["title"] for e in evs if e["type"] == "metadata_ready"], ["skipall"])
+        done = [e for e in evs if e["type"] == "complete"]
+        self.assertEqual([(d["url"], d["thumbnail_path"]) for d in done], [("", "")])
+        # Nothing cut: the whole 20 s
+        self.assertAlmostEqual(yp.get_video_duration(done[0]["edited_video"]), 20.0, delta=0.3)
+        self.assertFalse(os.path.exists(yp.pipeline_paths(video)["thumbs_file"]))
+
+    def test_unchecking_steps_applies_when_a_paused_job_resumes(self):
+        video = self.video_copy("skiplater.mp4")
+        rc, evs = self.run_with_patches(yp.run_pipeline, self.config(video, list(yp.REVIEW_GATES)))
+        ready = [e for e in evs if e["type"] == "review_ready"]
+        self.assertEqual([e["gate"] for e in ready], ["cuts"])
+        # Unchecked while it waits at the cuts: the cuts it found are dropped, and the later pauses too
+        rc, evs = self.run_with_patches(yp.resume_pipeline, ready[0]["state_path"], {}, None, "", None,
+                                        ["edit", "llm", "music", "thumbnail", "upload"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(e["type"] == "review_ready" for e in evs))
+        done = [e for e in evs if e["type"] == "complete"]
+        self.assertEqual(len(done), 1)
+        self.assertAlmostEqual(yp.get_video_duration(done[0]["edited_video"]), 20.0, delta=0.3)
+        state = yp.read_json_file(ready[0]["state_path"])
+        self.assertEqual(state["config"]["skip_steps"], ["edit", "llm", "music", "thumbnail", "upload"])
+        self.assertEqual(state["ctx"]["next_stage"], "done")
+
     def test_auto_mode_can_export_for_premiere_instead(self):
         import xml.etree.ElementTree as ET
 
@@ -1677,6 +1717,42 @@ class MusicBriefTests(unittest.TestCase):
             briefs, source = yp.music_briefs({}, {}, 2)
         self.assertEqual(source, "default styles")
         self.assertEqual([b["name"] for b in briefs], [b["name"] for b in yp.FALLBACK_MUSIC_BRIEFS[:2]])
+
+
+class SkipStepTests(unittest.TestCase):
+    def test_which_steps_are_skipped(self):
+        self.assertFalse(any(yp.skipped({}, s) for s in yp.PIPELINE_STEPS if s != "broll"))
+        self.assertTrue(yp.skipped({}, "broll"))  # B-roll only runs when it's turned on
+        self.assertFalse(yp.skipped({"broll": {"enabled": True}}, "broll"))
+        self.assertTrue(yp.skipped({"broll": {"enabled": True}, "skip_steps": ["broll"]}, "broll"))
+        self.assertTrue(yp.skipped({"music_enabled": False}, "music"))
+        self.assertTrue(yp.skipped({"skip_steps": ["music"]}, "music"))
+        self.assertTrue(yp.skipped({"skip_steps": ["thumbnail"]}, "thumbnail"))
+
+    def upload(self, ctx):
+        ctx = dict({"input_video": "C:/v/rec.mp4", "final_video": "C:/v/rec_yt_edit.mp4", "total_duration": 5.0,
+                    "metadata": {"title": "rec"}}, **ctx)
+        with mock.patch.object(yp, "upload_to_youtube", return_value=("id", "url")) as up, \
+                mock.patch.object(yp, "save_checkpoint"), mock.patch.object(yp, "emit_upload_stats"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            yp.stage_upload({"privacy_status": "public"}, ctx)
+        return up.call_args.kwargs
+
+    def test_a_skipped_title_never_goes_up_public(self):
+        self.assertEqual(self.upload({"llm_provider": yp.SKIPPED_METADATA_BADGE})["privacy_status"], "unlisted")
+        self.assertEqual(self.upload({"llm_provider": "Gemini"})["privacy_status"], "public")
+
+    def test_a_skipped_thumbnail_isnt_uploaded(self):
+        self.assertEqual(self.upload({"thumbnail_skipped": True})["thumbnail_path"], "")
+        self.assertTrue(self.upload({})["thumbnail_path"].endswith("rec_yt_thumb.jpg"))
+
+    def test_resume_takes_the_steps_unchecked_now(self):
+        state = {"version": 2, "config": {"music_enabled": True}, "ctx": {"input_video": __file__, "next_stage": "music"}}
+        with mock.patch.object(yp, "load_state", return_value=state), \
+                mock.patch.object(yp, "run_stages", return_value=0) as run, contextlib.redirect_stdout(io.StringIO()):
+            yp.resume_pipeline("s.json", {}, None, "", None, ["music", "nonsense"])
+        config = run.call_args.args[0]
+        self.assertEqual((config["skip_steps"], config["music_enabled"]), (["music"], False))
 
 
 class MusicBriefGpuTests(unittest.TestCase):

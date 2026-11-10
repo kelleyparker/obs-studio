@@ -33,6 +33,9 @@ struct YouTubeWorkflowConfig {
 	QString musicSource = "acestep";
 	// The GPU ACE-Step makes the music on, by name ("NVIDIA GeForce RTX 3050"); empty for the one with the most memory
 	QString musicGpu;
+	// Pipeline steps unchecked in the dock (remux, transcribe, edit, llm, thumbnail, upload); music and broll
+	// use musicEnabled and brollEnabled instead
+	QStringList skippedSteps;
 
 	// Upload defaults
 	QString privacyStatus = "unlisted"; // "unlisted", "private", "public"
@@ -158,6 +161,11 @@ eview carries
 	void SetThumbnailImageSource(const QString &source);
 	void SetMusicSource(const QString &source);
 	void SetMusicGpu(const QString &gpu);
+	/* Whether a pipeline step (its dock key) runs on the next run; music and broll are the Settings switches */
+	bool StepEnabled(const QString &key) const;
+	void SetStepEnabled(const QString &key, bool on);
+	/* The keys of every step that is turned off, for the worker's "skip_steps" */
+	QJsonArray SkipStepsPayload() const;
 	/* "ACE-Step, on this PC" or "Lyria, Google cloud", for the music step's title */
 	static QString MusicSourceLabel(const QString &source);
 	void StartOAuthLogin();
@@ -206,6 +214,7 @@ signals:
 	void ThumbnailImageSourceChanged(const QString &source);
 	void MusicSourceChanged(const QString &source);
 	void MusicGpuChanged(const QString &gpu);
+	void StepEnabledChanged(const QString &key, bool on);
 	void VideoUpdateFinished(bool ok, const QString &message);
 	void VideoDeleteFinished(bool ok, const QString &message);
 	/* The edit has been rendered and can be watched */

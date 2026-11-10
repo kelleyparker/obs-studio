@@ -44,6 +44,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTimer>
 #include <QUrl>
@@ -346,11 +347,25 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		rowLayout->setSpacing(2);
 
 		QHBoxLayout *headerRow = new QHBoxLayout();
+		QCheckBox *check = new QCheckBox(rowWidget);
+		check->setChecked(mgr->StepEnabled(def.key));
+		QString tip = "Uncheck to skip this step. Applies to the next run and to steps a paused job hasn't "
+			      "reached.";
+		if (def.key == "remux") {
+			tip += "\nIt only matters when OBS auto-remuxes the recording: unchecked, the pipeline starts on "
+			       "the MKV right away.";
+		} else if (def.key == "transcribe") {
+			tip += "\nWithout it there are no retake cuts and no B-roll, and the title is the file name.";
+		}
+		check->setToolTip(tip);
 		QLabel *tLabel = new QLabel(def.title, rowWidget);
 		tLabel->setStyleSheet("font-weight: bold;");
 		QLabel *dLabel = new QLabel("Waiting", rowWidget);
 		dLabel->setStyleSheet("color: #b8a8c8; font-size: 11px;");
+		headerRow->addWidget(check);
 		headerRow->addWidget(tLabel);
+		const QString key = def.key;
+		connect(check, &QCheckBox::toggled, this, [mgr, key](bool on) { mgr->SetStepEnabled(key, on); });
 		if (def.key == "music") {
 			musicGpuCombo = new QComboBox(rowWidget);
 			FillMusicGpus(musicGpuCombo, mgr->GetConfig().musicGpu);
@@ -384,9 +399,20 @@ YouTubePipelineDock::YouTubePipelineDock(QWidget *parent) : QWidget(parent)
 		rowLayout->addWidget(bar);
 		stagesLayout->addWidget(rowWidget);
 
-		stepRows[def.key] = StepRow{tLabel, dLabel, bar};
+		stepRows[def.key] = StepRow{check, tLabel, dLabel, bar};
+		ApplyStepLook(def.key);
 	}
 	mainLayout->addWidget(stagesGroup);
+	/* The dock's checkboxes, and the music and B-roll switches in Settings */
+	connect(mgr, &YouTubeWorkflowManager::StepEnabledChanged, this, [this](const QString &key, bool on) {
+		if (!stepRows.contains(key)) {
+			return;
+		}
+		QCheckBox *check = stepRows[key].enabledCheck;
+		QSignalBlocker block(check);
+		check->setChecked(on);
+		ApplyStepLook(key);
+	});
 	/* The music source is set in Settings only, so Auto mode never changes from the dock */
 	connect(mgr, &YouTubeWorkflowManager::MusicSourceChanged, this, [this](const QString &source) {
 		stepRows["music"].titleLabel->setText(MusicStepTitle(source));
@@ -771,6 +797,21 @@ void YouTubePipelineDock::OnStepProgressUpdated(const QString &stepName, int per
 	row.detailLabel->setText(message);
 }
 
+void YouTubePipelineDock::ApplyStepLook(const QString &key)
+{
+	if (!stepRows.contains(key)) {
+		return;
+	}
+	StepRow &row = stepRows[key];
+	bool on = row.enabledCheck->isChecked();
+	row.titleLabel->setStyleSheet(on ? "font-weight: bold;" : "font-weight: bold; color: #6f6f6f;");
+	row.detailLabel->setStyleSheet(on ? "color: #b8a8c8; font-size: 11px;" : "color: #6f6f6f; font-size: 11px;");
+	row.bar->setEnabled(on);
+	if (key == "music" && musicGpuCombo) {
+		musicGpuCombo->setEnabled(on);
+	}
+}
+
 void YouTubePipelineDock::OnMetadataGenerated(const QString &title, const QStringList &alternativeTitles,
 					      const QString &description, const QString &hookText,
 					      const QString &providerBadge)
@@ -978,7 +1019,7 @@ void YouTubePipelineDock::ResetJobView()
 	submitBtn->setEnabled(false);
 	for (StepRow &row : stepRows) {
 		row.bar->setValue(0);
-		row.detailLabel->setText("Waiting");
+		row.detailLabel->setText(row.enabledCheck->isChecked() ? "Waiting" : "Will be skipped");
 	}
 	currentEditedVideoPath.clear();
 	currentThumbnailPath.clear();
@@ -1009,11 +1050,19 @@ void YouTubePipelineDock::RestoreJobView(const QString &statePath)
 
 	/* Every step before the job's next stage is done */
 	const QStringList left = YouTubeWorkflowManager::StepsLeft(next);
-	bool musicOn = state.value("config").toObject().value("music_enabled").toBool(true);
+	/* The steps the job was told to skip */
+	QJsonObject jobConfig = state.value("config").toObject();
+	QSet<QString> skipped;
+	for (const QJsonValue &v : jobConfig.value("skip_steps").toArray()) {
+		skipped.insert(v.toString());
+	}
+	if (!jobConfig.value("music_enabled").toBool(true)) {
+		skipped.insert("music");
+	}
 	for (auto it = stepRows.begin(); it != stepRows.end(); ++it) {
 		bool done = !left.contains(it.key());
 		it->bar->setValue(done ? 100 : 0);
-		it->detailLabel->setText(it.key() == "music" && !musicOn ? "Off" : (done ? "Done" : "Waiting"));
+		it->detailLabel->setText(skipped.contains(it.key()) ? "Skipped" : (done ? "Done" : "Waiting"));
 	}
 
 	/* Waiting at the title review, the dock shows the copy being reviewed */
