@@ -3,6 +3,8 @@ on:
   workflow_call:
 jobs:
   clang-format:
+    # Skipped in this fork, which runs no Linux or macOS checks
+    if: github.repository_owner == 'obsproject'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -15,6 +17,8 @@ jobs:
           failCondition: error
 
   swift-format:
+    # Skipped in this fork, which runs no Linux or macOS checks
+    if: github.repository_owner == 'obsproject'
     runs-on: macos-26
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
