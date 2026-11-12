@@ -33,7 +33,7 @@ jobs:
 
   compatibility-validation:
     name: Validate Compatibility 🕵️
-    if: github.ref_name == 'master'
+    if: github.repository_owner == 'obsproject' && github.ref_name == 'master'
     runs-on: ubuntu-26.04
     permissions:
       checks: write
@@ -57,7 +57,7 @@ jobs:
 
   services-validation:
     name: Validate Services 🕵️
-    if: github.ref_name == 'master'
+    if: github.repository_owner == 'obsproject' && github.ref_name == 'master'
     runs-on: ubuntu-26.04
     permissions:
       checks: write
@@ -154,7 +154,7 @@ jobs:
 
   create-release:
     name: Create Release 🛫
-    if: github.ref_type == 'tag'
+    if: github.repository_owner == 'obsproject' && github.ref_type == 'tag'
     runs-on: ubuntu-26.04
     needs: [build-project, sign-windows-build]
     defaults:
