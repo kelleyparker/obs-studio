@@ -10,7 +10,8 @@ permissions:
 jobs:
   publish:
     name: Publish Release 🛫
-    runs-on: ubuntu-26.04
+    # This fork runs only on Windows; the bash steps run in Git Bash there
+    runs-on: windows-2025-vs2026
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
