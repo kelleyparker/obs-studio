@@ -9,7 +9,8 @@ on:
 jobs:
   check-event:
     name: Event Data 🔎
-    runs-on: ubuntu-26.04
+    # This fork runs no Linux or macOS jobs, so it reads event data on the Windows runner
+    runs-on: ${{ github.repository_owner == 'obsproject' && 'ubuntu-26.04' || 'windows-2025-vs2026' }}
     defaults:
       run:
         shell: bash

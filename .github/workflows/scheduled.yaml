@@ -34,6 +34,7 @@ jobs:
 
   cache-cleanup:
     name: Cache Cleanup 🧹
+    if: github.repository_owner == 'obsproject'
     runs-on: ubuntu-26.04
     permissions:
       actions: write
